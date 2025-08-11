@@ -1,0 +1,23 @@
+apiVersion: cloud.tencent.com/v1beta1
+kind: ResourceLeasingPolicy
+metadata:
+  name: example-policy
+  namespace: tapestry-system
+spec:
+  cluster: example-cluster
+  nodeSelector:
+    node-type: worker
+  timeWindows:
+    - start: "18:00"
+      end: "08:00"
+      days: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    - start: "00:00"
+      end: "23:59"
+      days: ["Saturday", "Sunday"]
+  resourceLimits:
+    - resource: cpu
+      quantity: "4"
+    - resource: memory
+      quantity: "8Gi"
+    - resource: storage
+      quantity: "100Gi"

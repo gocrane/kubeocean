@@ -1,0 +1,24 @@
+namePrefix: tapestry-
+
+namespace: tapestry-system
+
+commonLabels:
+  app.kubernetes.io/name: tapestry
+  app.kubernetes.io/instance: tapestry-manager
+  app.kubernetes.io/component: manager
+  app.kubernetes.io/part-of: tapestry
+  app.kubernetes.io/managed-by: kustomize
+
+bases:
+- ../crd
+- ../rbac
+- ../manager
+- ../syncer
+
+patchesStrategicMerge:
+- manager_auth_proxy_patch.yaml
+
+images:
+- name: controller
+  newName: tapestry-manager
+  newTag: latest

@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tapestry-syncer-template
+  namespace: tapestry-system
+  labels:
+    app.kubernetes.io/name: tapestry-syncer-template
+    app.kubernetes.io/part-of: tapestry
+    app.kubernetes.io/component: config
+data:
+  serviceAccountName: "tapestry-syncer"
+  roleName: "tapestry-syncer"
+  roleBindingName: "tapestry-syncer"
+  syncerNamespace: "tapestry-system"
+  
+  deployment.yaml: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: "{{.DeploymentName}}"
+      namespace: "{{.Namespace}}"
+      labels:
+        app.kubernetes.io/name: tapestry-syncer
+        app.kubernetes.io/instance: "{{.ClusterBindingName}}"
+        app.kubernetes.io/component: syncer
+        app.kubernetes.io/part-of: tapestry
+        app.kubernetes.io/managed-by: tapestry-manager
+        tapestry.io/cluster-binding: "{{.ClusterBindingName}}"
+    spec:
+      replicas: 2
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: tapestry-syncer
+          app.kubernetes.io/instance: "{{.ClusterBindingName}}"
+          app.kubernetes.io/component: syncer
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: tapestry-syncer
+            app.kubernetes.io/instance: "{{.ClusterBindingName}}"
+            app.kubernetes.io/component: syncer
+            app.kubernetes.io/part-of: tapestry
+            app.kubernetes.io/managed-by: tapestry-manager
+            tapestry.io/cluster-binding: "{{.ClusterBindingName}}"
+        spec:
+          serviceAccountName: "{{.ServiceAccountName}}"
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: syncer
+            image: "tapestry-syncer:latest"
+            args:
+            - --leader-elect=true
+            - --leader-election-id={{.DeploymentName}}
+            - --leader-election-lease-duration=15s
+            - --leader-election-renew-deadline=10s
+            - --leader-election-retry-period=2s
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --cluster-binding-name={{.ClusterBindingName}}
+            - --cluster-binding-namespace={{.Namespace}}
+            env:
+            - name: KUBERNETES_CLUSTER_DOMAIN
+              value: cluster.local
+            - name: CLUSTER_BINDING_NAME
+              value: "{{.ClusterBindingName}}"
+            - name: CLUSTER_BINDING_NAMESPACE
+              value: "{{.Namespace}}"
+            ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            livenessProbe:
+              httpGet:
+                path: /healthz
+                port: 8081
+              initialDelaySeconds: 15
+              periodSeconds: 20
+            readinessProbe:
+              httpGet:
+                path: /readyz
+                port: 8081
+              initialDelaySeconds: 5
+              periodSeconds: 10
+            resources:
+              limits:
+                cpu: 500m
+                memory: 512Mi
+              requests:
+                cpu: 100m
+                memory: 128Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+          terminationGracePeriodSeconds: 10

@@ -1,0 +1,49 @@
+version: 2
+
+run:
+  timeout: 5m
+  go: "1.24"
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+  revive:
+    rules:
+      - name: exported
+        disabled: true
+
+linters:
+  enable:
+    - copyloopvar
+    - errcheck
+    - ginkgolinter
+    - goconst
+    - gocyclo
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+  disable:
+    - errcheck # Disabled for now due to controller code issues
+    - revive # Disabled for now due to skeleton implementations
+    - unused # Disabled for now due to skeleton implementations
+
+issues:
+  exclude-rules:
+    - path: zz_generated\.deepcopy\.go
+      linters:
+        - all
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec

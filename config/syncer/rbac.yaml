@@ -1,0 +1,51 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tapestry-syncer
+  namespace: tapestry-system
+  labels:
+    app.kubernetes.io/name: tapestry-syncer
+    app.kubernetes.io/component: syncer
+    app.kubernetes.io/part-of: tapestry
+    app.kubernetes.io/managed-by: tapestry-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tapestry-syncer
+  namespace: tapestry-system
+  labels:
+    app.kubernetes.io/name: tapestry-syncer
+    app.kubernetes.io/component: syncer
+    app.kubernetes.io/part-of: tapestry
+    app.kubernetes.io/managed-by: tapestry-manager
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods", "services", "endpoints", "endpointslices", "configmaps", "secrets", "persistentvolumes", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["cloud.tencent.com"]
+  resources: ["clusterbindings", "resourceleasingpolicies"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tapestry-syncer
+  namespace: tapestry-system
+  labels:
+    app.kubernetes.io/name: tapestry-syncer
+    app.kubernetes.io/component: syncer
+    app.kubernetes.io/part-of: tapestry
+    app.kubernetes.io/managed-by: tapestry-manager
+subjects:
+- kind: ServiceAccount
+  name: tapestry-syncer
+  namespace: tapestry-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tapestry-syncer

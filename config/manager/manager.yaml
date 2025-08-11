@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/component: manager
+    app.kubernetes.io/created-by: tapestry
+    app.kubernetes.io/instance: system
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: namespace
+    app.kubernetes.io/part-of: tapestry
+    control-plane: tapestry-manager
+  name: tapestry-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tapestry-manager
+  namespace: tapestry-system
+  labels:
+    app.kubernetes.io/component: manager
+    app.kubernetes.io/created-by: tapestry
+    app.kubernetes.io/instance: tapestry-manager
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: deployment
+    app.kubernetes.io/part-of: tapestry
+    control-plane: tapestry-manager
+spec:
+  selector:
+    matchLabels:
+      control-plane: tapestry-manager
+  replicas: 3
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        control-plane: tapestry-manager
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+                - ppc64le
+                - s390x
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+      containers:
+      - args:
+        - --leader-elect=true
+        - --leader-election-id=tapestry-manager-leader
+        - --leader-election-lease-duration=15s
+        - --leader-election-renew-deadline=10s
+        - --leader-election-retry-period=2s
+        - --metrics-bind-address=:8080
+        - --health-probe-bind-address=:8081
+        command:
+        - /manager
+        env:
+        - name: KUBERNETES_CLUSTER_DOMAIN
+          value: cluster.local
+        image: controller:latest
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        name: manager
+        ports:
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        - containerPort: 8081
+          name: health
+          protocol: TCP
+
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: syncer-template
+          mountPath: /etc/tapestry/syncer-template
+          readOnly: true
+
+      volumes:
+      - name: syncer-template
+        configMap:
+          name: tapestry-syncer-template
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: tapestry-manager
+      terminationGracePeriodSeconds: 10
