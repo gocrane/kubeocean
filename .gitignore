@@ -1,0 +1,86 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+
+# Build artifacts
+bin/
+dist/
+build/
+
+# IDE files
+.vscode/
+.kiro/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Kubernetes
+*.kubeconfig
+kubeconfig*
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Coverage reports
+coverage.out
+coverage.html
+
+# Test cache
+.testcache/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Docker
+.dockerignore
+
+# Backup files
+*.bak
+*.backup
+
+# Archive files
+*.tar
+*.tar.gz
+*.zip
+
+# Python cache (if any Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local bin directory with tools
+bin/controller-gen
+bin/kustomize
+bin/setup-envtest
