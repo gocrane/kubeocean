@@ -14,18 +14,20 @@ import (
 
 // TopDownSyncer handles synchronization from virtual cluster to physical cluster
 type TopDownSyncer struct {
-	client.Client
+	virtualClient  client.Client // Client for virtual cluster
+	physicalClient client.Client // Client for physical cluster
 	Scheme         *runtime.Scheme
 	Log            logr.Logger
 	ClusterBinding *cloudv1beta1.ClusterBinding
 }
 
 // NewTopDownSyncer creates a new TopDownSyncer instance
-func NewTopDownSyncer(client client.Client, scheme *runtime.Scheme, binding *cloudv1beta1.ClusterBinding) *TopDownSyncer {
+func NewTopDownSyncer(virtualClient, physicalClient client.Client, scheme *runtime.Scheme, binding *cloudv1beta1.ClusterBinding) *TopDownSyncer {
 	log := ctrl.Log.WithName("top-down-syncer").WithValues("cluster", binding.Name)
 
 	return &TopDownSyncer{
-		Client:         client,
+		virtualClient:  virtualClient,
+		physicalClient: physicalClient,
 		Scheme:         scheme,
 		Log:            log,
 		ClusterBinding: binding,

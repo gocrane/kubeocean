@@ -14,18 +14,20 @@ import (
 
 // BottomUpSyncer handles synchronization from physical cluster to virtual cluster
 type BottomUpSyncer struct {
-	client.Client
+	virtualClient  client.Client // Client for virtual cluster
+	physicalClient client.Client // Client for physical cluster
 	Scheme         *runtime.Scheme
 	Log            logr.Logger
 	ClusterBinding *cloudv1beta1.ClusterBinding
 }
 
 // NewBottomUpSyncer creates a new BottomUpSyncer instance
-func NewBottomUpSyncer(client client.Client, scheme *runtime.Scheme, binding *cloudv1beta1.ClusterBinding) *BottomUpSyncer {
+func NewBottomUpSyncer(virtualClient, physicalClient client.Client, scheme *runtime.Scheme, binding *cloudv1beta1.ClusterBinding) *BottomUpSyncer {
 	log := ctrl.Log.WithName("bottom-up-syncer").WithValues("cluster", binding.Name)
 
 	return &BottomUpSyncer{
-		Client:         client,
+		virtualClient:  virtualClient,
+		physicalClient: physicalClient,
 		Scheme:         scheme,
 		Log:            log,
 		ClusterBinding: binding,

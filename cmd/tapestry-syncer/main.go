@@ -4,10 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"os"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -39,11 +40,11 @@ func main() {
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
-	flag.StringVar(&leaderElectionID, "leader-election-id", "tapestry-syncer",
-		"The name of the leader election ID to use.")
+	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
+		"Enable leader election for syncer. "+
+			"Enabling this will ensure there is only one active syncer instance per ClusterBinding.")
+	flag.StringVar(&leaderElectionID, "leader-election-id", "",
+		"The name of the leader election ID to use. If empty, will be generated from cluster-binding-name.")
 	flag.StringVar(&clusterBindingName, "cluster-binding-name", "",
 		"The name of the ClusterBinding resource this syncer is responsible for.")
 	flag.StringVar(&clusterBindingNamespace, "cluster-binding-namespace", "tapestry-system",
@@ -58,6 +59,11 @@ func main() {
 	if clusterBindingName == "" {
 		setupLog.Error(fmt.Errorf("cluster-binding-name is required"), "missing required parameter")
 		os.Exit(1)
+	}
+
+	// Generate leader election ID if not provided
+	if leaderElectionID == "" {
+		leaderElectionID = fmt.Sprintf("tapestry-syncer-%s", clusterBindingName)
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))

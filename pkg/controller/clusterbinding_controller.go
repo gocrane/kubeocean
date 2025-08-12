@@ -35,6 +35,12 @@ import (
 const (
 	// ClusterBindingFinalizer is the finalizer used for ClusterBinding resources
 	ClusterBindingFinalizer = "clusterbinding.cloud.tencent.com/finalizer"
+
+	// Phase constants
+	PhaseFailed = "Failed"
+
+	// Default names
+	DefaultSyncerName = "tapestry-syncer"
 )
 
 // SyncerTemplateData holds the data for rendering Syncer templates
@@ -147,7 +153,7 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		r.Recorder.Event(clusterBinding, corev1.EventTypeWarning, "ValidationFailed", fmt.Sprintf("Validation failed: %v", err))
 
 		// Update status to Failed
-		clusterBinding.Status.Phase = "Failed"
+		clusterBinding.Status.Phase = PhaseFailed
 		r.updateCondition(clusterBinding, "Ready", metav1.ConditionFalse, "ValidationFailed", err.Error())
 		if updateErr := r.Status().Update(ctx, clusterBinding); updateErr != nil {
 			log.Error(updateErr, "unable to update ClusterBinding status after validation failure")
@@ -162,7 +168,7 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		r.Recorder.Event(clusterBinding, corev1.EventTypeWarning, "ConnectivityFailed", fmt.Sprintf("Connectivity check failed: %v", err))
 
 		// Update status to Failed with connectivity condition
-		clusterBinding.Status.Phase = "Failed"
+		clusterBinding.Status.Phase = PhaseFailed
 		r.updateCondition(clusterBinding, "Ready", metav1.ConditionFalse, "ConnectivityFailed", err.Error())
 		r.updateCondition(clusterBinding, "Connected", metav1.ConditionFalse, "ConnectivityFailed", err.Error())
 		if updateErr := r.Status().Update(ctx, clusterBinding); updateErr != nil {
@@ -178,7 +184,7 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		r.Recorder.Event(clusterBinding, corev1.EventTypeWarning, "SyncerFailed", fmt.Sprintf("Failed to reconcile Tapestry Syncer: %v", err))
 
 		// Update status to Failed for other errors
-		clusterBinding.Status.Phase = "Failed"
+		clusterBinding.Status.Phase = PhaseFailed
 		r.updateCondition(clusterBinding, "Ready", metav1.ConditionFalse, "SyncerFailed", err.Error())
 		if updateErr := r.Status().Update(ctx, clusterBinding); updateErr != nil {
 			log.Error(updateErr, "unable to update ClusterBinding status after syncer failure")
@@ -411,17 +417,17 @@ func (r *ClusterBindingReconciler) prepareSyncerTemplateData(clusterBinding *clo
 	// Get names from template data or use defaults
 	serviceAccountName := templateData["serviceAccountName"]
 	if serviceAccountName == "" {
-		serviceAccountName = "tapestry-syncer"
+		serviceAccountName = DefaultSyncerName
 	}
 
 	roleName := templateData["roleName"]
 	if roleName == "" {
-		roleName = "tapestry-syncer"
+		roleName = DefaultSyncerName
 	}
 
 	roleBindingName := templateData["roleBindingName"]
 	if roleBindingName == "" {
-		roleBindingName = "tapestry-syncer"
+		roleBindingName = DefaultSyncerName
 	}
 
 	// Get syncer namespace from template data or use default
@@ -745,9 +751,9 @@ func (r *ClusterBindingReconciler) prepareSyncerTemplateDataWithDefaults(cluster
 		ClusterBindingName: clusterBinding.Name,
 		Namespace:          clusterBinding.Namespace,
 		DeploymentName:     r.getSyncerName(clusterBinding),
-		ServiceAccountName: "tapestry-syncer",
-		RoleName:           "tapestry-syncer",
-		RoleBindingName:    "tapestry-syncer",
+		ServiceAccountName: DefaultSyncerName,
+		RoleName:           DefaultSyncerName,
+		RoleBindingName:    DefaultSyncerName,
 		SyncerNamespace:    "tapestry-system",
 	}
 }
