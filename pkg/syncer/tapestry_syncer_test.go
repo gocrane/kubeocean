@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 )
@@ -23,12 +24,14 @@ func TestNewTapestrySyncer(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	syncer, err := NewTapestrySyncer(fakeClient, scheme, "test-binding", "test-namespace")
+	// Create a fake manager - we'll use nil since the test doesn't require a real manager
+	var fakeManager manager.Manager = nil
+
+	syncer, err := NewTapestrySyncer(fakeManager, fakeClient, scheme, "test-binding")
 
 	assert.NoError(t, err)
 	assert.NotNil(t, syncer)
 	assert.Equal(t, "test-binding", syncer.ClusterBindingName)
-	assert.Equal(t, "test-namespace", syncer.ClusterBindingNamespace)
 	assert.NotNil(t, syncer.stopCh)
 	assert.NotNil(t, syncer.doneCh)
 }
@@ -38,11 +41,10 @@ func TestTapestrySyncer_LoadClusterBinding(t *testing.T) {
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	// Create test ClusterBinding
+	// Create test ClusterBinding (cluster-scoped resource)
 	clusterBinding := &cloudv1beta1.ClusterBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-binding",
-			Namespace: "test-namespace",
+			Name: "test-binding",
 		},
 		Spec: cloudv1beta1.ClusterBindingSpec{
 			SecretRef: corev1.SecretReference{
@@ -58,7 +60,7 @@ func TestTapestrySyncer_LoadClusterBinding(t *testing.T) {
 		WithObjects(clusterBinding).
 		Build()
 
-	syncer, err := NewTapestrySyncer(fakeClient, scheme, "test-binding", "test-namespace")
+	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding")
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -76,7 +78,7 @@ func TestTapestrySyncer_LoadClusterBinding_NotFound(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	syncer, err := NewTapestrySyncer(fakeClient, scheme, "nonexistent-binding", "test-namespace")
+	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "nonexistent-binding")
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -111,8 +113,7 @@ func TestTapestrySyncer_ReadKubeconfigSecret(t *testing.T) {
 			},
 			binding: &cloudv1beta1.ClusterBinding{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-binding",
-					Namespace: "test-namespace",
+					Name: "test-binding",
 				},
 				Spec: cloudv1beta1.ClusterBindingSpec{
 					SecretRef: corev1.SecretReference{
@@ -127,8 +128,7 @@ func TestTapestrySyncer_ReadKubeconfigSecret(t *testing.T) {
 			name: "secret not found",
 			binding: &cloudv1beta1.ClusterBinding{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-binding",
-					Namespace: "test-namespace",
+					Name: "test-binding",
 				},
 				Spec: cloudv1beta1.ClusterBindingSpec{
 					SecretRef: corev1.SecretReference{
@@ -153,8 +153,7 @@ func TestTapestrySyncer_ReadKubeconfigSecret(t *testing.T) {
 			},
 			binding: &cloudv1beta1.ClusterBinding{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-binding",
-					Namespace: "test-namespace",
+					Name: "test-binding",
 				},
 				Spec: cloudv1beta1.ClusterBindingSpec{
 					SecretRef: corev1.SecretReference{
@@ -179,8 +178,7 @@ func TestTapestrySyncer_ReadKubeconfigSecret(t *testing.T) {
 			},
 			binding: &cloudv1beta1.ClusterBinding{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-binding",
-					Namespace: "test-namespace",
+					Name: "test-binding",
 				},
 				Spec: cloudv1beta1.ClusterBindingSpec{
 					SecretRef: corev1.SecretReference{
@@ -207,7 +205,7 @@ func TestTapestrySyncer_ReadKubeconfigSecret(t *testing.T) {
 				WithObjects(objects...).
 				Build()
 
-			syncer, err := NewTapestrySyncer(fakeClient, scheme, tt.binding.Name, tt.binding.Namespace)
+			syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, tt.binding.Name)
 			require.NoError(t, err)
 			syncer.clusterBinding = tt.binding
 
@@ -233,7 +231,7 @@ func TestTapestrySyncer_StopAndDone(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	syncer, err := NewTapestrySyncer(fakeClient, scheme, "test-binding", "test-namespace")
+	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding")
 	require.NoError(t, err)
 
 	// Test that channels are initially open

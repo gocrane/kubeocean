@@ -36,7 +36,6 @@ func main() {
 	var probeAddr string
 	var leaderElectionID string
 	var clusterBindingName string
-	var clusterBindingNamespace string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -47,8 +46,6 @@ func main() {
 		"The name of the leader election ID to use. If empty, will be generated from cluster-binding-name.")
 	flag.StringVar(&clusterBindingName, "cluster-binding-name", "",
 		"The name of the ClusterBinding resource this syncer is responsible for.")
-	flag.StringVar(&clusterBindingNamespace, "cluster-binding-namespace", "tapestry-system",
-		"The namespace of the ClusterBinding resource.")
 
 	opts := zap.Options{
 		Development: true,
@@ -83,7 +80,7 @@ func main() {
 	}
 
 	// Initialize the Tapestry Syncer
-	tapestrySyncer, err := syncer.NewTapestrySyncer(mgr.GetClient(), mgr.GetScheme(), clusterBindingName, clusterBindingNamespace)
+	tapestrySyncer, err := syncer.NewTapestrySyncer(mgr, mgr.GetClient(), mgr.GetScheme(), clusterBindingName)
 	if err != nil {
 		setupLog.Error(err, "unable to create tapestry syncer")
 		os.Exit(1)
