@@ -81,11 +81,10 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		},
 	}
 
-	// Create test ClusterBinding
+	// Create test ClusterBinding (cluster-scoped)
 	clusterBinding := &cloudv1beta1.ClusterBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cluster",
-			Namespace: "tapestry-system",
+			Name: "test-cluster",
 		},
 		Spec: cloudv1beta1.ClusterBindingSpec{
 			SecretRef: corev1.SecretReference{
@@ -122,11 +121,12 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 
 	// Test PhysicalNodeReconciler directly
 	nodeReconciler := &PhysicalNodeReconciler{
-		PhysicalClient: physicalClient,
-		VirtualClient:  virtualClient,
-		Scheme:         scheme,
-		ClusterBinding: clusterBinding,
-		Log:            ctrl.Log.WithName("test-physical-node-reconciler"),
+		PhysicalClient:     physicalClient,
+		VirtualClient:      virtualClient,
+		Scheme:             scheme,
+		ClusterBinding:     clusterBinding,
+		ClusterBindingName: clusterBinding.Name,
+		Log:                ctrl.Log.WithName("test-physical-node-reconciler"),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -199,7 +199,7 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		}
 
 		// Test policy reconciliation
-		result, err := policyReconciler.triggerNodeReEvaluation(ctx, policy)
+		result, err := policyReconciler.triggerNodeReEvaluation()
 		require.NoError(t, err)
 		assert.True(t, result.RequeueAfter > 0, "Should requeue for node re-evaluation")
 	})
@@ -230,13 +230,13 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		// Process the non-matching node
 		result, err := nodeReconciler.processNode(ctx, nonMatchingNode)
 		require.NoError(t, err)
-		assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue for non-matching node")
+		assert.True(t, result.RequeueAfter > 0, "Should requeue for periodic sync")
 
-		// Verify no virtual node is created
+		// Verify virtual node is created with default resources
 		virtualNodeName := nodeReconciler.generateVirtualNodeName(nonMatchingNode.Name)
 		virtualNode := &corev1.Node{}
 		err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
-		assert.True(t, client.IgnoreNotFound(err) == nil, "Virtual node should not exist for non-matching node")
+		require.NoError(t, err, "Virtual node should exist when no policy matches (default)")
 	})
 
 	t.Run("Node with conservative resource calculation", func(t *testing.T) {

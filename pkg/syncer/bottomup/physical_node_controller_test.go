@@ -51,6 +51,12 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 						corev1.ResourceCPU:    resource.MustParse("4"),
 						corev1.ResourceMemory: resource.MustParse("8Gi"),
 					},
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:   corev1.NodeReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
 				},
 			},
 			policies: []cloudv1beta1.ResourceLeasingPolicy{
@@ -87,6 +93,12 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 						corev1.ResourceCPU:    resource.MustParse("4"),
 						corev1.ResourceMemory: resource.MustParse("8Gi"),
 					},
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:   corev1.NodeReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
 				},
 			},
 			policies: []cloudv1beta1.ResourceLeasingPolicy{
@@ -102,8 +114,8 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 					},
 				},
 			},
-			expectedVirtualNode: false,
-			expectedRequeue:     false,
+			expectedVirtualNode: true,
+			expectedRequeue:     true,
 		},
 		{
 			name:                "deleted node",
@@ -127,22 +139,23 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 			for i := range tt.policies {
 				virtualObjs = append(virtualObjs, &tt.policies[i])
 			}
-			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualObjs...).Build()
-
-			// Create cluster binding
+			// Create cluster binding and ensure it exists in virtual cluster for lookup inside processNode
 			clusterBinding := &cloudv1beta1.ClusterBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-cluster",
 				},
 			}
+			virtualObjs = append(virtualObjs, clusterBinding)
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualObjs...).Build()
 
 			// Create reconciler
 			reconciler := &PhysicalNodeReconciler{
-				PhysicalClient: physicalClient,
-				VirtualClient:  virtualClient,
-				Scheme:         scheme,
-				ClusterBinding: clusterBinding,
-				Log:            ctrl.Log.WithName("test-physical-node-reconciler"),
+				PhysicalClient:     physicalClient,
+				VirtualClient:      virtualClient,
+				Scheme:             scheme,
+				ClusterBinding:     clusterBinding,
+				ClusterBindingName: clusterBinding.Name,
+				Log:                ctrl.Log.WithName("test-physical-node-reconciler"),
 			}
 
 			// Test reconcile

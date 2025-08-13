@@ -10,7 +10,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 )
@@ -29,7 +32,7 @@ type ResourceLeasingPolicyReconciler struct {
 
 // Reconcile handles ResourceLeasingPolicy events
 func (r *ResourceLeasingPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := r.Log.WithValues("resourceleasingpolicy", req.NamespacedName)
+	log := r.Log.WithValues("resourceleasingpolicy", req.NamespacedName)
 
 	// Get the ResourceLeasingPolicy
 	policy := &cloudv1beta1.ResourceLeasingPolicy{}
@@ -37,50 +40,50 @@ func (r *ResourceLeasingPolicyReconciler) Reconcile(ctx context.Context, req ctr
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Policy was deleted, trigger re-evaluation to remove nodes that no longer have policies
-			logger.Info("ResourceLeasingPolicy deleted, triggering node re-evaluation")
-			return r.triggerNodeReEvaluation(ctx, nil)
+			log.Info("ResourceLeasingPolicy deleted, triggering node re-evaluation")
+			return r.triggerNodeReEvaluation()
 		}
-		logger.Error(err, "Failed to get ResourceLeasingPolicy")
+		log.Error(err, "Failed to get ResourceLeasingPolicy")
 		return ctrl.Result{}, err
 	}
 
 	// Check if this policy applies to our ClusterBinding
 	if policy.Spec.Cluster != r.ClusterBinding.Name {
-		logger.V(1).Info("Policy does not apply to our cluster", "policyCluster", policy.Spec.Cluster, "ourCluster", r.ClusterBinding.Name)
+		log.V(1).Info("Policy does not apply to our cluster", "policyCluster", policy.Spec.Cluster, "ourCluster", r.ClusterBinding.Name)
 		return ctrl.Result{}, nil
 	}
 
 	// Handle deletion
 	if policy.DeletionTimestamp != nil {
-		return r.triggerNodeReEvaluation(ctx, policy)
+		return r.triggerNodeReEvaluation()
 	}
 
 	// Update policy status (ignore errors for testing compatibility)
-	if err := r.updatePolicyStatus(ctx, policy); err != nil {
-		logger.Error(err, "Failed to update policy status")
-		// Don't return error to allow tests to continue
+	if statusChanged, err := r.updatePolicyStatus(ctx, policy); err != nil {
+		return ctrl.Result{}, err
+	} else if statusChanged {
+		log.Info("ResourceLeasingPolicy status changed, scheduling re-evaluation")
+		return ctrl.Result{RequeueAfter: DefaultPolicySyncInterval}, nil
 	}
 
 	// Policy was created or updated, trigger re-evaluation
-	logger.Info("ResourceLeasingPolicy changed, triggering node re-evaluation")
-	return r.triggerNodeReEvaluation(ctx, policy)
+	log.Info("ResourceLeasingPolicy changed, triggering node re-evaluation")
+	res, err := r.triggerNodeReEvaluation()
+	if err != nil {
+		return res, err
+	}
+	return ctrl.Result{RequeueAfter: DefaultPolicySyncInterval}, nil
 }
 
 // triggerNodeReEvaluation triggers re-evaluation of all nodes
-func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation(_ context.Context, _ *cloudv1beta1.ResourceLeasingPolicy) (ctrl.Result, error) {
-	r.Log.Info("Triggering node re-evaluation")
-
-	// In a real implementation, you might want to:
-	// 1. Send events to a work queue
-	// 2. Update annotations on physical nodes to trigger reconciliation
-	// 3. Use a more sophisticated mechanism to notify the node controller
-
-	// For now, we'll just log and requeue
+// TODO: implement this
+func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation() (ctrl.Result, error) {
+	// For now, simply request a requeue after the default policy sync interval
 	return ctrl.Result{RequeueAfter: DefaultPolicySyncInterval}, nil
 }
 
 // updatePolicyStatus updates the status of a ResourceLeasingPolicy
-func (r *ResourceLeasingPolicyReconciler) updatePolicyStatus(ctx context.Context, policy *cloudv1beta1.ResourceLeasingPolicy) error {
+func (r *ResourceLeasingPolicyReconciler) updatePolicyStatus(ctx context.Context, policy *cloudv1beta1.ResourceLeasingPolicy) (bool, error) {
 	// Check if policy is currently in an active time window
 	isActive := r.isPolicyActiveNow(policy)
 
@@ -105,11 +108,11 @@ func (r *ResourceLeasingPolicyReconciler) updatePolicyStatus(ctx context.Context
 
 		// Update the status
 		if err := r.Client.Status().Update(ctx, policy); err != nil {
-			return err
+			return false, err
 		}
 	}
 
-	return nil
+	return statusChanged, nil
 }
 
 // isPolicyActiveNow checks if a policy is currently active based on time windows
@@ -201,6 +204,23 @@ func (r *ResourceLeasingPolicyReconciler) updatePolicyConditions(policy *cloudv1
 // SetupWithManager sets up the controller with the Manager
 func (r *ResourceLeasingPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&cloudv1beta1.ResourceLeasingPolicy{}).
+		For(
+			&cloudv1beta1.ResourceLeasingPolicy{},
+			builder.WithPredicates(
+				predicate.Funcs{
+					CreateFunc: func(e event.CreateEvent) bool {
+						obj, ok := e.Object.(*cloudv1beta1.ResourceLeasingPolicy)
+						return ok && obj.Spec.Cluster == r.ClusterBinding.Name
+					},
+					UpdateFunc: func(e event.UpdateEvent) bool {
+						obj, ok := e.ObjectNew.(*cloudv1beta1.ResourceLeasingPolicy)
+						return ok && obj.Spec.Cluster == r.ClusterBinding.Name
+					},
+					DeleteFunc: func(e event.DeleteEvent) bool {
+						obj, ok := e.Object.(*cloudv1beta1.ResourceLeasingPolicy)
+						return ok && obj.Spec.Cluster == r.ClusterBinding.Name
+					},
+				},
+			)).
 		Complete(r)
 }

@@ -29,8 +29,8 @@ const (
 	AnnotationPoliciesApplied = "tapestry.io/policies-applied"
 
 	// Sync intervals
-	DefaultNodeSyncInterval   = 30 * time.Second
-	DefaultPolicySyncInterval = 60 * time.Second
+	DefaultNodeSyncInterval   = 300 * time.Second
+	DefaultPolicySyncInterval = 300 * time.Second
 )
 
 // BottomUpSyncer handles synchronization from physical cluster to virtual cluster
@@ -168,11 +168,11 @@ func (bus *BottomUpSyncer) setupManagers() error {
 func (bus *BottomUpSyncer) setupControllers() error {
 	// Setup Physical Node Controller
 	nodeReconciler := &PhysicalNodeReconciler{
-		PhysicalClient: bus.physicalManager.GetClient(),
-		VirtualClient:  bus.virtualManager.GetClient(),
-		Scheme:         bus.Scheme,
-		ClusterBinding: bus.ClusterBinding,
-		Log:            bus.Log.WithName("physical-node-controller"),
+		PhysicalClient:     bus.physicalManager.GetClient(),
+		VirtualClient:      bus.virtualManager.GetClient(),
+		Scheme:             bus.Scheme,
+		ClusterBindingName: bus.ClusterBinding.Name,
+		Log:                bus.Log.WithName("physical-node-controller"),
 	}
 
 	// Save reference to the reconciler for triggering reconciliation
@@ -180,6 +180,20 @@ func (bus *BottomUpSyncer) setupControllers() error {
 
 	if err := nodeReconciler.SetupWithManager(bus.physicalManager); err != nil {
 		return fmt.Errorf("failed to setup physical node controller: %w", err)
+	}
+
+	// Setup Physical Pod Controller for status synchronization
+	// This implements requirement 3.4, 3.5 - Pod status monitoring and sync
+	podReconciler := &PhysicalPodReconciler{
+		PhysicalClient: bus.physicalManager.GetClient(),
+		VirtualClient:  bus.virtualManager.GetClient(),
+		Scheme:         bus.Scheme,
+		ClusterBinding: bus.ClusterBinding,
+		Log:            bus.Log.WithName("physical-pod-controller"),
+	}
+
+	if err := podReconciler.SetupWithManager(bus.physicalManager); err != nil {
+		return fmt.Errorf("failed to setup physical pod controller: %w", err)
 	}
 
 	// Setup ResourceLeasingPolicy Controller
@@ -195,6 +209,9 @@ func (bus *BottomUpSyncer) setupControllers() error {
 		return fmt.Errorf("failed to setup resource leasing policy controller: %w", err)
 	}
 
-	bus.Log.Info("Controllers setup completed")
+	bus.Log.Info("Controllers setup completed",
+		"nodeController", "enabled",
+		"podController", "enabled",
+		"policyController", "enabled")
 	return nil
 }

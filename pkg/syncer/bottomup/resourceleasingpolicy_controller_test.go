@@ -128,7 +128,15 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 			if tt.policy != nil {
 				virtualObjs = append(virtualObjs, tt.policy)
 			}
-			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualObjs...).Build()
+			// Ensure ClusterBinding exists for controller lookups
+			if tt.clusterBinding != nil {
+				virtualObjs = append(virtualObjs, tt.clusterBinding)
+			}
+			builder := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualObjs...)
+			if tt.policy != nil {
+				builder = builder.WithStatusSubresource(tt.policy)
+			}
+			virtualClient := builder.Build()
 
 			// Create reconciler
 			reconciler := &ResourceLeasingPolicyReconciler{
@@ -187,8 +195,6 @@ func TestResourceLeasingPolicyReconciler_TriggerNodeReEvaluation(t *testing.T) {
 		Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
 	}
 
-	ctx := context.Background()
-
 	tests := []struct {
 		name   string
 		policy *cloudv1beta1.ResourceLeasingPolicy
@@ -212,7 +218,7 @@ func TestResourceLeasingPolicyReconciler_TriggerNodeReEvaluation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := reconciler.triggerNodeReEvaluation(ctx, tt.policy)
+			result, err := reconciler.triggerNodeReEvaluation()
 
 			assert.NoError(t, err)
 			assert.True(t, result.RequeueAfter > 0, "Should requeue after some time")
