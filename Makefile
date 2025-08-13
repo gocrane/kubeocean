@@ -3,7 +3,7 @@ IMG_MANAGER ?= tapestry-manager:latest
 IMG_SYNCER ?= tapestry-syncer:latest
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.33.0
+ENVTEST_K8S_VERSION = 1.28.3
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -61,6 +61,17 @@ lint: golangci-lint ## Run golangci-lint linter.
 .PHONY: test
 test: manifests generate fmt vet envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./... -coverprofile cover.out
+
+##@ E2E
+
+.PHONY: e2e-build
+e2e-build: manifests generate envtest ## Build e2e test binary without running.
+	mkdir -p .testcache
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -c ./test/e2e -o ./.testcache/e2e.test
+
+.PHONY: e2e
+e2e: manifests generate envtest ## Run e2e tests.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -v ./test/e2e
 
 ##@ Build
 
