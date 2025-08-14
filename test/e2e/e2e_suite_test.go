@@ -8,7 +8,9 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -20,16 +22,19 @@ import (
 )
 
 var (
-	testEnvVirtual    *envtest.Environment
-	testEnvPhysical   *envtest.Environment
-	cfgVirtual        *rest.Config
-	cfgPhysical       *rest.Config
-	scheme            = runtime.NewScheme()
-	k8sVirtual        client.Client
-	k8sPhysical       client.Client
-	mgrVirtual        ctrl.Manager
-	mgrPhysical       ctrl.Manager
-	mgrVirtualStarted bool
+	testEnvVirtual         *envtest.Environment
+	testEnvPhysical        *envtest.Environment
+	cfgVirtual             *rest.Config
+	cfgPhysical            *rest.Config
+	scheme                 = runtime.NewScheme()
+	k8sVirtual             client.Client
+	k8sPhysical            client.Client
+	mgrVirtual             ctrl.Manager
+	mgrPhysical            ctrl.Manager
+	mgrVirtualStarted      bool
+	cbControllerRegistered bool
+	suiteCtx               context.Context
+	suiteCancel            context.CancelFunc
 )
 
 func TestE2E(t *testing.T) {
@@ -44,6 +49,8 @@ var _ = ginkgo.BeforeSuite(func(ctx context.Context) {
 	// 注册必要的 Scheme
 	gomega.Expect(cloudv1beta1.AddToScheme(scheme)).To(gomega.Succeed())
 	gomega.Expect(corev1.AddToScheme(scheme)).To(gomega.Succeed())
+	gomega.Expect(appsv1.AddToScheme(scheme)).To(gomega.Succeed())
+	gomega.Expect(rbacv1.AddToScheme(scheme)).To(gomega.Succeed())
 
 	// 启动虚拟集群 envtest，加载 CRDs
 	testEnvVirtual = &envtest.Environment{
@@ -66,7 +73,8 @@ var _ = ginkgo.BeforeSuite(func(ctx context.Context) {
 	k8sPhysical, err = client.New(cfgPhysical, client.Options{Scheme: scheme})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// 仅创建 Manager，测试中按需启动
+	// 仅创建 Manager，测试中按需启动；使用 suiteCtx 跨用例管理生命周期
+	suiteCtx, suiteCancel = context.WithCancel(context.Background())
 	mgrVirtual, err = ctrl.NewManager(cfgVirtual, ctrl.Options{Scheme: scheme})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	mgrPhysical, err = ctrl.NewManager(cfgPhysical, ctrl.Options{Scheme: scheme})
@@ -74,6 +82,9 @@ var _ = ginkgo.BeforeSuite(func(ctx context.Context) {
 })
 
 var _ = ginkgo.AfterSuite(func() {
+	if suiteCancel != nil {
+		suiteCancel()
+	}
 	if testEnvPhysical != nil {
 		_ = testEnvPhysical.Stop()
 	}

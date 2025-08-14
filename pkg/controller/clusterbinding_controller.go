@@ -375,7 +375,11 @@ func (r *ClusterBindingReconciler) reconcileTapestrySyncer(ctx context.Context, 
 
 // loadSyncerTemplate loads the Syncer template from mounted files
 func (r *ClusterBindingReconciler) loadSyncerTemplate() (map[string]string, error) {
-	templateDir := "/etc/tapestry/syncer-template"
+	// Allow overriding template directory via environment variable for tests
+	templateDir := os.Getenv("TAPESTRY_SYNCER_TEMPLATE_DIR")
+	if templateDir == "" {
+		templateDir = "/etc/tapestry/syncer-template"
+	}
 
 	// Read all files in the template directory
 	templateData := make(map[string]string)
@@ -495,6 +499,12 @@ func (r *ClusterBindingReconciler) setOwnerReference(clusterBinding *cloudv1beta
 		Name:       clusterBinding.Name,
 		UID:        clusterBinding.UID,
 		Controller: utils.BoolPtr(true),
+	}
+
+	// Fallback: if APIVersion/Kind are empty (common in tests when TypeMeta not set), fill them explicitly
+	if ownerRef.APIVersion == "" || ownerRef.Kind == "" {
+		ownerRef.APIVersion = cloudv1beta1.GroupVersion.String()
+		ownerRef.Kind = "ClusterBinding"
 	}
 
 	metaObj.SetOwnerReferences([]metav1.OwnerReference{ownerRef})

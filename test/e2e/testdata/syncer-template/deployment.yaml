@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{.DeploymentName}}"
+  namespace: "{{.SyncerNamespace}}"
+  labels:
+    app: tapestry-syncer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tapestry-syncer
+  template:
+    metadata:
+      labels:
+        app: tapestry-syncer
+    spec:
+      serviceAccountName: "{{.ServiceAccountName}}"
+      containers:
+      - name: syncer
+        image: tapestry-syncer:latest
+        args: ["--cluster-binding-name", "{{.ClusterBindingName}}"]
+
