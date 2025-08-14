@@ -38,6 +38,7 @@ func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
 			name: "valid cluster binding",
 			clusterBinding: &cloudv1beta1.ClusterBinding{
 				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
 					SecretRef: corev1.SecretReference{
 						Name:      "test-secret",
 						Namespace: "test-namespace",
@@ -51,6 +52,7 @@ func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
 			name: "valid cluster binding with service namespaces",
 			clusterBinding: &cloudv1beta1.ClusterBinding{
 				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster-2",
 					SecretRef: corev1.SecretReference{
 						Name:      "test-secret",
 						Namespace: "test-namespace",
@@ -62,9 +64,24 @@ func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "missing cluster ID",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					SecretRef: corev1.SecretReference{
+						Name:      "test-secret",
+						Namespace: "test-namespace",
+					},
+					MountNamespace: "test-mount",
+				},
+			},
+			wantErr: true,
+			errMsg:  "clusterID is required",
+		},
+		{
 			name: "missing secret name",
 			clusterBinding: &cloudv1beta1.ClusterBinding{
 				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
 					SecretRef: corev1.SecretReference{
 						Name:      "",
 						Namespace: "test-namespace",
@@ -79,6 +96,7 @@ func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
 			name: "missing secret namespace",
 			clusterBinding: &cloudv1beta1.ClusterBinding{
 				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
 					SecretRef: corev1.SecretReference{
 						Name:      "test-secret",
 						Namespace: "",
@@ -93,6 +111,7 @@ func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
 			name: "missing mount namespace",
 			clusterBinding: &cloudv1beta1.ClusterBinding{
 				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
 					SecretRef: corev1.SecretReference{
 						Name:      "test-secret",
 						Namespace: "test-namespace",
@@ -107,6 +126,7 @@ func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
 			name: "empty service namespace",
 			clusterBinding: &cloudv1beta1.ClusterBinding{
 				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
 					SecretRef: corev1.SecretReference{
 						Name:      "test-secret",
 						Namespace: "test-namespace",
@@ -259,6 +279,9 @@ func TestClusterBindingReconciler_finalizerMethods(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-binding",
 		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster",
+		},
 	}
 
 	// Test hasFinalizer - should be false initially
@@ -287,6 +310,7 @@ func TestClusterBindingReconciler_Reconcile_Integration(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster",
 			SecretRef: corev1.SecretReference{
 				Name:      "test-secret",
 				Namespace: "default",

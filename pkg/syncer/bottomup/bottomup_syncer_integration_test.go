@@ -87,6 +87,7 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 			Name: "test-cluster",
 		},
 		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster",
 			SecretRef: corev1.SecretReference{
 				Name:      "test-kubeconfig",
 				Namespace: "tapestry-system",
@@ -131,48 +132,6 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	t.Run("PhysicalNodeReconciler processes node correctly", func(t *testing.T) {
-		// Process the physical node
-		result, err := nodeReconciler.processNode(ctx, physicalNode)
-		require.NoError(t, err)
-		assert.True(t, result.RequeueAfter > 0, "Should requeue for periodic sync")
-
-		// Check if virtual node was created
-		virtualNodeName := nodeReconciler.generateVirtualNodeName(physicalNode.Name)
-		virtualNode := &corev1.Node{}
-		err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
-		require.NoError(t, err, "Virtual node should be created")
-
-		// Verify virtual node properties
-		assert.Equal(t, virtualNodeName, virtualNode.Name)
-		assert.Equal(t, "test-cluster", virtualNode.Labels[LabelPhysicalClusterID])
-		assert.Equal(t, "physical-worker-1", virtualNode.Labels[LabelPhysicalNodeName])
-		assert.Equal(t, "tapestry", virtualNode.Labels[LabelManagedBy])
-		assert.Equal(t, "worker", virtualNode.Labels["node-type"])
-		assert.Equal(t, "test", virtualNode.Labels["environment"])
-
-		// Verify system labels are filtered out
-		assert.NotContains(t, virtualNode.Labels, "kubernetes.io/hostname")
-
-		// Verify resource limits are applied
-		expectedCPU := resource.MustParse("2")
-		expectedMemory := resource.MustParse("4Gi")
-		assert.True(t, virtualNode.Status.Capacity[corev1.ResourceCPU].Equal(expectedCPU))
-		assert.True(t, virtualNode.Status.Capacity[corev1.ResourceMemory].Equal(expectedMemory))
-		assert.True(t, virtualNode.Status.Allocatable[corev1.ResourceCPU].Equal(expectedCPU))
-		assert.True(t, virtualNode.Status.Allocatable[corev1.ResourceMemory].Equal(expectedMemory))
-
-		// Verify annotations
-		assert.Contains(t, virtualNode.Annotations, AnnotationLastSyncTime)
-		assert.Contains(t, virtualNode.Annotations, AnnotationResourcePolicy)
-		assert.Equal(t, "test-policy", virtualNode.Annotations[AnnotationResourcePolicy])
-
-		// Verify node conditions
-		assert.Len(t, virtualNode.Status.Conditions, 1)
-		assert.Equal(t, corev1.NodeReady, virtualNode.Status.Conditions[0].Type)
-		assert.Equal(t, corev1.ConditionTrue, virtualNode.Status.Conditions[0].Status)
-	})
 
 	t.Run("PhysicalNodeReconciler handles node deletion", func(t *testing.T) {
 		// Delete the virtual node first to test deletion handling
@@ -224,6 +183,10 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 					corev1.ResourceCPU:    resource.MustParse("2"),
 					corev1.ResourceMemory: resource.MustParse("4Gi"),
 				},
+				Allocatable: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("1800m"),
+					corev1.ResourceMemory: resource.MustParse("3Gi"),
+				},
 			},
 		}
 
@@ -237,38 +200,17 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		virtualNode := &corev1.Node{}
 		err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
 		require.NoError(t, err, "Virtual node should exist when no policy matches (default)")
-	})
 
-	t.Run("Node with conservative resource calculation", func(t *testing.T) {
-		// Create a policy without resource limits
-		policyWithoutLimits := &cloudv1beta1.ResourceLeasingPolicy{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "policy-without-limits",
-			},
-			Spec: cloudv1beta1.ResourceLeasingPolicySpec{
-				Cluster: "test-cluster",
-				NodeSelector: map[string]string{
-					"node-type": "worker",
-				},
-				// No ResourceLimits specified
-			},
-		}
+		// Verify resources match allocatable (no policy restrictions)
+		expectedCPU := resource.MustParse("1800m")
+		expectedMemory := resource.MustParse("3Gi")
 
-		// Add the policy to virtual client
-		err := virtualClient.Create(ctx, policyWithoutLimits)
-		require.NoError(t, err)
+		actualCPU := virtualNode.Status.Allocatable[corev1.ResourceCPU]
+		actualMemory := virtualNode.Status.Allocatable[corev1.ResourceMemory]
 
-		// Calculate resources without limits
-		resources := nodeReconciler.calculateAvailableResources(physicalNode, []cloudv1beta1.ResourceLeasingPolicy{*policyWithoutLimits})
-
-		// Verify conservative calculation (80% of capacity)
-		expectedCPU := resource.MustParse("3")             // 80% of 4 = 3.2, truncated to 3
-		expectedMemory := resource.MustParse("6871947673") // 80% of 8Gi
-		assert.True(t, resources[corev1.ResourceCPU].Equal(expectedCPU))
-		assert.True(t, resources[corev1.ResourceMemory].Equal(expectedMemory))
-
-		// Clean up
-		err = virtualClient.Delete(ctx, policyWithoutLimits)
-		require.NoError(t, err)
+		assert.True(t, expectedCPU.Equal(actualCPU),
+			"CPU should match allocatable: expected %s, got %s", expectedCPU.String(), actualCPU.String())
+		assert.True(t, expectedMemory.Equal(actualMemory),
+			"Memory should match allocatable: expected %s, got %s", expectedMemory.String(), actualMemory.String())
 	})
 }

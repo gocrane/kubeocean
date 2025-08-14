@@ -4,6 +4,7 @@ metadata:
   name: example-cluster
   namespace: tapestry-system
 spec:
+  clusterID: example-cluster
   secretRef:
     name: example-cluster-kubeconfig
     namespace: tapestry-system

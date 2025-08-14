@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -48,7 +49,8 @@ func main() {
 		"The name of the ClusterBinding resource this syncer is responsible for.")
 
 	opts := zap.Options{
-		Development: true,
+		Development:     true,
+		StacktraceLevel: zapcore.DPanicLevel,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()

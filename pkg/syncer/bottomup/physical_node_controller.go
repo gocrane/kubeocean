@@ -2,6 +2,8 @@ package bottomup
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -25,16 +27,26 @@ import (
 
 const (
 	// Label keys for virtual nodes (additional to those in bottomup_syncer.go)
-	LabelVirtualNodeType = "tapestry.io/node-type"
-
+	LabelVirtualNodeType = "type"
 	// Virtual node type
-	VirtualNodeTypeValue = "virtual"
+	VirtualNodeTypeValue = "virtual-kubelet"
+
+	NodeInstanceTypeLabelBeta = "beta.kubernetes.io/instance-type"
+	NodeInstanceTypeLabel     = "node.kubernetes.io/instance-type"
+	NodeInstanceTypeExternal  = "external"
 )
+
+// ExpectedNodeMetadata represents the expected metadata for a virtual node
+type ExpectedNodeMetadata struct {
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+	Taints      []corev1.Taint    `json:"taints,omitempty"`
+}
 
 // PhysicalNodeReconciler reconciles Node objects from physical cluster
 type PhysicalNodeReconciler struct {
 	ClusterBindingName string
-	// Optional cached binding for helpers/tests; live reads happen in processNode
+	// Cached binding for optimization
 	ClusterBinding *cloudv1beta1.ClusterBinding
 
 	PhysicalClient client.Client
@@ -42,7 +54,6 @@ type PhysicalNodeReconciler struct {
 	Scheme         *runtime.Scheme
 	Log            logr.Logger
 
-	// Work queue for triggering manual reconciliation
 	workQueue workqueue.TypedRateLimitingInterface[reconcile.Request]
 }
 
@@ -76,24 +87,8 @@ func (r *PhysicalNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 // processNode processes a physical node and creates/updates corresponding virtual node
-// This implements requirement 3.1, 3.2, 3.3 - real-time monitoring and status synchronization
 func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *corev1.Node) (ctrl.Result, error) {
 	log := r.Log.WithValues("physicalNode", physicalNode.Name)
-
-	// Implement requirement 3.2 - sync status within 5 seconds by processing immediately
-	startTime := time.Now()
-	defer func() {
-		syncDuration := time.Since(startTime)
-		log.V(1).Info("Node processing completed", "duration", syncDuration)
-
-		// Log warning if sync takes longer than expected
-		if syncDuration > 5*time.Second {
-			log.Info("Node sync took longer than expected",
-				"duration", syncDuration,
-				"expected", "5s",
-				"node", physicalNode.Name)
-		}
-	}()
 
 	// Load latest ClusterBinding and check nodeSelector match first
 	var clusterBinding cloudv1beta1.ClusterBinding
@@ -115,6 +110,7 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 		return ctrl.Result{}, err
 	}
 
+	var policy *cloudv1beta1.ResourceLeasingPolicy
 	// If multiple policies match, sort by creation time and use the earliest
 	if len(policies) > 1 {
 		sort.Slice(policies, func(i, j int) bool {
@@ -128,29 +124,27 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 		log.Info("Multiple ResourceLeasingPolicies matched. Using the earliest one and ignoring others.",
 			"selected", policies[0].Name, "ignored", strings.Join(ignored, ","))
 		// Keep only the earliest policy effective
-		policies = policies[:1]
+		policy = &policies[0]
 	}
 
 	// If no matching policy, use all remaining resources; otherwise validate time windows and apply policy
 	var availableResources corev1.ResourceList
-	if len(policies) == 0 {
+	if policy == nil {
 		log.V(1).Info("No matching ResourceLeasingPolicy; using all remaining resources of physical node")
 		availableResources = r.getBaseResources(physicalNode)
 	} else {
-		// Check if within time windows (requirement 4.9)
-		if !r.isWithinTimeWindows(policies) {
+		// Check if within time windows
+		if !r.isWithinTimeWindows([]cloudv1beta1.ResourceLeasingPolicy{*policy}) {
 			log.V(1).Info("Node outside time windows")
 			return r.handleNodeDeletion(ctx, physicalNode.Name)
 		}
 
-		// Calculate available resources (requirement 3.3, 4.1, 4.2)
-		availableResources = r.calculateAvailableResources(physicalNode, policies)
-	}
-
-	// Check if resources are sufficient for virtual node creation
-	if r.hasInsufficientResources(availableResources) {
-		log.Info("Insufficient resources for virtual node", "availableResources", availableResources)
-		return r.handleNodeDeletion(ctx, physicalNode.Name)
+		// Calculate available resources (considering actual pod usage)
+		availableResources, err = r.calculateAvailableResources(ctx, physicalNode, policy)
+		if err != nil {
+			log.Error(err, "Failed to calculate available resources")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Create or update virtual node
@@ -160,9 +154,7 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 		return ctrl.Result{}, err
 	}
 
-	log.V(1).Info("Successfully processed physical node",
-		"availableResources", availableResources,
-		"policiesCount", len(policies))
+	log.V(1).Info("Successfully processed physical node", "availableResources", availableResources)
 
 	return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
 }
@@ -274,116 +266,167 @@ func (r *PhysicalNodeReconciler) isWithinTimeWindows(policies []cloudv1beta1.Res
 	return !hasTimeWindows
 }
 
-// calculateAvailableResources calculates available resources based on policies
-// This implements requirement 4.1, 4.2 - dynamic resource calculation based on ResourceLeasingPolicy
-func (r *PhysicalNodeReconciler) calculateAvailableResources(node *corev1.Node, policies []cloudv1beta1.ResourceLeasingPolicy) corev1.ResourceList {
-	logger := r.Log.WithValues("node", node.Name, "policiesCount", len(policies))
+// calculateNodeResourceUsage calculates the total resource usage of all pods running on the node
 
-	// Get node's total capacity and allocatable resources
-	baseResources := r.getBaseResources(node)
+func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context, nodeName string) (corev1.ResourceList, error) {
+	// List all pods running on this node
+	podList := &corev1.PodList{}
+	listOptions := []client.ListOption{
+		client.MatchingFields{"spec.nodeName": nodeName},
+	}
 
-	availableResources := corev1.ResourceList{}
+	if err := r.PhysicalClient.List(ctx, podList, listOptions...); err != nil {
+		return nil, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+	}
+
+	totalUsage := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("0"),
+		corev1.ResourceMemory: resource.MustParse("0"),
+	}
+
+	for _, pod := range podList.Items {
+		// Skip pods that are not running or are in terminal states
+		if pod.Status.Phase != corev1.PodRunning && pod.Status.Phase != corev1.PodPending {
+			continue
+		}
+
+		// Calculate pod resource requests (not limits, as requests are what's actually reserved)
+		podUsage := r.calculatePodResourceRequests(&pod)
+
+		// Add pod usage to total
+		for resourceName, quantity := range podUsage {
+			if existing, exists := totalUsage[resourceName]; exists {
+				existing.Add(quantity)
+				totalUsage[resourceName] = existing
+			} else {
+				totalUsage[resourceName] = quantity
+			}
+		}
+	}
+
+	r.Log.V(1).Info("Calculated node resource usage", "node", nodeName, "totalUsage", totalUsage)
+
+	return totalUsage, nil
+}
+
+// calculatePodResourceRequests calculates the total resource requests for a pod
+func (r *PhysicalNodeReconciler) calculatePodResourceRequests(pod *corev1.Pod) corev1.ResourceList {
+	totalRequests := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("0"),
+		corev1.ResourceMemory: resource.MustParse("0"),
+	}
+
+	// Sum up requests from init containers and regular containers
+	allContainers := []corev1.Container{}
+	allContainers = append(allContainers, pod.Spec.InitContainers...)
+	allContainers = append(allContainers, pod.Spec.Containers...)
+
+	for _, container := range allContainers {
+		for resourceName, quantity := range container.Resources.Requests {
+			if existing, exists := totalRequests[resourceName]; exists {
+				existing.Add(quantity)
+				totalRequests[resourceName] = existing
+			} else {
+				totalRequests[resourceName] = quantity
+			}
+		}
+	}
+
+	// Handle ephemeral containers separately (they have a different type)
+	for _, ephemeralContainer := range pod.Spec.EphemeralContainers {
+		for resourceName, quantity := range ephemeralContainer.Resources.Requests {
+			if existing, exists := totalRequests[resourceName]; exists {
+				existing.Add(quantity)
+				totalRequests[resourceName] = existing
+			} else {
+				totalRequests[resourceName] = quantity
+			}
+		}
+	}
+
+	return totalRequests
+}
+
+func GetPolicyName(policy *cloudv1beta1.ResourceLeasingPolicy) string {
+	if policy == nil {
+		return ""
+	}
+	return policy.Name
+}
+
+// calculateAvailableResources calculates available resources based on policies and actual node usage
+// 实际可用资源 = min(物理节点可用资源 - 已占用资源, policy限制)
+func (r *PhysicalNodeReconciler) calculateAvailableResources(ctx context.Context, node *corev1.Node, policy *cloudv1beta1.ResourceLeasingPolicy) (corev1.ResourceList, error) {
+	logger := r.Log.WithValues("node", node.Name, "policyName", GetPolicyName(policy))
+
+	// Get node's allocatable resources (what's available for scheduling)
+	allocatableResources := r.getBaseResources(node)
+
+	// Calculate current resource usage by pods on this node
+	currentUsage, err := r.calculateNodeResourceUsage(ctx, node.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate node resource usage for node %s: %w", node.Name, err)
+	}
+
+	// Calculate actual available resources = allocatable - current usage
+	actualAvailable := corev1.ResourceList{}
+	for resourceName, allocatable := range allocatableResources {
+		used := resource.MustParse("0")
+		if usedQuantity, exists := currentUsage[resourceName]; exists {
+			used = usedQuantity
+		}
+
+		// Calculate remaining = allocatable - used
+		remaining := allocatable.DeepCopy()
+		remaining.Sub(used)
+
+		// Ensure we don't go negative
+		if remaining.Sign() < 0 {
+			remaining = resource.MustParse("0")
+		}
+
+		actualAvailable[resourceName] = remaining
+	}
+
+	logger.V(1).Info("Calculated actual available resources", "actualAvailable", actualAvailable)
+
+	availableResources := actualAvailable
 
 	// Apply resource limits from policies if any exist
-	if len(policies) > 0 {
+	if policy != nil {
 		// Collect all resource limits from all policies
 		resourceLimits := make(map[corev1.ResourceName]resource.Quantity)
 
-		for _, policy := range policies {
-			for _, limit := range policy.Spec.ResourceLimits {
-				resourceName := corev1.ResourceName(limit.Resource)
-				limitQuantity := limit.Quantity
+		for _, limit := range policy.Spec.ResourceLimits {
+			resourceName := corev1.ResourceName(limit.Resource)
+			limitQuantity := limit.Quantity
 
-				// For multiple policies, use the minimum limit (most restrictive)
-				// This implements requirement 2.5 - handling multiple policies
-				if existingLimit, exists := resourceLimits[resourceName]; exists {
-					if limitQuantity.Cmp(existingLimit) < 0 {
-						resourceLimits[resourceName] = limitQuantity
-						logger.V(1).Info("Using more restrictive limit",
-							"resource", resourceName,
-							"newLimit", limitQuantity.String(),
-							"previousLimit", existingLimit.String())
-					}
-				} else {
+			// For multiple policies, use the minimum limit (most restrictive)
+			if existingLimit, exists := resourceLimits[resourceName]; exists {
+				if limitQuantity.Cmp(existingLimit) < 0 {
 					resourceLimits[resourceName] = limitQuantity
 				}
+			} else {
+				resourceLimits[resourceName] = limitQuantity
 			}
 		}
 
 		// Apply the collected limits
 		for resourceName, limitQuantity := range resourceLimits {
-			// Get the current allocatable for this resource
-			if baseQuantity, exists := baseResources[resourceName]; exists {
+			if baseQuantity, exists := availableResources[resourceName]; exists {
 				// Take the minimum of policy limit and base resources
 				if limitQuantity.Cmp(baseQuantity) < 0 {
 					availableResources[resourceName] = limitQuantity
-					logger.V(1).Info("Applied policy limit",
-						"resource", resourceName,
-						"limit", limitQuantity.String(),
-						"baseQuantity", baseQuantity.String())
-				} else {
-					availableResources[resourceName] = baseQuantity
-					logger.V(1).Info("Used base quantity (policy limit higher)",
-						"resource", resourceName,
-						"baseQuantity", baseQuantity.String(),
-						"policyLimit", limitQuantity.String())
 				}
 			} else {
 				// Resource not found in node, still apply the limit
 				availableResources[resourceName] = limitQuantity
-				logger.V(1).Info("Applied policy limit for unknown resource",
-					"resource", resourceName,
-					"limit", limitQuantity.String())
 			}
 		}
-
-		// For resources not specified in any policy, apply conservative default
-		// This implements requirement 4.10 - conservative approach for unspecified resources
-		for resourceName, quantity := range baseResources {
-			if _, hasLimit := resourceLimits[resourceName]; !hasLimit {
-				// Conservative approach: use 80% of available capacity
-				conservativeQuantity := quantity.DeepCopy()
-				conservativeQuantity.Set(quantity.Value() * 8 / 10)
-				availableResources[resourceName] = conservativeQuantity
-				logger.V(1).Info("Applied conservative default",
-					"resource", resourceName,
-					"original", quantity.String(),
-					"conservative", conservativeQuantity.String())
-			}
-		}
-	} else {
-		// If no specific limits from policies, use a conservative default (e.g., 80% of capacity)
-		// This implements requirement 4.10 - conservative strategy when no policies
-		for resourceName, quantity := range baseResources {
-			conservativeQuantity := quantity.DeepCopy()
-			conservativeQuantity.Set(quantity.Value() * 8 / 10)
-			availableResources[resourceName] = conservativeQuantity
-			logger.V(1).Info("Applied default conservative limit (no policies)",
-				"resource", resourceName,
-				"original", quantity.String(),
-				"conservative", conservativeQuantity.String())
-		}
 	}
 
-	// Ensure we always have CPU and memory resources
-	if _, hasCPU := availableResources[corev1.ResourceCPU]; !hasCPU {
-		if baseCPU, exists := baseResources[corev1.ResourceCPU]; exists {
-			conservativeCPU := baseCPU.DeepCopy()
-			conservativeCPU.Set(baseCPU.Value() * 8 / 10)
-			availableResources[corev1.ResourceCPU] = conservativeCPU
-		}
-	}
-
-	if _, hasMemory := availableResources[corev1.ResourceMemory]; !hasMemory {
-		if baseMemory, exists := baseResources[corev1.ResourceMemory]; exists {
-			conservativeMemory := baseMemory.DeepCopy()
-			conservativeMemory.Set(baseMemory.Value() * 8 / 10)
-			availableResources[corev1.ResourceMemory] = conservativeMemory
-		}
-	}
-
-	logger.Info("Calculated available resources", "availableResources", availableResources)
-	return availableResources
+	logger.V(1).Info("Calculated available resources", "availableResources", availableResources)
+	return availableResources, nil
 }
 
 // getBaseResources returns the base resources from the physical node, preferring Allocatable over Capacity
@@ -401,199 +444,284 @@ func (r *PhysicalNodeReconciler) getBaseResources(node *corev1.Node) corev1.Reso
 }
 
 // createOrUpdateVirtualNode creates or updates a virtual node based on physical node
-// This implements requirement 4.1, 4.6, 4.8 - dynamic virtual node creation and resource management
 func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, physicalNode *corev1.Node, resources corev1.ResourceList, policies []cloudv1beta1.ResourceLeasingPolicy) error {
 	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
 	logger := r.Log.WithValues("virtualNode", virtualNodeName, "physicalNode", physicalNode.Name)
 
-	// Check if virtual node already exists
-	existingNode := &corev1.Node{}
-	err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, existingNode)
-
-	// Determine if node should be schedulable based on resources
-	// This implements requirement 4.8 - marking nodes as unschedulable when resources insufficient
-	schedulable := !r.hasInsufficientResources(resources)
-
-	// Build taints - add unschedulable taint if resources are insufficient
-	taints := r.filterTaints(physicalNode.Spec.Taints)
-	if !schedulable {
-		unschedulableTaint := corev1.Taint{
-			Key:    "tapestry.io/insufficient-resources",
-			Value:  "true",
-			Effect: corev1.TaintEffectNoSchedule,
-		}
-		taints = append(taints, unschedulableTaint)
-		logger.Info("Adding unschedulable taint due to insufficient resources", "resources", resources)
-	}
-
 	virtualNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        virtualNodeName,
-			Labels:      r.buildVirtualNodeLabels(physicalNode),
+			Labels:      r.buildVirtualNodeLabels(virtualNodeName, physicalNode),
 			Annotations: r.buildVirtualNodeAnnotations(physicalNode, policies),
 		},
 		Spec: corev1.NodeSpec{
-			// This implements requirement 4.4 - syncing taints from physical node
-			Taints:        taints,
-			Unschedulable: !schedulable, // Mark as unschedulable if resources insufficient
+			Taints: physicalNode.Spec.Taints,
 		},
 		Status: corev1.NodeStatus{
 			Capacity:    resources,
 			Allocatable: resources,
-			Conditions:  r.buildNodeConditions(physicalNode, schedulable),
+			Conditions:  physicalNode.Status.Conditions,
 			NodeInfo:    physicalNode.Status.NodeInfo,
-			Phase:       corev1.NodeRunning,
+			Phase:       physicalNode.Status.Phase,
 		},
 	}
+
+	// Save expected metadata for user customization preservation
+	expectedMetadata := &ExpectedNodeMetadata{
+		Labels:      r.copyMap(virtualNode.Labels),
+		Annotations: r.copyMap(virtualNode.Annotations),
+		Taints:      r.copyTaints(virtualNode.Spec.Taints),
+	}
+	err := r.saveExpectedMetadataToAnnotation(virtualNode, expectedMetadata)
+	if err != nil {
+		return fmt.Errorf("failed to save expected metadata: %w", err)
+	}
+
+	// Check if virtual node already exists
+	existingNode := &corev1.Node{}
+	err = r.VirtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, existingNode)
 
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Node doesn't exist, create it
 			logger.Info("Creating virtual node",
 				"resources", resources,
-				"schedulable", schedulable,
 				"policiesCount", len(policies))
 			return r.VirtualClient.Create(ctx, virtualNode)
 		}
 		return fmt.Errorf("failed to get virtual node: %w", err)
 	} else {
 		// Node exists, update it
-		// This implements requirement 4.6 - dynamically updating virtual node resources
+		err = r.preserveUserCustomizations(existingNode, virtualNode)
+		if err != nil {
+			return fmt.Errorf("failed to preserve user customizations: %w", err)
+		}
 		virtualNode.ResourceVersion = existingNode.ResourceVersion
-
-		// Preserve any custom taints, labels, or annotations added by users (requirement 4.5)
-		r.preserveUserCustomizations(existingNode, virtualNode)
 
 		logger.V(1).Info("Updating virtual node",
 			"resources", resources,
-			"schedulable", schedulable,
 			"resourceVersion", virtualNode.ResourceVersion)
 		return r.VirtualClient.Update(ctx, virtualNode)
 	}
 }
 
 // preserveUserCustomizations preserves user-added customizations on virtual nodes
-// This implements requirement 4.5 - allowing user customizations without propagating to physical nodes
-func (r *PhysicalNodeReconciler) preserveUserCustomizations(existing, new *corev1.Node) {
-	// Preserve user-added labels (those not managed by Tapestry)
+// It uses intelligent diff-based updates to only modify what has changed
+func (r *PhysicalNodeReconciler) preserveUserCustomizations(existing, new *corev1.Node) error {
+	logger := r.Log.WithValues("virtualNode", new.Name)
+
+	// Get the previously expected metadata from annotation
+	previousExpected, err := r.getExpectedMetadataFromAnnotation(existing)
+	if err != nil {
+		return fmt.Errorf("failed to get previous expected metadata: %w", err)
+	}
+
+	// Create current expected metadata
+	currentExpected := &ExpectedNodeMetadata{
+		Labels:      r.copyMap(new.Labels),
+		Annotations: r.copyMap(new.Annotations),
+		Taints:      r.copyTaints(new.Spec.Taints),
+	}
+
+	// Save the current expected metadata for next time
+	err = r.saveExpectedMetadataToAnnotation(new, currentExpected)
+	if err != nil {
+		return fmt.Errorf("failed to save current expected metadata: %w", err)
+	}
+
+	// Preserve user customizations by merging with intelligent diff
+	r.mergeWithUserCustomizations(existing, new, previousExpected, currentExpected)
+
+	logger.V(1).Info("User customizations preserved and expected metadata updated")
+	return nil
+}
+
+// getExpectedMetadataFromAnnotation retrieves the expected metadata from the annotation
+func (r *PhysicalNodeReconciler) getExpectedMetadataFromAnnotation(node *corev1.Node) (*ExpectedNodeMetadata, error) {
+	if node.Annotations == nil {
+		return &ExpectedNodeMetadata{}, nil
+	}
+
+	encodedMetadata, exists := node.Annotations[AnnotationExpectedMetadata]
+	if !exists {
+		return &ExpectedNodeMetadata{}, nil
+	}
+
+	// Base64 decode the metadata
+	metadataBytes, err := base64.StdEncoding.DecodeString(encodedMetadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to base64 decode expected metadata: %w", err)
+	}
+
+	// JSON unmarshal the decoded data
+	var metadata ExpectedNodeMetadata
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal expected metadata: %w", err)
+	}
+
+	return &metadata, nil
+}
+
+// saveExpectedMetadataToAnnotation saves the expected metadata to the annotation
+func (r *PhysicalNodeReconciler) saveExpectedMetadataToAnnotation(node *corev1.Node, metadata *ExpectedNodeMetadata) error {
+	if node.Annotations == nil {
+		node.Annotations = make(map[string]string)
+	}
+
+	// JSON marshal the metadata
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal expected metadata: %w", err)
+	}
+
+	// Base64 encode the JSON data
+	encodedMetadata := base64.StdEncoding.EncodeToString(metadataBytes)
+	node.Annotations[AnnotationExpectedMetadata] = encodedMetadata
+	return nil
+}
+
+// mergeWithUserCustomizations intelligently merges user customizations with expected changes
+func (r *PhysicalNodeReconciler) mergeWithUserCustomizations(existing, new *corev1.Node, previousExpected, currentExpected *ExpectedNodeMetadata) {
+	// Merge labels
+	r.mergeLabels(existing, new, previousExpected.Labels, currentExpected.Labels)
+
+	// Merge annotations
+	r.mergeAnnotations(existing, new, previousExpected.Annotations, currentExpected.Annotations)
+
+	// Merge taints
+	r.mergeTaints(existing, new, previousExpected.Taints, currentExpected.Taints)
+}
+
+// mergeLabels merges labels while preserving user customizations
+func (r *PhysicalNodeReconciler) mergeLabels(existing, new *corev1.Node, previousExpected, currentExpected map[string]string) {
+	if new.Labels == nil {
+		new.Labels = make(map[string]string)
+	}
+
+	// Start with current expected labels
+	for key, value := range currentExpected {
+		new.Labels[key] = value
+	}
+
+	// Identify user-added labels (those in existing but not in previous expected)
 	for key, value := range existing.Labels {
-		if !r.isTapestryManagedLabel(key) && !r.isPhysicalNodeLabel(key) {
-			if new.Labels == nil {
-				new.Labels = make(map[string]string)
-			}
+		// 如果currentExpected中存在，则不覆盖
+		if _, ok := currentExpected[key]; ok {
+			continue
+		}
+		// 如果不在previousExpected中，则认为是用户添加的
+		if _, ok := previousExpected[key]; !ok {
 			new.Labels[key] = value
 		}
 	}
+}
 
-	// Preserve user-added annotations (those not managed by Tapestry)
+// mergeAnnotations merges annotations while preserving user customizations
+func (r *PhysicalNodeReconciler) mergeAnnotations(existing, new *corev1.Node, previousExpected, currentExpected map[string]string) {
+	if new.Annotations == nil {
+		new.Annotations = make(map[string]string)
+	}
+
+	// Start with current expected annotations
+	for key, value := range currentExpected {
+		new.Annotations[key] = value
+	}
+
+	// Identify user-added annotations
 	for key, value := range existing.Annotations {
-		if !r.isTapestryManagedAnnotation(key) && !r.isPhysicalNodeAnnotation(key) {
-			if new.Annotations == nil {
-				new.Annotations = make(map[string]string)
-			}
-			new.Annotations[key] = value
+		// 如果currentExpected中存在，则不覆盖
+		if _, ok := currentExpected[key]; ok {
+			continue
+		}
+		// 如果不在previousExpected中，则认为是用户添加的
+		if _, ok := previousExpected[key]; !ok {
+			new.Labels[key] = value
 		}
 	}
+}
 
-	// Preserve user-added taints (those not from physical node or Tapestry)
-	var preservedTaints []corev1.Taint
+// mergeTaints merges taints while preserving user customizations
+func (r *PhysicalNodeReconciler) mergeTaints(existing, new *corev1.Node, previousExpected, currentExpected []corev1.Taint) {
+	// Start with current expected taints
+	new.Spec.Taints = r.copyTaints(currentExpected)
+
+	// Create maps for easier lookup
+	previousExpectedMap := r.taintsToMap(previousExpected)
+	currentExpectedMap := r.taintsToMap(currentExpected)
+
+	// Identify user-added taints
 	for _, taint := range existing.Spec.Taints {
-		if !r.isTapestryManagedTaint(taint.Key) && !r.isPhysicalNodeTaint(taint.Key) {
-			preservedTaints = append(preservedTaints, taint)
+		// 如果currentExpected中存在，则不覆盖
+		if _, ok := currentExpectedMap[taint.Key]; ok {
+			continue
+		}
+		// 如果不在previousExpected中，则认为是用户添加的
+		if _, ok := previousExpectedMap[taint.Key]; !ok {
+			new.Spec.Taints = append(new.Spec.Taints, taint)
 		}
 	}
-
-	// Add preserved taints to new taints
-	new.Spec.Taints = append(new.Spec.Taints, preservedTaints...)
 }
 
-// isTapestryManagedLabel checks if a label is managed by Tapestry
-func (r *PhysicalNodeReconciler) isTapestryManagedLabel(key string) bool {
-	tapestryPrefixes := []string{
-		"tapestry.io/",
+// Helper methods for taint operations
+func (r *PhysicalNodeReconciler) taintsToMap(taints []corev1.Taint) map[string]corev1.Taint {
+	result := make(map[string]corev1.Taint)
+	for _, taint := range taints {
+		key := r.taintToKey(taint)
+		result[key] = taint
 	}
-
-	for _, prefix := range tapestryPrefixes {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
+	return result
 }
 
-// isPhysicalNodeLabel checks if a label comes from the physical node
-func (r *PhysicalNodeReconciler) isPhysicalNodeLabel(key string) bool {
-	// These are labels that we copy from physical nodes
-	physicalPrefixes := []string{
-		"kubernetes.io/",
-		"node.kubernetes.io/",
-		"beta.kubernetes.io/",
-		"node-role.kubernetes.io/",
-	}
-
-	for _, prefix := range physicalPrefixes {
-		if strings.HasPrefix(key, prefix) {
-			return false // We want to copy these, so they're not user customizations
-		}
-	}
-	return false
+func (r *PhysicalNodeReconciler) taintToKey(taint corev1.Taint) string {
+	return taint.Key
 }
 
-// isTapestryManagedAnnotation checks if an annotation is managed by Tapestry
-func (r *PhysicalNodeReconciler) isTapestryManagedAnnotation(key string) bool {
-	return strings.HasPrefix(key, "tapestry.io/")
+// Helper methods for copying data structures
+func (r *PhysicalNodeReconciler) copyMap(original map[string]string) map[string]string {
+	if original == nil {
+		return nil
+	}
+	result := make(map[string]string)
+	for k, v := range original {
+		result[k] = v
+	}
+	return result
 }
 
-// isPhysicalNodeAnnotation checks if an annotation comes from the physical node
-func (r *PhysicalNodeReconciler) isPhysicalNodeAnnotation(key string) bool {
-	physicalPrefixes := []string{
-		"node.alpha.kubernetes.io/",
-		"volumes.kubernetes.io/",
-		"csi.volume.kubernetes.io/",
+func (r *PhysicalNodeReconciler) copyTaints(original []corev1.Taint) []corev1.Taint {
+	if original == nil {
+		return nil
 	}
-
-	for _, prefix := range physicalPrefixes {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// isTapestryManagedTaint checks if a taint is managed by Tapestry
-func (r *PhysicalNodeReconciler) isTapestryManagedTaint(key string) bool {
-	return strings.HasPrefix(key, "tapestry.io/")
-}
-
-// isPhysicalNodeTaint checks if a taint comes from the physical node
-func (r *PhysicalNodeReconciler) isPhysicalNodeTaint(key string) bool {
-	physicalTaintPrefixes := []string{
-		"node.kubernetes.io/",
-		"node.cloudprovider.kubernetes.io/",
-	}
-
-	for _, prefix := range physicalTaintPrefixes {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
+	result := make([]corev1.Taint, len(original))
+	copy(result, original)
+	return result
 }
 
 // generateVirtualNodeName generates a virtual node name based on physical node
 func (r *PhysicalNodeReconciler) generateVirtualNodeName(physicalNodeName string) string {
 	// Format: vnode-{cluster-id}-{node-name}
 	clusterID := r.getClusterID()
-	// Sanitize node name for Kubernetes naming requirements
-	sanitizedNodeName := strings.ToLower(strings.ReplaceAll(physicalNodeName, "_", "-"))
-	return fmt.Sprintf("%s-%s-%s", VirtualNodePrefix, clusterID, sanitizedNodeName)
+	return fmt.Sprintf("%s-%s-%s", VirtualNodePrefix, clusterID, physicalNodeName)
 }
 
 // getClusterID returns a cluster identifier for the physical cluster
 func (r *PhysicalNodeReconciler) getClusterID() string {
-	// Use ClusterBinding name as cluster ID
+	// Use ClusterBinding.Spec.ClusterID as cluster ID
+	// This field is immutable and specifically designed for this purpose
+	if r.ClusterBinding != nil && r.ClusterBinding.Spec.ClusterID != "" {
+		return r.ClusterBinding.Spec.ClusterID
+	}
+
+	// Fallback to ClusterBinding name for backward compatibility
+	// This should not happen in normal cases as clusterID is required
 	name := r.getClusterBindingName()
-	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+	if name != "" {
+		r.Log.Info("ClusterBinding.Spec.ClusterID is empty, falling back to name",
+			"clusterBinding", name)
+		return name
+	}
+
+	return "unknown-cluster"
 }
 
 func (r *PhysicalNodeReconciler) getClusterBindingName() string {
@@ -607,63 +735,35 @@ func (r *PhysicalNodeReconciler) getClusterBindingName() string {
 }
 
 // buildVirtualNodeLabels builds labels for virtual node
-// This implements requirement 4.3, 4.4 - virtual node labeling and physical cluster mapping
-func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(physicalNode *corev1.Node) map[string]string {
-	labels := make(map[string]string)
+func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physicalNode *corev1.Node) map[string]string {
+	labels := physicalNode.Labels
 
-	// Copy relevant labels from physical node
-	// This implements requirement 4.4 - syncing physical node labels to virtual node
-	for key, value := range physicalNode.Labels {
-		// Skip certain system labels that shouldn't be copied
-		if !r.shouldSkipLabel(key) {
-			labels[key] = value
-		}
+	if labels == nil {
+		labels = make(map[string]string)
 	}
 
 	// Add Tapestry-specific labels
-	// This implements requirement 4.3 - recording physical cluster ID and node name in labels
+	labels[LabelClusterBinding] = r.ClusterBindingName
 	labels[LabelPhysicalClusterID] = r.getClusterID()
 	labels[LabelPhysicalNodeName] = physicalNode.Name
 	labels[LabelManagedBy] = "tapestry"
 	labels[LabelVirtualNodeType] = VirtualNodeTypeValue
-
-	// Add additional metadata labels for better identification
-	labels["tapestry.io/syncer-version"] = "v1beta1"
+	labels[NodeInstanceTypeLabel] = NodeInstanceTypeExternal
+	labels[NodeInstanceTypeLabelBeta] = NodeInstanceTypeExternal
+	labels["kubernetes.io/hostname"] = nodeName
 	labels["tapestry.io/cluster-binding"] = r.ClusterBindingName
 
-	// Add node role information if available
-	if role, exists := physicalNode.Labels["node-role.kubernetes.io/worker"]; exists {
-		labels["tapestry.io/physical-node-role"] = "worker"
-		_ = role // Acknowledge the value
-	} else if _, exists := physicalNode.Labels["node-role.kubernetes.io/master"]; exists {
-		labels["tapestry.io/physical-node-role"] = "master"
-	} else if _, exists := physicalNode.Labels["node-role.kubernetes.io/control-plane"]; exists {
-		labels["tapestry.io/physical-node-role"] = "control-plane"
-	}
-
-	r.Log.V(1).Info("Built virtual node labels",
-		"physicalNode", physicalNode.Name,
-		"labelCount", len(labels),
-		"tapestryLabels", map[string]string{
-			LabelPhysicalClusterID: labels[LabelPhysicalClusterID],
-			LabelPhysicalNodeName:  labels[LabelPhysicalNodeName],
-			LabelManagedBy:         labels[LabelManagedBy],
-		})
+	r.Log.V(1).Info("Built virtual node labels", "physicalNode", physicalNode.Name, "labelCount", len(labels))
 
 	return labels
 }
 
 // buildVirtualNodeAnnotations builds annotations for virtual node
-// This implements requirement 4.4 - virtual node annotation management
 func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev1.Node, policies []cloudv1beta1.ResourceLeasingPolicy) map[string]string {
-	annotations := make(map[string]string)
+	annotations := physicalNode.Annotations
 
-	// Copy relevant annotations from physical node
-	// This implements requirement 4.4 - syncing physical node annotations to virtual node
-	for key, value := range physicalNode.Annotations {
-		if !r.shouldSkipAnnotation(key) {
-			annotations[key] = value
-		}
+	if annotations == nil {
+		annotations = make(map[string]string)
 	}
 
 	// Add Tapestry-specific annotations
@@ -671,19 +771,8 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 
 	// Add physical node metadata
 	annotations["tapestry.io/physical-cluster-name"] = r.ClusterBindingName
+	annotations[LabelPhysicalClusterID] = r.getClusterID()
 	annotations["tapestry.io/physical-node-uid"] = string(physicalNode.UID)
-	annotations["tapestry.io/sync-source"] = "bottom-up-syncer"
-
-	// Add resource information
-	if physicalNode.Status.Capacity != nil {
-		annotations["tapestry.io/physical-node-capacity-cpu"] = physicalNode.Status.Capacity.Cpu().String()
-		annotations["tapestry.io/physical-node-capacity-memory"] = physicalNode.Status.Capacity.Memory().String()
-	}
-
-	if physicalNode.Status.Allocatable != nil {
-		annotations["tapestry.io/physical-node-allocatable-cpu"] = physicalNode.Status.Allocatable.Cpu().String()
-		annotations["tapestry.io/physical-node-allocatable-memory"] = physicalNode.Status.Allocatable.Memory().String()
-	}
 
 	// Add policy information
 	if len(policies) > 0 {
@@ -705,144 +794,15 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 			policyDetails = append(policyDetails, policyDetail)
 		}
 
-		// Set both annotations for compatibility
-		annotations[AnnotationResourcePolicy] = strings.Join(policyNames, ",")
 		annotations[AnnotationPoliciesApplied] = strings.Join(policyNames, ",")
 		annotations["tapestry.io/policy-details"] = strings.Join(policyDetails, ";")
-
-		// Add time window information if available
-		var timeWindows []string
-		for _, policy := range policies {
-			for _, window := range policy.Spec.TimeWindows {
-				timeWindow := window.Start + "-" + window.End
-				if len(window.Days) > 0 {
-					timeWindow += "(" + strings.Join(window.Days, ",") + ")"
-				}
-				timeWindows = append(timeWindows, timeWindow)
-			}
-		}
-		if len(timeWindows) > 0 {
-			annotations["tapestry.io/time-windows"] = strings.Join(timeWindows, ";")
-		}
 	} else {
-		annotations["tapestry.io/policy-status"] = "no-applicable-policies"
+		annotations[AnnotationPoliciesApplied] = ""
 	}
 
-	r.Log.V(1).Info("Built virtual node annotations",
-		"physicalNode", physicalNode.Name,
-		"annotationCount", len(annotations),
-		"policiesApplied", annotations[AnnotationPoliciesApplied])
+	r.Log.V(1).Info("Built virtual node annotations", "physicalNode", physicalNode.Name, "annotationCount", len(annotations))
 
 	return annotations
-}
-
-// shouldSkipLabel determines if a label should not be copied to virtual node
-func (r *PhysicalNodeReconciler) shouldSkipLabel(key string) bool {
-	skipPrefixes := []string{
-		"node.kubernetes.io/",
-		"kubernetes.io/hostname",
-		"kubernetes.io/arch",
-		"kubernetes.io/os",
-		"beta.kubernetes.io/",
-	}
-
-	for _, prefix := range skipPrefixes {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// shouldSkipAnnotation determines if an annotation should not be copied to virtual node
-func (r *PhysicalNodeReconciler) shouldSkipAnnotation(key string) bool {
-	skipPrefixes := []string{
-		"node.alpha.kubernetes.io/",
-		"volumes.kubernetes.io/",
-		"csi.volume.kubernetes.io/",
-	}
-
-	for _, prefix := range skipPrefixes {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// filterTaints filters taints that should be copied to virtual node
-func (r *PhysicalNodeReconciler) filterTaints(taints []corev1.Taint) []corev1.Taint {
-	var filteredTaints []corev1.Taint
-
-	for _, taint := range taints {
-		// Skip certain system taints
-		if !r.shouldSkipTaint(taint.Key) {
-			filteredTaints = append(filteredTaints, taint)
-		}
-	}
-
-	return filteredTaints
-}
-
-// shouldSkipTaint determines if a taint should not be copied to virtual node
-func (r *PhysicalNodeReconciler) shouldSkipTaint(key string) bool {
-	skipTaints := []string{
-		"node.kubernetes.io/not-ready",
-		"node.kubernetes.io/unreachable",
-		"node.kubernetes.io/unschedulable",
-		"node.kubernetes.io/memory-pressure",
-		"node.kubernetes.io/disk-pressure",
-		"node.kubernetes.io/pid-pressure",
-		"node.kubernetes.io/network-unavailable",
-	}
-
-	for _, skipTaint := range skipTaints {
-		if key == skipTaint {
-			return true
-		}
-	}
-	return false
-}
-
-// buildNodeConditions builds node conditions for virtual node based on physical node
-func (r *PhysicalNodeReconciler) buildNodeConditions(physicalNode *corev1.Node, schedulable bool) []corev1.NodeCondition {
-	now := metav1.Now()
-
-	// Start with basic ready condition based on schedulability
-	readyStatus := corev1.ConditionTrue
-	readyReason := "TapestryNodeReady"
-	readyMessage := "Virtual node is ready"
-
-	if !schedulable {
-		readyStatus = corev1.ConditionFalse
-		readyReason = "TapestryInsufficientResources"
-		readyMessage = "Virtual node has insufficient resources"
-	}
-
-	conditions := []corev1.NodeCondition{
-		{
-			Type:               corev1.NodeReady,
-			Status:             readyStatus,
-			LastHeartbeatTime:  now,
-			LastTransitionTime: now,
-			Reason:             readyReason,
-			Message:            readyMessage,
-		},
-	}
-
-	// Copy relevant conditions from physical node
-	for _, condition := range physicalNode.Status.Conditions {
-		switch condition.Type {
-		case corev1.NodeMemoryPressure, corev1.NodeDiskPressure, corev1.NodePIDPressure:
-			// Copy resource pressure conditions
-			conditions = append(conditions, condition)
-		case corev1.NodeNetworkUnavailable:
-			// Copy network conditions
-			conditions = append(conditions, condition)
-		}
-	}
-
-	return conditions
 }
 
 // nodeMatchesCombinedSelector checks if node matches the intersection of policy and ClusterBinding nodeSelectors
@@ -880,56 +840,19 @@ func (r *PhysicalNodeReconciler) TriggerReconciliation(nodeName string) error {
 	return nil
 }
 
-// isNodeReady checks if a physical node is ready for resource extraction
-// This implements requirement 3.1 - monitoring physical cluster node status
-func (r *PhysicalNodeReconciler) isNodeReady(node *corev1.Node) bool {
-	for _, condition := range node.Status.Conditions {
-		if condition.Type == corev1.NodeReady {
-			return condition.Status == corev1.ConditionTrue
-		}
-	}
-	return false
-}
-
-// getNodeConditionSummary returns a summary of node conditions for logging
-func (r *PhysicalNodeReconciler) getNodeConditionSummary(node *corev1.Node) map[string]string {
-	summary := make(map[string]string)
-	for _, condition := range node.Status.Conditions {
-		summary[string(condition.Type)] = string(condition.Status)
-	}
-	return summary
-}
-
-// hasInsufficientResources checks if available resources are too low for virtual node creation
-// This implements requirement 4.8 - marking nodes as unschedulable when resources insufficient
-func (r *PhysicalNodeReconciler) hasInsufficientResources(resources corev1.ResourceList) bool {
-	// Check CPU
-	if cpu, exists := resources[corev1.ResourceCPU]; exists {
-		// Require at least 100m CPU
-		minCPU := resource.MustParse("100m")
-		if cpu.Cmp(minCPU) < 0 {
-			return true
-		}
-	} else {
-		return true // No CPU resource available
-	}
-
-	// Check Memory
-	if memory, exists := resources[corev1.ResourceMemory]; exists {
-		// Require at least 128Mi memory
-		minMemory := resource.MustParse("128Mi")
-		if memory.Cmp(minMemory) < 0 {
-			return true
-		}
-	} else {
-		return true // No memory resource available
-	}
-
-	return false
-}
-
 // SetupWithManager sets up the controller with the Manager
 func (r *PhysicalNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Add index for pods by node name to efficiently query pods running on a specific node
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+		pod := rawObj.(*corev1.Pod)
+		if pod.Spec.NodeName == "" {
+			return nil
+		}
+		return []string{pod.Spec.NodeName}
+	}); err != nil {
+		return fmt.Errorf("failed to setup pod index by node name: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
 		WithOptions(controller.Options{

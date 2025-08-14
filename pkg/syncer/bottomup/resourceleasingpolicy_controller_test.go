@@ -55,6 +55,9 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-cluster",
 				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
 			},
 			expectRequeue: true,
 			expectError:   false,
@@ -76,6 +79,9 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-cluster",
 				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
 			},
 			expectRequeue: false,
 			expectError:   false,
@@ -86,6 +92,9 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 			clusterBinding: &cloudv1beta1.ClusterBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-cluster",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
 				},
 			},
 			expectRequeue: true,
@@ -114,6 +123,9 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 			clusterBinding: &cloudv1beta1.ClusterBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-cluster",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
 				},
 			},
 			expectRequeue: true,
@@ -182,6 +194,9 @@ func TestResourceLeasingPolicyReconciler_TriggerNodeReEvaluation(t *testing.T) {
 	clusterBinding := &cloudv1beta1.ClusterBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster",
 		},
 	}
 

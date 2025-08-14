@@ -46,6 +46,13 @@ spec:
           spec:
             description: ClusterBindingSpec defines the desired state of ClusterBinding
             properties:
+              clusterID:
+                description: |-
+                  ClusterID is a unique identifier for the cluster that will be used as part of virtual node names
+                  This field is required and immutable after creation
+                maxLength: 63
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
               mountNamespace:
                 description: MountNamespace specifies the namespace to mount cluster
                   resources
@@ -77,6 +84,7 @@ spec:
                   type: string
                 type: array
             required:
+            - clusterID
             - secretRef
             type: object
           status:

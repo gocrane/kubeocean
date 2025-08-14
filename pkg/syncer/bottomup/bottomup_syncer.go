@@ -16,17 +16,19 @@ import (
 
 const (
 	// Virtual node name prefix
-	VirtualNodePrefix = "vnode-worker"
+	VirtualNodePrefix = "vnode"
 
 	// Labels for virtual nodes
+	LabelClusterBinding    = "tapestry.io/cluster-binding"
 	LabelPhysicalClusterID = "tapestry.io/physical-cluster-id"
 	LabelPhysicalNodeName  = "tapestry.io/physical-node-name"
 	LabelManagedBy         = "tapestry.io/managed-by"
 
 	// Annotations for virtual nodes
 	AnnotationLastSyncTime    = "tapestry.io/last-sync-time"
-	AnnotationResourcePolicy  = "tapestry.io/resource-policy"
 	AnnotationPoliciesApplied = "tapestry.io/policies-applied"
+	// Annotation to store expected virtual node metadata for user customization preservation
+	AnnotationExpectedMetadata = "tapestry.io/expected-metadata"
 
 	// Sync intervals
 	DefaultNodeSyncInterval   = 300 * time.Second

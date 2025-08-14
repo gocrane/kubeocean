@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"text/template"
 	"time"
@@ -25,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
@@ -85,7 +87,7 @@ type ClusterBindingReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("clusterbinding", req.NamespacedName)
+	log := r.Log.WithValues("clusterbinding", req.Name)
 
 	// Fetch the ClusterBinding instance
 	var originalClusterBinding cloudv1beta1.ClusterBinding
@@ -101,7 +103,7 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Create a deep copy to avoid modifying the cached object
 	clusterBinding := originalClusterBinding.DeepCopy()
 
-	log.Info("Reconciling ClusterBinding", "name", clusterBinding.Name, "namespace", clusterBinding.Namespace)
+	log.Info("Reconciling ClusterBinding", "name", clusterBinding.Name, "phase", clusterBinding.Status.Phase)
 
 	// Update metrics
 	r.updateMetrics(clusterBinding)
@@ -215,6 +217,11 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 // validateClusterBinding validates the ClusterBinding configuration
 func (r *ClusterBindingReconciler) validateClusterBinding(clusterBinding *cloudv1beta1.ClusterBinding) error {
+	// Validate ClusterID
+	if clusterBinding.Spec.ClusterID == "" {
+		return fmt.Errorf("clusterID is required")
+	}
+
 	// Validate SecretRef
 	if clusterBinding.Spec.SecretRef.Name == "" {
 		return fmt.Errorf("secretRef.name is required")
@@ -806,6 +813,19 @@ func (r *ClusterBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 5,
 		}).
-		WithEventFilter(predicate.GenerationChangedPredicate{}).
+		WithEventFilter(predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				newobj, ok1 := e.ObjectNew.(*cloudv1beta1.ClusterBinding)
+				oldobj, ok2 := e.ObjectOld.(*cloudv1beta1.ClusterBinding)
+				if !ok1 || !ok2 {
+					return false
+				}
+				if reflect.DeepEqual(newobj.Spec, oldobj.Spec) && reflect.DeepEqual(newobj.Finalizers, oldobj.Finalizers) &&
+					newobj.Status.Phase == oldobj.Status.Phase && reflect.DeepEqual(newobj.DeletionTimestamp, oldobj.DeletionTimestamp) {
+					return false
+				}
+				return true
+			},
+		}).
 		Complete(r)
 }

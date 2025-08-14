@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -60,7 +61,8 @@ func main() {
 		"The duration the clients should wait between attempting acquisition and renewal of a leadership.")
 
 	opts := zap.Options{
-		Development: false,
+		Development:     false,
+		StacktraceLevel: zapcore.DPanicLevel,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()

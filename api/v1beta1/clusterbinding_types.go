@@ -7,6 +7,13 @@ import (
 
 // ClusterBindingSpec defines the desired state of ClusterBinding
 type ClusterBindingSpec struct {
+	// ClusterID is a unique identifier for the cluster that will be used as part of virtual node names
+	// This field is required and immutable after creation
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+	// +kubebuilder:validation:MaxLength=63
+	ClusterID string `json:"clusterID"`
+
 	// SecretRef references the secret containing kubeconfig for the target cluster
 	SecretRef corev1.SecretReference `json:"secretRef"`
 

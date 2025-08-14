@@ -70,46 +70,30 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 		cb := &cloudv1beta1.ClusterBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "cb1"},
 			Spec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID:      "cb1",
 				SecretRef:      corev1.SecretReference{Name: "cb1-kc", Namespace: ns},
 				MountNamespace: "default",
 			},
 		}
 		gomega.Expect(k8sVirtual.Create(ctx, cb)).To(gomega.Succeed())
 
-		// 1) 最初应加上 finalizer（由于使用 GenerationChangedPredicate，不会自动二次 reconcile）
-		type cbStatus struct {
+		// 1) 最初应加上 finalizer（自动二次 reconcile）
+
+		// 2) 直接进入后续流程；由于缺少 /etc/tapestry/syncer-template 模板，Syncer 创建会失败，Phase 变为 Failed
+		type readyCheck struct {
 			HasFinalizer bool
 			Phase        string
-		}
-		gomega.Eventually(func() cbStatus {
-			var got cloudv1beta1.ClusterBinding
-			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
-			return cbStatus{HasFinalizer: containsString(got.Finalizers, controllerpkg.ClusterBindingFinalizer), Phase: string(got.Status.Phase)}
-		}, 10*time.Second, 200*time.Millisecond).Should(gomega.Equal(cbStatus{HasFinalizer: true, Phase: ""}))
-
-		// 触发一次 spec 变更（增加 ServiceNamespaces），使 generation 变化，驱动第二次 reconcile 设置 Phase=Pending
-		var curr cloudv1beta1.ClusterBinding
-		gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &curr)).To(gomega.Succeed())
-		curr.Spec.ServiceNamespaces = []string{"default"}
-		gomega.Expect(k8sVirtual.Update(ctx, &curr)).To(gomega.Succeed())
-		gomega.Eventually(func() string {
-			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &curr)
-			return string(curr.Status.Phase)
-		}, 10*time.Second, 200*time.Millisecond).Should(gomega.Equal("Pending"))
-
-		// 2) 再次触发 spec 变更，进入后续流程；由于缺少 /etc/tapestry/syncer-template 模板，Syncer 创建会失败，Phase 变为 Failed
-		gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &curr)).To(gomega.Succeed())
-		curr.Spec.NodeSelector = map[string]string{"env": "test"}
-		gomega.Expect(k8sVirtual.Update(ctx, &curr)).To(gomega.Succeed())
-		type readyCheck struct {
-			Phase  string
-			Reason string
+			Reason       string
 		}
 		gomega.Eventually(func() readyCheck {
 			var got cloudv1beta1.ClusterBinding
 			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
-			return readyCheck{Phase: string(got.Status.Phase), Reason: getReadyReason(&got)}
-		}, 20*time.Second, 300*time.Millisecond).Should(gomega.Equal(readyCheck{Phase: "Failed", Reason: "SyncerFailed"}))
+			return readyCheck{
+				HasFinalizer: containsString(got.Finalizers, controllerpkg.ClusterBindingFinalizer),
+				Phase:        string(got.Status.Phase),
+				Reason:       getReadyReason(&got),
+			}
+		}, 20*time.Second, 300*time.Millisecond).Should(gomega.Equal(readyCheck{HasFinalizer: true, Phase: "Failed", Reason: "SyncerFailed"}))
 	}, ginkgo.SpecTimeout(2*time.Minute))
 
 	ginkgo.It("ClusterBindingReconciler：成功部署 syncer（注入模板目录）", func(ctx context.Context) {
@@ -145,15 +129,12 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 			TypeMeta:   metav1.TypeMeta{APIVersion: "cloud.tencent.com/v1beta1", Kind: "ClusterBinding"},
 			ObjectMeta: metav1.ObjectMeta{Name: "cb-ok"},
 			Spec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID:      "cb-ok",
 				SecretRef:      corev1.SecretReference{Name: "cb-ok-kc", Namespace: ns},
 				MountNamespace: "default",
 			},
 		}
 		gomega.Expect(k8sVirtual.Create(ctx, cb)).To(gomega.Succeed())
-
-		// 驱动到 Ready
-		updateCBSpecWithRetry(ctx, cb.Name, func(o *cloudv1beta1.ClusterBinding) { o.Spec.ServiceNamespaces = []string{"default"} })
-		updateCBSpecWithRetry(ctx, cb.Name, func(o *cloudv1beta1.ClusterBinding) { o.Spec.NodeSelector = map[string]string{"x": "y"} })
 
 		gomega.Eventually(func() string {
 			var got cloudv1beta1.ClusterBinding
@@ -198,6 +179,7 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 		cb := &cloudv1beta1.ClusterBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "cb-missing"},
 			Spec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID:      "cb-missing",
 				SecretRef:      corev1.SecretReference{Name: "bad-kc", Namespace: ns},
 				MountNamespace: "default",
 			},
@@ -210,14 +192,6 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
 			return containsString(got.Finalizers, controllerpkg.ClusterBindingFinalizer)
 		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
-
-		// 两次 spec 更新以推进到校验阶段
-		updateCBSpecWithRetry(ctx, cb.Name, func(obj *cloudv1beta1.ClusterBinding) {
-			obj.Spec.ServiceNamespaces = []string{"default"}
-		})
-		updateCBSpecWithRetry(ctx, cb.Name, func(obj *cloudv1beta1.ClusterBinding) {
-			obj.Spec.NodeSelector = map[string]string{"x": "y"}
-		})
 
 		// 期望失败原因为 ConnectivityFailed
 		gomega.Eventually(func() string {
@@ -255,6 +229,7 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 		cb := &cloudv1beta1.ClusterBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "cb-del"},
 			Spec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID:      "cb-del",
 				SecretRef:      corev1.SecretReference{Name: "cb-del-kc", Namespace: ns},
 				MountNamespace: "default",
 			},
@@ -279,19 +254,6 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 		}, 20*time.Second, 300*time.Millisecond).Should(gomega.BeTrue())
 	}, ginkgo.SpecTimeout(2*time.Minute))
 })
-
-// helpers
-func updateCBSpecWithRetry(ctx context.Context, name string, mutate func(*cloudv1beta1.ClusterBinding)) {
-	// 使用重试避免与控制器的并发状态更新产生冲突
-	gomega.Eventually(func() error {
-		var curr cloudv1beta1.ClusterBinding
-		if err := k8sVirtual.Get(ctx, types.NamespacedName{Name: name}, &curr); err != nil {
-			return err
-		}
-		mutate(&curr)
-		return k8sVirtual.Update(ctx, &curr)
-	}, 5*time.Second, 200*time.Millisecond).Should(gomega.Succeed())
-}
 
 func containsString(list []string, target string) bool {
 	for _, s := range list {

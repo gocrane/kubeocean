@@ -167,6 +167,9 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-cluster",
 				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
 			}
 
 			// Create reconciler
