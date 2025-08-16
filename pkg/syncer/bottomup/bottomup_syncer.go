@@ -66,11 +66,6 @@ func NewBottomUpSyncer(virtualManager manager.Manager, physicalManager manager.M
 func (bus *BottomUpSyncer) Setup(ctx context.Context) error {
 	bus.Log.Info("Setup Bottom-up Syncer with controller-runtime")
 
-	// Setup managers
-	if err := bus.setupManagers(); err != nil {
-		return fmt.Errorf("failed to setup managers: %w", err)
-	}
-
 	// Setup controllers
 	if err := bus.setupControllers(); err != nil {
 		return fmt.Errorf("failed to setup controllers: %w", err)
@@ -149,21 +144,6 @@ func (bus *BottomUpSyncer) nodeMatchesSelector(node *corev1.Node, selector map[s
 	}
 
 	return true
-}
-
-// setupManagers validates that both managers are provided by TapestrySyncer
-func (bus *BottomUpSyncer) setupManagers() error {
-	// Both managers should be provided by TapestrySyncer
-	if bus.virtualManager == nil {
-		return fmt.Errorf("virtualManager must be provided by TapestrySyncer")
-	}
-
-	if bus.physicalManager == nil {
-		return fmt.Errorf("physicalManager must be provided by TapestrySyncer")
-	}
-
-	bus.Log.Info("Managers setup completed", "physicalManager", "provided by TapestrySyncer", "virtualManager", "provided by TapestrySyncer")
-	return nil
 }
 
 // setupControllers sets up the controllers with their respective managers

@@ -2,6 +2,7 @@ package bottomup
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -76,7 +77,7 @@ func (r *ResourceLeasingPolicyReconciler) Reconcile(ctx context.Context, req ctr
 }
 
 // triggerNodeReEvaluation triggers re-evaluation of all nodes
-// TODO: implement this
+// 目前由 node controller 每5分钟定时同步更新，所以这里暂时不需要实现，后续用定时器做成定时触发
 func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation() (ctrl.Result, error) {
 	// For now, simply request a requeue after the default policy sync interval
 	return ctrl.Result{RequeueAfter: DefaultPolicySyncInterval}, nil
@@ -203,6 +204,9 @@ func (r *ResourceLeasingPolicyReconciler) updatePolicyConditions(policy *cloudv1
 
 // SetupWithManager sets up the controller with the Manager
 func (r *ResourceLeasingPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Generate unique controller name using cluster binding name
+	uniqueControllerName := fmt.Sprintf("resourceleasingpolicy-%s", r.ClusterBinding.Name)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(
 			&cloudv1beta1.ResourceLeasingPolicy{},
@@ -222,5 +226,6 @@ func (r *ResourceLeasingPolicyReconciler) SetupWithManager(mgr ctrl.Manager) err
 					},
 				},
 			)).
+		Named(uniqueControllerName).
 		Complete(r)
 }

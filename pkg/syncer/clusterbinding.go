@@ -176,7 +176,11 @@ func (r *ClusterBindingReconciler) unionAndDeduplicateNodes(oldNodes, newNodes [
 
 // SetupWithManager sets up the controller with the Manager
 func (r *ClusterBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Use unique controller name to avoid conflicts when multiple TapestrySyncer instances are running
+	controllerName := fmt.Sprintf("clusterbinding-%s", r.ClusterBindingName)
+
 	return ctrl.NewControllerManagedBy(mgr).
+		Named(controllerName).
 		For(&cloudv1beta1.ClusterBinding{},
 			builder.WithPredicates(
 				predicate.Funcs{

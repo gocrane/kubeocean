@@ -853,8 +853,12 @@ func (r *PhysicalNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to setup pod index by node name: %w", err)
 	}
 
+	// Generate unique controller name using cluster binding name
+	uniqueControllerName := fmt.Sprintf("node-%s", r.ClusterBindingName)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
+		Named(uniqueControllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 50,
 			RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute),

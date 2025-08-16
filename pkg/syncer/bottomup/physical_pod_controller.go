@@ -313,8 +313,12 @@ func (r *PhysicalPodReconciler) updateVirtualPodStatus(ctx context.Context, virt
 
 // SetupWithManager sets up the controller with the Manager
 func (r *PhysicalPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Generate unique controller name using cluster binding name
+	uniqueControllerName := fmt.Sprintf("pod-%s", r.ClusterBinding.Name)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
+		Named(uniqueControllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 50, // Higher concurrency for pod status sync
 		}).

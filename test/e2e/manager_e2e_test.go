@@ -20,7 +20,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
+var _ = ginkgo.Describe("Manager E2E Tests", func() {
 	ginkgo.It("集群注册：kubeconfig 连接性校验", func(ctx context.Context) {
 		// 在 virtual 集群准备 kubeconfig Secret，并用它直连 apiserver 做连通性校验
 		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
@@ -49,14 +49,7 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 			Recorder: record.NewFakeRecorder(100),
 		}
 		// 仅在第一次注册 controller，避免重复注册报错
-		if !cbControllerRegistered {
-			gomega.Expect(reconciler.SetupWithManager(mgrVirtual)).To(gomega.Succeed())
-			cbControllerRegistered = true
-		}
-		if !mgrVirtualStarted {
-			mgrVirtualStarted = true
-			go func() { _ = mgrVirtual.Start(suiteCtx) }()
-		}
+		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-finalizer")).To(gomega.Succeed())
 
 		// 准备 kubeconfig Secret
 		ns := "tapestry-system"
@@ -107,14 +100,7 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
 			Recorder: record.NewFakeRecorder(100),
 		}
-		if !cbControllerRegistered {
-			gomega.Expect(reconciler.SetupWithManager(mgrVirtual)).To(gomega.Succeed())
-			cbControllerRegistered = true
-		}
-		if !mgrVirtualStarted {
-			mgrVirtualStarted = true
-			go func() { _ = mgrVirtual.Start(suiteCtx) }()
-		}
+		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-syncer")).To(gomega.Succeed())
 
 		// 准备 kubeconfig Secret
 		ns := "tapestry-system"
@@ -161,14 +147,7 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
 			Recorder: record.NewFakeRecorder(100),
 		}
-		if !cbControllerRegistered {
-			gomega.Expect(reconciler.SetupWithManager(mgrVirtual)).To(gomega.Succeed())
-			cbControllerRegistered = true
-		}
-		if !mgrVirtualStarted {
-			mgrVirtualStarted = true
-			go func() { _ = mgrVirtual.Start(suiteCtx) }()
-		}
+		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-bad-kc")).To(gomega.Succeed())
 
 		// Secret 缺少 kubeconfig 键
 		ns := "tapestry-system"
@@ -209,14 +188,7 @@ var _ = ginkgo.Describe("Tapestry 基础 E2E 骨架", func() {
 			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
 			Recorder: record.NewFakeRecorder(100),
 		}
-		if !cbControllerRegistered {
-			gomega.Expect(reconciler.SetupWithManager(mgrVirtual)).To(gomega.Succeed())
-			cbControllerRegistered = true
-		}
-		if !mgrVirtualStarted {
-			mgrVirtualStarted = true
-			go func() { _ = mgrVirtual.Start(suiteCtx) }()
-		}
+		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-clean")).To(gomega.Succeed())
 
 		// 有效 kubeconfig Secret
 		ns := "tapestry-system"

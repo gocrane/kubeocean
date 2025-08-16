@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -19,22 +20,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 var (
-	testEnvVirtual         *envtest.Environment
-	testEnvPhysical        *envtest.Environment
-	cfgVirtual             *rest.Config
-	cfgPhysical            *rest.Config
-	scheme                 = runtime.NewScheme()
-	k8sVirtual             client.Client
-	k8sPhysical            client.Client
-	mgrVirtual             ctrl.Manager
-	mgrPhysical            ctrl.Manager
-	mgrVirtualStarted      bool
-	cbControllerRegistered bool
-	suiteCtx               context.Context
-	suiteCancel            context.CancelFunc
+	testEnvVirtual  *envtest.Environment
+	testEnvPhysical *envtest.Environment
+	cfgVirtual      *rest.Config
+	cfgPhysical     *rest.Config
+	scheme          = runtime.NewScheme()
+	k8sVirtual      client.Client
+	k8sPhysical     client.Client
+	mgrVirtual      ctrl.Manager
+	mgrPhysical     ctrl.Manager
+	suiteCtx        context.Context
+	suiteCancel     context.CancelFunc
 )
 
 func TestE2E(t *testing.T) {
@@ -51,7 +51,9 @@ var _ = ginkgo.BeforeSuite(func(ctx context.Context) {
 	gomega.Expect(corev1.AddToScheme(scheme)).To(gomega.Succeed())
 	gomega.Expect(appsv1.AddToScheme(scheme)).To(gomega.Succeed())
 	gomega.Expect(rbacv1.AddToScheme(scheme)).To(gomega.Succeed())
+})
 
+var _ = ginkgo.BeforeEach(func(ctx context.Context) {
 	// 启动虚拟集群 envtest，加载 CRDs
 	testEnvVirtual = &envtest.Environment{
 		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
@@ -73,15 +75,30 @@ var _ = ginkgo.BeforeSuite(func(ctx context.Context) {
 	k8sPhysical, err = client.New(cfgPhysical, client.Options{Scheme: scheme})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// 仅创建 Manager，测试中按需启动；使用 suiteCtx 跨用例管理生命周期
+	// 创建新的 Manager 实例，确保每个测试用例都有独立的 manager
 	suiteCtx, suiteCancel = context.WithCancel(context.Background())
-	mgrVirtual, err = ctrl.NewManager(cfgVirtual, ctrl.Options{Scheme: scheme})
+	mgrVirtual, err = ctrl.NewManager(cfgVirtual, ctrl.Options{
+		Scheme: scheme,
+		Metrics: server.Options{
+			BindAddress: "0",
+		},
+	})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	mgrPhysical, err = ctrl.NewManager(cfgPhysical, ctrl.Options{Scheme: scheme})
+	mgrPhysical, err = ctrl.NewManager(cfgPhysical, ctrl.Options{
+		Scheme: scheme,
+	})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// 启动虚拟集群 manager
+	go func() {
+		defer ginkgo.GinkgoRecover()
+		if err := mgrVirtual.Start(suiteCtx); err != nil {
+			ginkgo.Fail(fmt.Sprintf("Virtual manager failed to start: %v", err))
+		}
+	}()
 })
 
-var _ = ginkgo.AfterSuite(func() {
+var _ = ginkgo.AfterEach(func() {
 	if suiteCancel != nil {
 		suiteCancel()
 	}

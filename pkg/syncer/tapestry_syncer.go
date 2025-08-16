@@ -16,6 +16,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	"github.com/TKEColocation/tapestry/pkg/syncer/bottomup"
@@ -104,14 +105,7 @@ func (ts *TapestrySyncer) Start(ctx context.Context) error {
 	// Start the synchronization control loop
 	ts.startSyncLoop(ctx)
 
-	// Both managers are started by TapestrySyncer, just wait for caches to sync
-	ts.Log.Info("Waiting for caches to sync")
-	if !ts.physicalManager.GetCache().WaitForCacheSync(ctx) {
-		return fmt.Errorf("failed to sync cache for physical cluster")
-	}
-	if !ts.manager.GetCache().WaitForCacheSync(ctx) {
-		return fmt.Errorf("failed to sync cache for virtual cluster")
-	}
+	// Let managers handle their own cache synchronization internally
 
 	ts.Log.Info("Tapestry Syncer started successfully")
 
@@ -277,6 +271,9 @@ func (ts *TapestrySyncer) initializeSyncers() error {
 	ts.physicalManager, err = ctrl.NewManager(ts.physicalConfig, ctrl.Options{
 		Scheme:         ts.Scheme,
 		LeaderElection: false, // Disable leader election for physical manager
+		Metrics: server.Options{
+			BindAddress: "0",
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create physical cluster manager: %w", err)

@@ -808,8 +808,14 @@ func (r *ClusterBindingReconciler) removeFinalizer(clusterBinding *cloudv1beta1.
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return r.SetupWithManagerAndName(mgr, "clusterbinding")
+}
+
+// SetupWithManagerAndName sets up the controller with the Manager using a custom name.
+func (r *ClusterBindingReconciler) SetupWithManagerAndName(mgr ctrl.Manager, controllerName string) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cloudv1beta1.ClusterBinding{}).
+		Named(controllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 5,
 		}).
