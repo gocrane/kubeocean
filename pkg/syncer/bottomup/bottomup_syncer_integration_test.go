@@ -11,7 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -130,15 +131,22 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 
 	syncer := NewBottomUpSyncer(virtualManager, physicalManager, scheme, clusterBinding)
 
+	// Create fake Kubernetes client for lease management
+	kubeClient := fake.NewSimpleClientset()
+
 	// Test PhysicalNodeReconciler directly
 	nodeReconciler := &PhysicalNodeReconciler{
 		PhysicalClient:     physicalClient,
 		VirtualClient:      virtualClient,
+		KubeClient:         kubeClient,
 		Scheme:             scheme,
 		ClusterBinding:     clusterBinding,
 		ClusterBindingName: clusterBinding.Name,
 		Log:                ctrl.Log.WithName("test-physical-node-reconciler"),
 	}
+
+	// Initialize lease controllers
+	nodeReconciler.initLeaseControllers()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -223,4 +231,92 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		assert.True(t, expectedMemory.Equal(actualMemory),
 			"Memory should match allocatable: expected %s, got %s", expectedMemory.String(), actualMemory.String())
 	})
+}
+
+func TestBottomUpSyncer_StartStop(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Create test ClusterBinding
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster",
+		},
+	}
+
+	// Create BottomUpSyncer with nil managers for this test
+	syncer := NewBottomUpSyncer(nil, nil, scheme, clusterBinding)
+
+	// Manually set up a nodeReconciler for testing Stop functionality
+	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	kubeClient := fake.NewSimpleClientset()
+
+	nodeReconciler := &PhysicalNodeReconciler{
+		PhysicalClient:     fakeclient.NewClientBuilder().WithScheme(scheme).Build(),
+		VirtualClient:      virtualClient,
+		KubeClient:         kubeClient,
+		Scheme:             scheme,
+		ClusterBindingName: "test-cluster",
+		Log:                ctrl.Log.WithName("test-reconciler"),
+	}
+
+	// Initialize lease controllers
+	nodeReconciler.initLeaseControllers()
+	syncer.nodeReconciler = nodeReconciler
+
+	// Create virtual nodes and start lease controllers
+	ctx := context.Background()
+	virtualNodes := []string{"vnode-test-1", "vnode-test-2"}
+	for _, nodeName := range virtualNodes {
+		virtualNode := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: nodeName,
+				UID:  types.UID("uid-" + nodeName),
+			},
+			Status: corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{
+					{
+						Type:   corev1.NodeReady,
+						Status: corev1.ConditionTrue,
+					},
+				},
+			},
+		}
+		err := virtualClient.Create(ctx, virtualNode)
+		require.NoError(t, err, "Failed to create virtual node %s", nodeName)
+
+		// Start lease controller
+		syncer.nodeReconciler.startLeaseController(nodeName)
+	}
+
+	// Verify lease controllers are running
+	status := syncer.nodeReconciler.getLeaseControllerStatus()
+	assert.Len(t, status, 2, "Expected 2 lease controllers to be running")
+
+	// Test Start function with immediate cancellation to trigger Stop cleanup
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start the syncer in a goroutine
+	startErr := make(chan error, 1)
+	go func() {
+		startErr <- syncer.Start(ctx)
+	}()
+
+	// Give it a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel the context to trigger Stop
+	cancel()
+
+	// Wait for Start to complete
+	err := <-startErr
+	require.NoError(t, err, "Start should complete without error")
+
+	// Verify that lease controllers were cleaned up
+	status = syncer.nodeReconciler.getLeaseControllerStatus()
+	assert.Len(t, status, 0, "Expected all lease controllers to be cleaned up after Stop")
 }

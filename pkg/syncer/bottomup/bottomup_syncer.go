@@ -8,6 +8,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
@@ -80,6 +81,13 @@ func (bus *BottomUpSyncer) Start(ctx context.Context) error {
 
 	// Keep running until context is cancelled
 	<-ctx.Done()
+	bus.Log.Info("Bottom-up Syncer stopping, cleaning up resources")
+
+	// Clean up PhysicalNodeReconciler resources
+	if bus.nodeReconciler != nil {
+		bus.nodeReconciler.Stop()
+	}
+
 	bus.Log.Info("Bottom-up Syncer stopped")
 
 	return nil
@@ -137,10 +145,17 @@ func (bus *BottomUpSyncer) nodeMatchesSelector(node *corev1.Node, nodeSelector *
 
 // setupControllers sets up the controllers with their respective managers
 func (bus *BottomUpSyncer) setupControllers() error {
+	// Create Kubernetes client for lease management
+	kubeClient, err := kubernetes.NewForConfig(bus.physicalManager.GetConfig())
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+
 	// Setup Physical Node Controller
 	nodeReconciler := &PhysicalNodeReconciler{
 		PhysicalClient:     bus.physicalManager.GetClient(),
 		VirtualClient:      bus.virtualManager.GetClient(),
+		KubeClient:         kubeClient,
 		Scheme:             bus.Scheme,
 		ClusterBindingName: bus.ClusterBinding.Name,
 		Log:                bus.Log.WithName("physical-node-controller"),

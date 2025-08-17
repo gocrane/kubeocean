@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -179,11 +180,15 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 			reconciler := &PhysicalNodeReconciler{
 				PhysicalClient:     physicalClient,
 				VirtualClient:      virtualClient,
+				KubeClient:         fake.NewSimpleClientset(),
 				Scheme:             scheme,
 				ClusterBinding:     clusterBinding,
 				ClusterBindingName: clusterBinding.Name,
 				Log:                ctrl.Log.WithName("test-physical-node-reconciler"),
 			}
+
+			// Initialize lease controllers
+			reconciler.initLeaseControllers()
 
 			// Test reconcile
 			req := reconcile.Request{
@@ -1510,6 +1515,7 @@ func TestPhysicalNodeReconciler_ErrorHandling(t *testing.T) {
 		reconciler := &PhysicalNodeReconciler{
 			PhysicalClient:     physicalClient,
 			VirtualClient:      virtualClient,
+			KubeClient:         fake.NewSimpleClientset(),
 			Scheme:             scheme,
 			ClusterBindingName: "non-existent-cluster",
 			Log:                ctrl.Log.WithName("test"),
@@ -1522,4 +1528,72 @@ func TestPhysicalNodeReconciler_ErrorHandling(t *testing.T) {
 		assert.Error(t, err, "Should return error when ClusterBinding is missing")
 		assert.Contains(t, err.Error(), "not found")
 	})
+}
+
+func TestPhysicalNodeReconciler_Stop(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Create fake clients
+	physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	kubeClient := fake.NewSimpleClientset()
+
+	reconciler := &PhysicalNodeReconciler{
+		PhysicalClient:     physicalClient,
+		VirtualClient:      virtualClient,
+		KubeClient:         kubeClient,
+		Scheme:             scheme,
+		ClusterBindingName: "test-cluster",
+		Log:                ctrl.Log.WithName("test-reconciler"),
+	}
+
+	// Initialize lease controllers
+	reconciler.initLeaseControllers()
+
+	// Create some virtual nodes and start lease controllers
+	virtualNodes := []string{"vnode-test-1", "vnode-test-2", "vnode-test-3"}
+
+	for _, nodeName := range virtualNodes {
+		// Create virtual node
+		virtualNode := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: nodeName,
+				UID:  types.UID("uid-" + nodeName),
+			},
+			Status: corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{
+					{
+						Type:   corev1.NodeReady,
+						Status: corev1.ConditionTrue,
+					},
+				},
+			},
+		}
+		err := virtualClient.Create(context.Background(), virtualNode)
+		require.NoError(t, err, "Failed to create virtual node %s", nodeName)
+
+		// Start lease controller
+		reconciler.startLeaseController(nodeName)
+	}
+
+	// Verify all lease controllers are running
+	status := reconciler.getLeaseControllerStatus()
+	assert.Len(t, status, 3, "Expected 3 lease controllers to be running")
+	for _, nodeName := range virtualNodes {
+		assert.True(t, status[nodeName], "Expected lease controller for %s to be running", nodeName)
+	}
+
+	// Call Stop function
+	reconciler.Stop()
+
+	// Verify all lease controllers are stopped and cleaned up
+	status = reconciler.getLeaseControllerStatus()
+	assert.Len(t, status, 0, "Expected all lease controllers to be stopped and cleaned up")
+
+	// Verify that calling Stop again doesn't panic or cause issues
+	assert.NotPanics(t, func() {
+		reconciler.Stop()
+	}, "Stop should be safe to call multiple times")
 }

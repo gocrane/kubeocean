@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -16,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,14 +54,20 @@ type PhysicalNodeReconciler struct {
 
 	PhysicalClient client.Client
 	VirtualClient  client.Client
+	KubeClient     kubernetes.Interface
 	Scheme         *runtime.Scheme
 	Log            logr.Logger
 
 	workQueue workqueue.TypedRateLimitingInterface[reconcile.Request]
+
+	// Lease controller management
+	leaseControllers      map[string]*LeaseController // nodeName -> LeaseController
+	leaseControllersMutex sync.RWMutex
 }
 
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=nodes/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile handles Node events from physical cluster
 func (r *PhysicalNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -149,11 +157,15 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	}
 
 	// Create or update virtual node
+	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
 	err = r.createOrUpdateVirtualNode(ctx, physicalNode, availableResources, policies)
 	if err != nil {
 		log.Error(err, "Failed to create or update virtual node")
 		return ctrl.Result{}, err
 	}
+
+	// Start lease controller for the virtual node
+	r.startLeaseController(virtualNodeName)
 
 	log.V(1).Info("Successfully processed physical node", "availableResources", availableResources)
 
@@ -176,6 +188,9 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 		logger.Error(err, "Failed to get virtual node for deletion")
 		return ctrl.Result{}, err
 	}
+
+	// Stop lease controller for the virtual node
+	r.stopLeaseController(virtualNodeName)
 
 	// Delete virtual node
 	// TODO: needs to drain node first, and wait for no pods
@@ -482,6 +497,115 @@ func (r *PhysicalNodeReconciler) calculatePercentageLimit(currentAvailable resou
 	value := currentAvailable.Value()
 	percentValue := value * int64(percent) / 100
 	return *resource.NewQuantity(percentValue, currentAvailable.Format)
+}
+
+// initLeaseControllers initializes the lease controllers map
+func (r *PhysicalNodeReconciler) initLeaseControllers() {
+	r.leaseControllersMutex.Lock()
+	defer r.leaseControllersMutex.Unlock()
+
+	if r.leaseControllers == nil {
+		r.leaseControllers = make(map[string]*LeaseController)
+	}
+}
+
+// startLeaseController starts a lease controller for a virtual node
+func (r *PhysicalNodeReconciler) startLeaseController(virtualNodeName string) {
+	r.leaseControllersMutex.Lock()
+	defer r.leaseControllersMutex.Unlock()
+
+	// Initialize lease controllers map if needed
+	if r.leaseControllers == nil {
+		r.leaseControllers = make(map[string]*LeaseController)
+	}
+
+	// Check if lease controller already exists
+	if _, exists := r.leaseControllers[virtualNodeName]; exists {
+		r.Log.V(1).Info("Lease controller already exists for virtual node", "virtualNode", virtualNodeName)
+		return
+	}
+
+	// Create and start new lease controller
+	leaseController := NewLeaseController(virtualNodeName, r.KubeClient, r.VirtualClient, r.Log)
+	r.leaseControllers[virtualNodeName] = leaseController
+	leaseController.Start()
+
+	r.Log.Info("Started lease controller for virtual node", "virtualNode", virtualNodeName)
+}
+
+// stopLeaseController stops and removes a lease controller for a virtual node
+func (r *PhysicalNodeReconciler) stopLeaseController(virtualNodeName string) {
+	r.leaseControllersMutex.Lock()
+	defer r.leaseControllersMutex.Unlock()
+
+	// Initialize lease controllers map if needed
+	if r.leaseControllers == nil {
+		r.leaseControllers = make(map[string]*LeaseController)
+	}
+
+	leaseController, exists := r.leaseControllers[virtualNodeName]
+	if !exists {
+		r.Log.V(1).Info("Lease controller not found for virtual node", "virtualNode", virtualNodeName)
+		return
+	}
+
+	// Stop the lease controller
+	leaseController.Stop()
+
+	// Remove from map
+	delete(r.leaseControllers, virtualNodeName)
+
+	r.Log.Info("Stopped and removed lease controller for virtual node", "virtualNode", virtualNodeName)
+}
+
+// Stop stops the PhysicalNodeReconciler and cleans up all resources
+func (r *PhysicalNodeReconciler) Stop() {
+	r.Log.Info("Stopping PhysicalNodeReconciler")
+
+	// Stop all lease controllers
+	r.stopAllLeaseControllers()
+
+	r.Log.Info("PhysicalNodeReconciler stopped")
+}
+
+// stopAllLeaseControllers stops all lease controllers
+func (r *PhysicalNodeReconciler) stopAllLeaseControllers() {
+	r.leaseControllersMutex.Lock()
+	defer r.leaseControllersMutex.Unlock()
+
+	// Initialize lease controllers map if needed
+	if r.leaseControllers == nil {
+		r.leaseControllers = make(map[string]*LeaseController)
+		return
+	}
+
+	for virtualNodeName, leaseController := range r.leaseControllers {
+		leaseController.Stop()
+		r.Log.Info("Stopped lease controller", "virtualNode", virtualNodeName)
+	}
+
+	// Clear the map
+	r.leaseControllers = make(map[string]*LeaseController)
+	r.Log.Info("Stopped all lease controllers")
+}
+
+// getLeaseControllerStatus returns the status of lease controllers
+func (r *PhysicalNodeReconciler) getLeaseControllerStatus() map[string]bool {
+	r.leaseControllersMutex.RLock()
+	defer r.leaseControllersMutex.RUnlock()
+
+	status := make(map[string]bool)
+
+	// Initialize lease controllers map if needed
+	if r.leaseControllers == nil {
+		return status
+	}
+
+	for virtualNodeName, leaseController := range r.leaseControllers {
+		status[virtualNodeName] = leaseController.IsRunning()
+	}
+
+	return status
 }
 
 // getBaseResources returns the base resources from the physical node, preferring Allocatable over Capacity
@@ -897,6 +1021,9 @@ func (r *PhysicalNodeReconciler) TriggerReconciliation(nodeName string) error {
 
 // SetupWithManager sets up the controller with the Manager
 func (r *PhysicalNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Initialize lease controllers map
+	r.initLeaseControllers()
+
 	// Add index for pods by node name to efficiently query pods running on a specific node
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
 		pod := rawObj.(*corev1.Pod)
