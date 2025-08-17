@@ -2,6 +2,7 @@ package v1beta1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -19,7 +20,7 @@ type ClusterBindingSpec struct {
 
 	// NodeSelector specifies which nodes to monitor in the target cluster
 	// +optional
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	NodeSelector *v1.NodeSelector `json:"nodeSelector,omitempty"`
 
 	// MountNamespace specifies the namespace to mount cluster resources
 	// +optional
@@ -59,7 +60,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:scope=Cluster
+//+kubebuilder:resource:scope=Cluster,shortName=cb
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

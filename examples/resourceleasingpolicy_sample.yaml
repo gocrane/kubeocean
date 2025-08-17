@@ -6,7 +6,11 @@ metadata:
 spec:
   cluster: example-cluster
   nodeSelector:
-    node-type: worker
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: node-type
+        operator: In
+        values: ["worker"]
   timeWindows:
     - start: "18:00"
       end: "08:00"
@@ -17,7 +21,8 @@ spec:
   resourceLimits:
     - resource: cpu
       quantity: "4"
+      percent: 80  # Take the smaller of 4 CPUs or 80% of available CPUs
     - resource: memory
-      quantity: "8Gi"
+      percent: 50  # Take 50% of available memory
     - resource: storage
       quantity: "100Gi"

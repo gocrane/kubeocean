@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	"github.com/TKEColocation/tapestry/pkg/utils"
 )
 
 const (
@@ -104,7 +105,7 @@ func (bus *BottomUpSyncer) RequeueNode(nodeNames []string) error {
 }
 
 // GetNodesMatchingSelector gets all nodes from physical cluster that match the given selector
-func (bus *BottomUpSyncer) GetNodesMatchingSelector(ctx context.Context, selector map[string]string) ([]string, error) {
+func (bus *BottomUpSyncer) GetNodesMatchingSelector(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
 	if bus.physicalManager == nil {
 		return nil, fmt.Errorf("physical manager not initialized")
 	}
@@ -119,8 +120,8 @@ func (bus *BottomUpSyncer) GetNodesMatchingSelector(ctx context.Context, selecto
 	}
 
 	var matchingNodes []string
-	for _, node := range nodeList.Items {
-		if bus.nodeMatchesSelector(&node, selector) {
+	for idx, node := range nodeList.Items {
+		if bus.nodeMatchesSelector(&nodeList.Items[idx], selector) {
 			matchingNodes = append(matchingNodes, node.Name)
 		}
 	}
@@ -129,21 +130,9 @@ func (bus *BottomUpSyncer) GetNodesMatchingSelector(ctx context.Context, selecto
 	return matchingNodes, nil
 }
 
-// nodeMatchesSelector checks if a node matches the given selector
-func (bus *BottomUpSyncer) nodeMatchesSelector(node *corev1.Node, selector map[string]string) bool {
-	// If no selector specified, match all nodes
-	if len(selector) == 0 {
-		return true
-	}
-
-	// Check if all selector labels match node labels
-	for key, expectedValue := range selector {
-		if nodeValue, exists := node.Labels[key]; !exists || nodeValue != expectedValue {
-			return false
-		}
-	}
-
-	return true
+// nodeMatchesSelector checks if node matches the given node selector using shared utilities
+func (bus *BottomUpSyncer) nodeMatchesSelector(node *corev1.Node, nodeSelector *corev1.NodeSelector) bool {
+	return utils.MatchesSelector(node, nodeSelector)
 }
 
 // setupControllers sets up the controllers with their respective managers

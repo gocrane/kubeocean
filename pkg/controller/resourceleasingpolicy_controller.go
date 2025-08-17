@@ -88,8 +88,15 @@ func (r *ResourceLeasingPolicyReconciler) validateResourceLeasingPolicy(policy *
 		if limit.Resource == "" {
 			return fmt.Errorf("resource name is required in resource limits")
 		}
-		if limit.Quantity.IsZero() {
-			return fmt.Errorf("resource quantity is required in resource limits")
+		// At least one of Quantity or Percent must be specified
+		hasQuantity := limit.Quantity != nil && !limit.Quantity.IsZero()
+		hasPercent := limit.Percent != nil && *limit.Percent > 0
+
+		if !hasQuantity && !hasPercent {
+			return fmt.Errorf("either quantity or percent must be specified for resource %s", limit.Resource)
+		}
+		if hasPercent && (*limit.Percent < 0 || *limit.Percent > 100) {
+			return fmt.Errorf("percent must be between 0 and 100 for resource %s", limit.Resource)
 		}
 	}
 

@@ -70,12 +70,22 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 					},
 					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
 						Cluster: "test-cluster",
-						NodeSelector: map[string]string{
-							"node-type": "worker",
+						NodeSelector: &corev1.NodeSelector{
+							NodeSelectorTerms: []corev1.NodeSelectorTerm{
+								{
+									MatchExpressions: []corev1.NodeSelectorRequirement{
+										{
+											Key:      "node-type",
+											Operator: corev1.NodeSelectorOpIn,
+											Values:   []string{"worker"},
+										},
+									},
+								},
+							},
 						},
 						ResourceLimits: []cloudv1beta1.ResourceLimit{
-							{Resource: "cpu", Quantity: resource.MustParse("2")},
-							{Resource: "memory", Quantity: resource.MustParse("4Gi")},
+							{Resource: "cpu", Quantity: &[]resource.Quantity{resource.MustParse("2")}[0]},
+							{Resource: "memory", Quantity: &[]resource.Quantity{resource.MustParse("4Gi")}[0]},
 						},
 					},
 				},
@@ -112,8 +122,18 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 					},
 					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
 						Cluster: "test-cluster",
-						NodeSelector: map[string]string{
-							"node-type": "worker",
+						NodeSelector: &corev1.NodeSelector{
+							NodeSelectorTerms: []corev1.NodeSelectorTerm{
+								{
+									MatchExpressions: []corev1.NodeSelectorRequirement{
+										{
+											Key:      "node-type",
+											Operator: corev1.NodeSelectorOpIn,
+											Values:   []string{"worker"},
+										},
+									},
+								},
+							},
 						},
 					},
 				},
@@ -223,33 +243,72 @@ func TestPhysicalNodeReconciler_NodeMatchesSelector(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		nodeSelector map[string]string
+		nodeSelector *corev1.NodeSelector
 		expected     bool
 	}{
 		{
+			name:         "nil selector matches all",
+			nodeSelector: nil,
+			expected:     true,
+		},
+		{
 			name:         "empty selector matches all",
-			nodeSelector: map[string]string{},
+			nodeSelector: &corev1.NodeSelector{},
 			expected:     true,
 		},
 		{
 			name: "matching selector",
-			nodeSelector: map[string]string{
-				"node-type": "worker",
+			nodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "node-type",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"worker"},
+							},
+						},
+					},
+				},
 			},
 			expected: true,
 		},
 		{
 			name: "non-matching selector",
-			nodeSelector: map[string]string{
-				"node-type": "master",
+			nodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "node-type",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"master"},
+							},
+						},
+					},
+				},
 			},
 			expected: false,
 		},
 		{
 			name: "partial match fails",
-			nodeSelector: map[string]string{
-				"node-type":   "worker",
-				"environment": "staging",
+			nodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "node-type",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"worker"},
+							},
+							{
+								Key:      "environment",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"staging"},
+							},
+						},
+					},
+				},
 			},
 			expected: false,
 		},
@@ -320,30 +379,78 @@ func TestPhysicalNodeReconciler_NodeMatchesCombinedSelector(t *testing.T) {
 	tests := []struct {
 		name            string
 		nodeLabels      map[string]string
-		policySelector  map[string]string
-		clusterSelector map[string]string
+		policySelector  *corev1.NodeSelector
+		clusterSelector *corev1.NodeSelector
 		expected        bool
 	}{
 		{
 			name:            "empty selectors match all",
 			nodeLabels:      map[string]string{"env": "prod"},
-			policySelector:  map[string]string{},
-			clusterSelector: map[string]string{},
+			policySelector:  nil,
+			clusterSelector: nil,
 			expected:        true,
 		},
 		{
-			name:            "node matches both selectors",
-			nodeLabels:      map[string]string{"env": "prod", "zone": "us-east-1"},
-			policySelector:  map[string]string{"env": "prod"},
-			clusterSelector: map[string]string{"zone": "us-east-1"},
-			expected:        true,
+			name:       "node matches both selectors",
+			nodeLabels: map[string]string{"env": "prod", "zone": "us-east-1"},
+			policySelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "env",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"prod"},
+							},
+						},
+					},
+				},
+			},
+			clusterSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "zone",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"us-east-1"},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
 		},
 		{
-			name:            "node matches only one selector",
-			nodeLabels:      map[string]string{"env": "prod", "zone": "us-west-1"},
-			policySelector:  map[string]string{"env": "prod"},
-			clusterSelector: map[string]string{"zone": "us-east-1"},
-			expected:        false,
+			name:       "node matches only one selector",
+			nodeLabels: map[string]string{"env": "prod", "zone": "us-west-1"},
+			policySelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "env",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"prod"},
+							},
+						},
+					},
+				},
+			},
+			clusterSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "zone",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"us-east-1"},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
 		},
 	}
 
@@ -557,8 +664,18 @@ func TestPhysicalNodeReconciler_GetApplicablePolicies(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "matching-policy"},
 		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
 			Cluster: "test-cluster",
-			NodeSelector: map[string]string{
-				"node-type": "worker",
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "node-type",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"worker"},
+							},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -567,8 +684,18 @@ func TestPhysicalNodeReconciler_GetApplicablePolicies(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "non-matching-policy"},
 		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
 			Cluster: "other-cluster",
-			NodeSelector: map[string]string{
-				"node-type": "worker",
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "node-type",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"worker"},
+							},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -594,8 +721,18 @@ func TestPhysicalNodeReconciler_GetApplicablePolicies(t *testing.T) {
 		},
 	}
 
-	clusterSelector := map[string]string{
-		"zone": "us-east-1",
+	clusterSelector := &corev1.NodeSelector{
+		NodeSelectorTerms: []corev1.NodeSelectorTerm{
+			{
+				MatchExpressions: []corev1.NodeSelectorRequirement{
+					{
+						Key:      "zone",
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{"us-east-1"},
+					},
+				},
+			},
+		},
 	}
 
 	ctx := context.Background()
@@ -674,8 +811,8 @@ func TestPhysicalNodeReconciler_CalculateAvailableResources(t *testing.T) {
 			policy: &cloudv1beta1.ResourceLeasingPolicy{
 				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
 					ResourceLimits: []cloudv1beta1.ResourceLimit{
-						{Resource: "cpu", Quantity: resource.MustParse("2")},
-						{Resource: "memory", Quantity: resource.MustParse("4Gi")},
+						{Resource: "cpu", Quantity: &[]resource.Quantity{resource.MustParse("2")}[0]},
+						{Resource: "memory", Quantity: &[]resource.Quantity{resource.MustParse("4Gi")}[0]},
 					},
 				},
 			},
@@ -687,6 +824,65 @@ func TestPhysicalNodeReconciler_CalculateAvailableResources(t *testing.T) {
 			policy:         nil,
 			expectedCPU:    "3",   // allocatable 4 - used 1 = 3
 			expectedMemory: "6Gi", // allocatable 8Gi - used 2Gi = 6Gi
+		},
+		{
+			name: "with percentage limits",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ResourceLimits: []cloudv1beta1.ResourceLimit{
+						{Resource: "cpu", Percent: &[]int32{50}[0]},    // 50% of available 3 = 1.5
+						{Resource: "memory", Percent: &[]int32{75}[0]}, // 75% of available 6Gi = 4.5Gi
+					},
+				},
+			},
+			expectedCPU:    "1500m",  // 50% of 3000m = 1500m
+			expectedMemory: "4608Mi", // 75% of 6144Mi = 4608Mi
+		},
+		{
+			name: "with both quantity and percentage limits - quantity more restrictive",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ResourceLimits: []cloudv1beta1.ResourceLimit{
+						{
+							Resource: "cpu",
+							Quantity: &[]resource.Quantity{resource.MustParse("1")}[0], // 1 CPU
+							Percent:  &[]int32{80}[0],                                  // 80% of 3 = 2.4 CPU
+						},
+					},
+				},
+			},
+			expectedCPU:    "1",   // min(quantity 1, percentage 2.4) = 1
+			expectedMemory: "6Gi", // no limits applied
+		},
+		{
+			name: "with both quantity and percentage limits - percentage more restrictive",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ResourceLimits: []cloudv1beta1.ResourceLimit{
+						{
+							Resource: "memory",
+							Quantity: &[]resource.Quantity{resource.MustParse("5Gi")}[0], // 5Gi
+							Percent:  &[]int32{50}[0],                                    // 50% of 6Gi = 3Gi
+						},
+					},
+				},
+			},
+			expectedCPU:    "3",   // no limits applied
+			expectedMemory: "3Gi", // min(quantity 5Gi, percentage 3Gi) = 3Gi
+		},
+		{
+			name: "with limits for non-existent resources",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ResourceLimits: []cloudv1beta1.ResourceLimit{
+						{Resource: "gpu", Quantity: &[]resource.Quantity{resource.MustParse("2")}[0]}, // GPU not available on node
+						{Resource: "storage", Percent: &[]int32{30}[0]},                               // Storage not available on node
+						{Resource: "cpu", Quantity: &[]resource.Quantity{resource.MustParse("2")}[0]}, // CPU is available
+					},
+				},
+			},
+			expectedCPU:    "2",   // Only CPU limit is applied, others are skipped
+			expectedMemory: "6Gi", // No memory limit, so full available memory
 		},
 	}
 

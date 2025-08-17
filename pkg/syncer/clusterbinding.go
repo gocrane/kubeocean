@@ -3,10 +3,10 @@ package syncer
 import (
 	"context"
 	"fmt"
-
 	"reflect"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -94,7 +94,7 @@ func (r *ClusterBindingReconciler) handleNodeSelectorChange(ctx context.Context,
 	r.Log.Info("Handling nodeSelector change")
 
 	// Get old and new nodeSelectors
-	var oldSelector map[string]string
+	var oldSelector *corev1.NodeSelector
 	if r.BottomUpSyncer.ClusterBinding != nil {
 		oldSelector = r.BottomUpSyncer.ClusterBinding.Spec.NodeSelector
 	}
@@ -103,7 +103,7 @@ func (r *ClusterBindingReconciler) handleNodeSelectorChange(ctx context.Context,
 	// Get nodes that match old selector
 	var oldNodes []string
 	var err error
-	if len(oldSelector) > 0 {
+	if oldSelector != nil && len(oldSelector.NodeSelectorTerms) > 0 {
 		oldNodes, err = r.getNodesMatchingSelector(ctx, oldSelector)
 		if err != nil {
 			r.Log.Error(err, "Failed to get nodes matching old selector")
@@ -139,7 +139,7 @@ func (r *ClusterBindingReconciler) handleNodeSelectorChange(ctx context.Context,
 }
 
 // getNodesMatchingSelector gets all nodes that match the given selector from physical cluster
-func (r *ClusterBindingReconciler) getNodesMatchingSelector(ctx context.Context, selector map[string]string) ([]string, error) {
+func (r *ClusterBindingReconciler) getNodesMatchingSelector(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
 	if r.BottomUpSyncer == nil {
 		return nil, fmt.Errorf("BottomUpSyncer not available")
 	}

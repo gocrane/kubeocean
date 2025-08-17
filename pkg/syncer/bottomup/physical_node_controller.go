@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	"github.com/TKEColocation/tapestry/pkg/utils"
 )
 
 const (
@@ -189,7 +190,7 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 }
 
 // getApplicablePolicies gets ResourceLeasingPolicies that apply to the given node
-func (r *PhysicalNodeReconciler) getApplicablePolicies(ctx context.Context, node *corev1.Node, clusterSelector map[string]string) ([]cloudv1beta1.ResourceLeasingPolicy, error) {
+func (r *PhysicalNodeReconciler) getApplicablePolicies(ctx context.Context, node *corev1.Node, clusterSelector *corev1.NodeSelector) ([]cloudv1beta1.ResourceLeasingPolicy, error) {
 	var policyList cloudv1beta1.ResourceLeasingPolicyList
 	if err := r.VirtualClient.List(ctx, &policyList); err != nil {
 		return nil, fmt.Errorf("failed to list ResourceLeasingPolicies: %w", err)
@@ -209,18 +210,9 @@ func (r *PhysicalNodeReconciler) getApplicablePolicies(ctx context.Context, node
 	return applicablePolicies, nil
 }
 
-// nodeMatchesSelector checks if node matches the given node selector
-func (r *PhysicalNodeReconciler) nodeMatchesSelector(node *corev1.Node, nodeSelector map[string]string) bool {
-	if len(nodeSelector) == 0 {
-		return true // No selector means all nodes match
-	}
-
-	for key, value := range nodeSelector {
-		if nodeValue, exists := node.Labels[key]; !exists || nodeValue != value {
-			return false
-		}
-	}
-	return true
+// nodeMatchesSelector checks if node matches the given node selector using shared utilities
+func (r *PhysicalNodeReconciler) nodeMatchesSelector(node *corev1.Node, nodeSelector *corev1.NodeSelector) bool {
+	return utils.MatchesSelector(node, nodeSelector)
 }
 
 // isWithinTimeWindows checks if current time is within any of the policy time windows
@@ -284,14 +276,15 @@ func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context,
 		corev1.ResourceMemory: resource.MustParse("0"),
 	}
 
-	for _, pod := range podList.Items {
+	for idx := range podList.Items {
+		pod := &podList.Items[idx]
 		// Skip pods that are not running or are in terminal states
 		if pod.Status.Phase != corev1.PodRunning && pod.Status.Phase != corev1.PodPending {
 			continue
 		}
 
 		// Calculate pod resource requests (not limits, as requests are what's actually reserved)
-		podUsage := r.calculatePodResourceRequests(&pod)
+		podUsage := r.calculatePodResourceRequests(pod)
 
 		// Add pod usage to total
 		for resourceName, quantity := range podUsage {
@@ -394,39 +387,101 @@ func (r *PhysicalNodeReconciler) calculateAvailableResources(ctx context.Context
 
 	// Apply resource limits from policies if any exist
 	if policy != nil {
-		// Collect all resource limits from all policies
-		resourceLimits := make(map[corev1.ResourceName]resource.Quantity)
-
-		for _, limit := range policy.Spec.ResourceLimits {
-			resourceName := corev1.ResourceName(limit.Resource)
-			limitQuantity := limit.Quantity
-
-			// For multiple policies, use the minimum limit (most restrictive)
-			if existingLimit, exists := resourceLimits[resourceName]; exists {
-				if limitQuantity.Cmp(existingLimit) < 0 {
-					resourceLimits[resourceName] = limitQuantity
-				}
-			} else {
-				resourceLimits[resourceName] = limitQuantity
-			}
-		}
-
-		// Apply the collected limits
-		for resourceName, limitQuantity := range resourceLimits {
-			if baseQuantity, exists := availableResources[resourceName]; exists {
-				// Take the minimum of policy limit and base resources
-				if limitQuantity.Cmp(baseQuantity) < 0 {
-					availableResources[resourceName] = limitQuantity
-				}
-			} else {
-				// Resource not found in node, still apply the limit
-				availableResources[resourceName] = limitQuantity
-			}
-		}
+		availableResources = r.applyResourceLimits(availableResources, policy.Spec.ResourceLimits, logger)
 	}
 
 	logger.V(1).Info("Calculated available resources", "availableResources", availableResources)
 	return availableResources, nil
+}
+
+// applyResourceLimits applies resource limits from policy, supporting both quantity and percentage limits
+func (r *PhysicalNodeReconciler) applyResourceLimits(availableResources corev1.ResourceList, resourceLimits []cloudv1beta1.ResourceLimit, logger logr.Logger) corev1.ResourceList {
+	result := availableResources.DeepCopy()
+
+	for _, limit := range resourceLimits {
+		resourceName := corev1.ResourceName(limit.Resource)
+
+		// Get current available resource for this type
+		currentAvailable, exists := result[resourceName]
+		if !exists {
+			// If resource doesn't exist in available resources, skip or set to zero
+			continue
+		}
+
+		// Calculate effective limit based on quantity and/or percentage
+		effectiveLimit := r.calculateEffectiveLimit(limit, currentAvailable, logger)
+
+		// Apply the more restrictive limit
+		if effectiveLimit != nil && effectiveLimit.Cmp(currentAvailable) < 0 {
+			result[resourceName] = *effectiveLimit
+			logger.V(2).Info("Applied resource limit",
+				"resource", limit.Resource,
+				"originalAvailable", currentAvailable.String(),
+				"effectiveLimit", effectiveLimit.String())
+		}
+	}
+
+	return result
+}
+
+// calculateEffectiveLimit calculates the effective resource limit considering both quantity and percentage
+func (r *PhysicalNodeReconciler) calculateEffectiveLimit(limit cloudv1beta1.ResourceLimit, currentAvailable resource.Quantity, logger logr.Logger) *resource.Quantity {
+	var limits []resource.Quantity
+
+	// Add quantity limit if specified
+	if limit.Quantity != nil && !limit.Quantity.IsZero() {
+		limits = append(limits, *limit.Quantity)
+		logger.V(2).Info("Added quantity limit", "resource", limit.Resource, "quantity", limit.Quantity.String())
+	}
+
+	// Add percentage limit if specified
+	if limit.Percent != nil && *limit.Percent > 0 {
+		percentLimit := r.calculatePercentageLimit(currentAvailable, *limit.Percent)
+		limits = append(limits, percentLimit)
+		logger.V(2).Info("Added percentage limit", "resource", limit.Resource, "percent", *limit.Percent, "calculated", percentLimit.String())
+	}
+
+	// Return the minimum (most restrictive) limit
+	if len(limits) == 0 {
+		return nil
+	}
+
+	minLimit := limits[0]
+	for i := 1; i < len(limits); i++ {
+		if limits[i].Cmp(minLimit) < 0 {
+			minLimit = limits[i]
+		}
+	}
+
+	return &minLimit
+}
+
+// calculatePercentageLimit calculates resource limit based on percentage of current available resources
+func (r *PhysicalNodeReconciler) calculatePercentageLimit(currentAvailable resource.Quantity, percent int32) resource.Quantity {
+	if percent <= 0 || percent > 100 {
+		return resource.MustParse("0")
+	}
+
+	// For CPU resources (measured in millicores)
+	if currentAvailable.Format == resource.DecimalSI {
+		// Convert to millicores for calculation
+		milliValue := currentAvailable.MilliValue()
+		percentValue := milliValue * int64(percent) / 100
+		return *resource.NewMilliQuantity(percentValue, resource.DecimalSI)
+	}
+
+	// For memory and other binary resources
+	if currentAvailable.Format == resource.BinarySI {
+		// Use binary calculation for memory
+		value := currentAvailable.Value()
+		percentValue := value * int64(percent) / 100
+		return *resource.NewQuantity(percentValue, resource.BinarySI)
+	}
+
+	// Fallback for other resource types
+	value := currentAvailable.Value()
+	percentValue := value * int64(percent) / 100
+	return *resource.NewQuantity(percentValue, currentAvailable.Format)
 }
 
 // getBaseResources returns the base resources from the physical node, preferring Allocatable over Capacity
@@ -806,7 +861,7 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 }
 
 // nodeMatchesCombinedSelector checks if node matches the intersection of policy and ClusterBinding nodeSelectors
-func (r *PhysicalNodeReconciler) nodeMatchesCombinedSelector(node *corev1.Node, policySelector, clusterSelector map[string]string) bool {
+func (r *PhysicalNodeReconciler) nodeMatchesCombinedSelector(node *corev1.Node, policySelector, clusterSelector *corev1.NodeSelector) bool {
 	// Node must match both policy selector and cluster selector (intersection)
 
 	// First check if node matches policy selector

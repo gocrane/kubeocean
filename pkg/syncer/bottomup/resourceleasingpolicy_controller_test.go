@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,12 +43,22 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 				},
 				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
 					Cluster: "test-cluster",
-					NodeSelector: map[string]string{
-						"node-type": "worker",
+					NodeSelector: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "node-type",
+										Operator: corev1.NodeSelectorOpIn,
+										Values:   []string{"worker"},
+									},
+								},
+							},
+						},
 					},
 					ResourceLimits: []cloudv1beta1.ResourceLimit{
-						{Resource: "cpu", Quantity: resource.MustParse("2")},
-						{Resource: "memory", Quantity: resource.MustParse("4Gi")},
+						{Resource: "cpu", Quantity: &[]resource.Quantity{resource.MustParse("2")}[0]},
+						{Resource: "memory", Quantity: &[]resource.Quantity{resource.MustParse("4Gi")}[0]},
 					},
 				},
 			},
@@ -70,8 +81,18 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 				},
 				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
 					Cluster: "other-cluster",
-					NodeSelector: map[string]string{
-						"node-type": "worker",
+					NodeSelector: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "node-type",
+										Operator: corev1.NodeSelectorOpIn,
+										Values:   []string{"worker"},
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -116,7 +137,7 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 						},
 					},
 					ResourceLimits: []cloudv1beta1.ResourceLimit{
-						{Resource: "cpu", Quantity: resource.MustParse("1")},
+						{Resource: "cpu", Quantity: &[]resource.Quantity{resource.MustParse("1")}[0]},
 					},
 				},
 			},

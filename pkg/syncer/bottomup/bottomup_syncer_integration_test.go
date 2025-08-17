@@ -64,12 +64,22 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		},
 		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
 			Cluster: "test-cluster",
-			NodeSelector: map[string]string{
-				"node-type": "worker",
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "node-type",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"worker"},
+							},
+						},
+					},
+				},
 			},
 			ResourceLimits: []cloudv1beta1.ResourceLimit{
-				{Resource: "cpu", Quantity: resource.MustParse("2")},
-				{Resource: "memory", Quantity: resource.MustParse("4Gi")},
+				{Resource: "cpu", Quantity: &[]resource.Quantity{resource.MustParse("2")}[0]},
+				{Resource: "memory", Quantity: &[]resource.Quantity{resource.MustParse("4Gi")}[0]},
 			},
 			TimeWindows: []cloudv1beta1.TimeWindow{
 				{

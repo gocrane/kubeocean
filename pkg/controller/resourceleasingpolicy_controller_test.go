@@ -20,6 +20,12 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 )
 
+// Helper function to create a resource.Quantity pointer
+func quantityPtr(s string) *resource.Quantity {
+	q := resource.MustParse(s)
+	return &q
+}
+
 func TestResourceLeasingPolicyReconciler_validateResourceLeasingPolicy(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
@@ -38,7 +44,7 @@ func TestResourceLeasingPolicyReconciler_validateResourceLeasingPolicy(t *testin
 					ResourceLimits: []cloudv1beta1.ResourceLimit{
 						{
 							Resource: "cpu",
-							Quantity: resource.MustParse("4"),
+							Quantity: quantityPtr("4"),
 						},
 					},
 				},
@@ -53,7 +59,7 @@ func TestResourceLeasingPolicyReconciler_validateResourceLeasingPolicy(t *testin
 					ResourceLimits: []cloudv1beta1.ResourceLimit{
 						{
 							Resource: "cpu",
-							Quantity: resource.MustParse("4"),
+							Quantity: quantityPtr("4"),
 						},
 					},
 				},
@@ -80,7 +86,7 @@ func TestResourceLeasingPolicyReconciler_validateResourceLeasingPolicy(t *testin
 					ResourceLimits: []cloudv1beta1.ResourceLimit{
 						{
 							Resource: "",
-							Quantity: resource.MustParse("4"),
+							Quantity: quantityPtr("4"),
 						},
 					},
 				},
@@ -96,13 +102,13 @@ func TestResourceLeasingPolicyReconciler_validateResourceLeasingPolicy(t *testin
 					ResourceLimits: []cloudv1beta1.ResourceLimit{
 						{
 							Resource: "cpu",
-							Quantity: resource.MustParse("0"),
+							Quantity: quantityPtr("0"),
 						},
 					},
 				},
 			},
 			wantErr: true,
-			errMsg:  "resource quantity is required in resource limits",
+			errMsg:  "either quantity or percent must be specified for resource cpu",
 		},
 		{
 			name: "invalid time window",
@@ -112,7 +118,7 @@ func TestResourceLeasingPolicyReconciler_validateResourceLeasingPolicy(t *testin
 					ResourceLimits: []cloudv1beta1.ResourceLimit{
 						{
 							Resource: "cpu",
-							Quantity: resource.MustParse("4"),
+							Quantity: quantityPtr("4"),
 						},
 					},
 					TimeWindows: []cloudv1beta1.TimeWindow{
@@ -232,7 +238,7 @@ func TestResourceLeasingPolicyReconciler_Reconcile_Integration(t *testing.T) {
 			ResourceLimits: []cloudv1beta1.ResourceLimit{
 				{
 					Resource: "cpu",
-					Quantity: resource.MustParse("4"),
+					Quantity: quantityPtr("4"),
 				},
 			},
 		},
@@ -296,7 +302,7 @@ func TestResourceLeasingPolicyReconciler_Reconcile_ValidationFailure(t *testing.
 			ResourceLimits: []cloudv1beta1.ResourceLimit{
 				{
 					Resource: "cpu",
-					Quantity: resource.MustParse("4"),
+					Quantity: quantityPtr("4"),
 				},
 			},
 		},

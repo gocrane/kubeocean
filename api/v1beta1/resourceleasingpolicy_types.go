@@ -1,6 +1,7 @@
 package v1beta1
 
 import (
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -12,7 +13,7 @@ type ResourceLeasingPolicySpec struct {
 
 	// NodeSelector specifies which nodes this policy applies to
 	// +optional
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	NodeSelector *v1.NodeSelector `json:"nodeSelector,omitempty"`
 
 	// TimeWindows specifies when resources can be leased
 	// +optional
@@ -21,6 +22,12 @@ type ResourceLeasingPolicySpec struct {
 	// ResourceLimits specifies the maximum resources that can be leased
 	// +optional
 	ResourceLimits []ResourceLimit `json:"resourceLimits,omitempty"`
+
+	// Kill compute pod force when time window is not active.
+	ForceReclaim bool `json:"forceReclaim,omitempty"`
+
+	// GracefulReclaimPeriodSeconds is the graceful period of reclaiming resources.
+	GracefulReclaimPeriodSeconds int32 `json:"gracefulReclaimPeriodSeconds,omitempty"`
 }
 
 // TimeWindow defines a time period when resources can be leased
@@ -39,10 +46,16 @@ type TimeWindow struct {
 // ResourceLimit defines limits for specific resource types
 type ResourceLimit struct {
 	// Resource name (e.g., cpu, memory, storage)
+	// +kubebuilder:validation:Required
 	Resource string `json:"resource"`
 
 	// Quantity of the resource
-	Quantity resource.Quantity `json:"quantity"`
+	// +optional
+	Quantity *resource.Quantity `json:"quantity,omitempty"`
+
+	// Percent is the percentage of the resource to borrow.
+	// +optional
+	Percent *int32 `json:"percent,omitempty"`
 }
 
 // ResourceLeasingPolicyStatus defines the observed state of ResourceLeasingPolicy
@@ -80,7 +93,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:scope=Cluster
+//+kubebuilder:resource:scope=Cluster,shortName=rlp
 //+kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".spec.cluster"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Active",type="boolean",JSONPath=".status.activeTimeWindow"

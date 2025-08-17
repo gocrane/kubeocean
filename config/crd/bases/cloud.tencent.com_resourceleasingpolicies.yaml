@@ -11,6 +11,8 @@ spec:
     kind: ResourceLeasingPolicy
     listKind: ResourceLeasingPolicyList
     plural: resourceleasingpolicies
+    shortNames:
+    - rlp
     singular: resourceleasingpolicy
   scope: Cluster
   versions:
@@ -57,12 +59,103 @@ spec:
                 description: Cluster references the ClusterBinding this policy applies
                   to
                 type: string
+              forceReclaim:
+                description: Kill compute pod force when time window is not active.
+                type: boolean
+              gracefulReclaimPeriodSeconds:
+                description: GracefulReclaimPeriodSeconds is the graceful period of
+                  reclaiming resources.
+                format: int32
+                type: integer
               nodeSelector:
-                additionalProperties:
-                  type: string
                 description: NodeSelector specifies which nodes this policy applies
                   to
+                properties:
+                  nodeSelectorTerms:
+                    description: Required. A list of node selector terms. The terms
+                      are ORed.
+                    items:
+                      description: |-
+                        A null or empty node selector term matches no objects. The requirements of
+                        them are ANDed.
+                        The TopologySelectorTerm type implements a subset of the NodeSelectorTerm.
+                      properties:
+                        matchExpressions:
+                          description: A list of node selector requirements by node's
+                            labels.
+                          items:
+                            description: |-
+                              A node selector requirement is a selector that contains values, a key, and an operator
+                              that relates the key and values.
+                            properties:
+                              key:
+                                description: The label key that the selector applies
+                                  to.
+                                type: string
+                              operator:
+                                description: |-
+                                  Represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists, DoesNotExist. Gt, and Lt.
+                                type: string
+                              values:
+                                description: |-
+                                  An array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. If the operator is Gt or Lt, the values
+                                  array must have a single element, which will be interpreted as an integer.
+                                  This array is replaced during a strategic merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchFields:
+                          description: A list of node selector requirements by node's
+                            fields.
+                          items:
+                            description: |-
+                              A node selector requirement is a selector that contains values, a key, and an operator
+                              that relates the key and values.
+                            properties:
+                              key:
+                                description: The label key that the selector applies
+                                  to.
+                                type: string
+                              operator:
+                                description: |-
+                                  Represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists, DoesNotExist. Gt, and Lt.
+                                type: string
+                              values:
+                                description: |-
+                                  An array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. If the operator is Gt or Lt, the values
+                                  array must have a single element, which will be interpreted as an integer.
+                                  This array is replaced during a strategic merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - nodeSelectorTerms
                 type: object
+                x-kubernetes-map-type: atomic
               resourceLimits:
                 description: ResourceLimits specifies the maximum resources that can
                   be leased
@@ -70,6 +163,10 @@ spec:
                   description: ResourceLimit defines limits for specific resource
                     types
                   properties:
+                    percent:
+                      description: Percent is the percentage of the resource to borrow.
+                      format: int32
+                      type: integer
                     quantity:
                       anyOf:
                       - type: integer
@@ -81,7 +178,6 @@ spec:
                       description: Resource name (e.g., cpu, memory, storage)
                       type: string
                   required:
-                  - quantity
                   - resource
                   type: object
                 type: array
