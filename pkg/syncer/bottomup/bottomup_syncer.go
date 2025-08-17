@@ -146,7 +146,7 @@ func (bus *BottomUpSyncer) nodeMatchesSelector(node *corev1.Node, nodeSelector *
 // setupControllers sets up the controllers with their respective managers
 func (bus *BottomUpSyncer) setupControllers() error {
 	// Create Kubernetes client for lease management
-	kubeClient, err := kubernetes.NewForConfig(bus.physicalManager.GetConfig())
+	kubeClient, err := kubernetes.NewForConfig(bus.virtualManager.GetConfig())
 	if err != nil {
 		return fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
@@ -158,6 +158,7 @@ func (bus *BottomUpSyncer) setupControllers() error {
 		KubeClient:         kubeClient,
 		Scheme:             bus.Scheme,
 		ClusterBindingName: bus.ClusterBinding.Name,
+		ClusterBinding:     bus.ClusterBinding,
 		Log:                bus.Log.WithName("physical-node-controller"),
 	}
 

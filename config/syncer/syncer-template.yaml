@@ -9,8 +9,8 @@ metadata:
     app.kubernetes.io/component: config
 data:
   serviceAccountName: "tapestry-syncer"
-  roleName: "tapestry-syncer"
-  roleBindingName: "tapestry-syncer"
+  ClusterRoleName: "tapestry-syncer"
+  ClusterRoleBindingName: "tapestry-syncer"
   syncerNamespace: "tapestry-system"
   
   deployment.yaml: |
@@ -18,7 +18,7 @@ data:
     kind: Deployment
     metadata:
       name: "{{.DeploymentName}}"
-      namespace: "{{.Namespace}}"
+      namespace: "{{.SyncerNamespace}}"
       labels:
         app.kubernetes.io/name: tapestry-syncer
         app.kubernetes.io/instance: "{{.ClusterBindingName}}"
@@ -54,20 +54,14 @@ data:
             args:
             - --leader-elect=true
             - --leader-election-id={{.DeploymentName}}
-            - --leader-election-lease-duration=15s
-            - --leader-election-renew-deadline=10s
-            - --leader-election-retry-period=2s
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
             - --cluster-binding-name={{.ClusterBindingName}}
-            - --cluster-binding-namespace={{.Namespace}}
             env:
             - name: KUBERNETES_CLUSTER_DOMAIN
               value: cluster.local
             - name: CLUSTER_BINDING_NAME
               value: "{{.ClusterBindingName}}"
-            - name: CLUSTER_BINDING_NAMESPACE
-              value: "{{.Namespace}}"
             ports:
             - name: metrics
               containerPort: 8080

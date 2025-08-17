@@ -13,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -459,7 +460,7 @@ func TestClusterBindingReconciler_SyncerCreation(t *testing.T) {
 kind: Deployment
 metadata:
   name: "{{.DeploymentName}}"
-  namespace: "{{.Namespace}}"
+  namespace: "{{.SyncerNamespace}}"
 spec:
   replicas: 2
   selector:
@@ -479,7 +480,6 @@ spec:
 	// Test prepareSyncerTemplateData
 	templateData := reconciler.prepareSyncerTemplateData(clusterBinding, templateFiles)
 	assert.Equal(t, "test-binding", templateData.ClusterBindingName)
-	assert.Equal(t, "default", templateData.Namespace)
 	assert.Equal(t, expectedName, templateData.DeploymentName)
 	assert.Equal(t, "tapestry-syncer", templateData.ServiceAccountName)
 	assert.Equal(t, "tapestry-system", templateData.SyncerNamespace)
@@ -490,7 +490,7 @@ spec:
 
 	// Verify that Deployment was created (RBAC resources are shared and not created per ClusterBinding)
 	var createdDeployment appsv1.Deployment
-	err = fakeClient.Get(ctx, types.NamespacedName{Name: expectedName, Namespace: "default"}, &createdDeployment)
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: expectedName, Namespace: templateData.SyncerNamespace}, &createdDeployment)
 	assert.NoError(t, err)
 	assert.Equal(t, expectedName, createdDeployment.Name)
 	assert.Equal(t, int32(2), *createdDeployment.Spec.Replicas)
@@ -512,7 +512,7 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 		expectedStatus    *ResourceCleanupStatus
 	}{
 		{
-			name: "delete all syncer resources successfully",
+			name: "delete deployment successfully, preserve RBAC resources",
 			existingResources: []client.Object{
 				&appsv1.Deployment{
 					ObjectMeta: metav1.ObjectMeta{
@@ -526,16 +526,14 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 						Namespace: "tapestry-system",
 					},
 				},
-				&rbacv1.Role{
+				&rbacv1.ClusterRole{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer",
-						Namespace: "tapestry-system",
+						Name: "tapestry-syncer",
 					},
 				},
-				&rbacv1.RoleBinding{
+				&rbacv1.ClusterRoleBinding{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer",
-						Namespace: "tapestry-system",
+						Name: "tapestry-syncer",
 					},
 				},
 			},
@@ -546,10 +544,10 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 				},
 			},
 			expectedStatus: &ResourceCleanupStatus{
-				Deployment:     true,
-				ServiceAccount: true,
-				Role:           true,
-				RoleBinding:    true,
+				Deployment:         true,
+				ServiceAccount:     true,
+				ClusterRole:        true,
+				ClusterRoleBinding: true,
 			},
 		},
 		{
@@ -570,10 +568,10 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 				},
 			},
 			expectedStatus: &ResourceCleanupStatus{
-				Deployment:     true,
-				ServiceAccount: true, // Should be true even if not found
-				Role:           true,
-				RoleBinding:    true,
+				Deployment:         true,
+				ServiceAccount:     true, // Should be true even if not found
+				ClusterRole:        true,
+				ClusterRoleBinding: true,
 			},
 		},
 		{
@@ -600,10 +598,10 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 				},
 			},
 			expectedStatus: &ResourceCleanupStatus{
-				Deployment:     true,
-				ServiceAccount: true,
-				Role:           true, // Should be true even if not found
-				RoleBinding:    true,
+				Deployment:         true,
+				ServiceAccount:     true,
+				ClusterRole:        true, // Should be true even if not found
+				ClusterRoleBinding: true,
 			},
 		},
 	}
@@ -628,13 +626,20 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedStatus, status)
 
-			// Verify resources are actually deleted
+			// Verify resources are handled correctly
 			for _, resource := range tt.existingResources {
 				key := client.ObjectKeyFromObject(resource)
 				// Create a new instance of the same type to avoid modifying the original
 				newResource := resource.DeepCopyObject().(client.Object)
 				err := fakeClient.Get(ctx, key, newResource)
-				assert.True(t, apierrors.IsNotFound(err), "Resource should be deleted: %s/%s", resource.GetNamespace(), resource.GetName())
+
+				// Only Deployment should be deleted, RBAC resources should remain
+				switch resource.(type) {
+				case *appsv1.Deployment:
+					assert.True(t, apierrors.IsNotFound(err), "Deployment should be deleted: %s/%s", resource.GetNamespace(), resource.GetName())
+				case *corev1.ServiceAccount, *rbacv1.ClusterRole, *rbacv1.ClusterRoleBinding:
+					assert.NoError(t, err, "RBAC resource should be preserved: %s/%s", resource.GetNamespace(), resource.GetName())
+				}
 			}
 		})
 	}
@@ -668,16 +673,14 @@ func TestClusterBindingReconciler_handleDeletion(t *testing.T) {
 						Namespace: "tapestry-system",
 					},
 				},
-				&rbacv1.Role{
+				&rbacv1.ClusterRole{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer",
-						Namespace: "tapestry-system",
+						Name: "tapestry-syncer",
 					},
 				},
-				&rbacv1.RoleBinding{
+				&rbacv1.ClusterRoleBinding{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer",
-						Namespace: "tapestry-system",
+						Name: "tapestry-syncer",
 					},
 				},
 			},
@@ -757,40 +760,40 @@ func TestClusterBindingReconciler_isCleanupComplete(t *testing.T) {
 		{
 			name: "all resources cleaned up",
 			status: &ResourceCleanupStatus{
-				Deployment:     true,
-				ServiceAccount: true,
-				Role:           true,
-				RoleBinding:    true,
+				Deployment:         true,
+				ServiceAccount:     true,
+				ClusterRole:        true,
+				ClusterRoleBinding: true,
 			},
 			expected: true,
 		},
 		{
 			name: "deployment not cleaned up",
 			status: &ResourceCleanupStatus{
-				Deployment:     false,
-				ServiceAccount: true,
-				Role:           true,
-				RoleBinding:    true,
+				Deployment:         false,
+				ServiceAccount:     true,
+				ClusterRole:        true,
+				ClusterRoleBinding: true,
 			},
 			expected: false,
 		},
 		{
 			name: "rbac resources not cleaned up",
 			status: &ResourceCleanupStatus{
-				Deployment:     true,
-				ServiceAccount: false,
-				Role:           false,
-				RoleBinding:    false,
+				Deployment:         true,
+				ServiceAccount:     false,
+				ClusterRole:        false,
+				ClusterRoleBinding: false,
 			},
 			expected: false,
 		},
 		{
 			name: "no resources cleaned up",
 			status: &ResourceCleanupStatus{
-				Deployment:     false,
-				ServiceAccount: false,
-				Role:           false,
-				RoleBinding:    false,
+				Deployment:         false,
+				ServiceAccount:     false,
+				ClusterRole:        false,
+				ClusterRoleBinding: false,
 			},
 			expected: false,
 		},
@@ -802,4 +805,169 @@ func TestClusterBindingReconciler_isCleanupComplete(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestClusterBindingReconciler_createOrUpdateResource_DeploymentSkipsUpdate(t *testing.T) {
+	// Create a fake client with scheme
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	// Create a deployment that already exists
+	existingDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-deployment",
+			Namespace: "default",
+			Labels:    map[string]string{"original": "true"},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &[]int32{1}[0],
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "test"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "test",
+							Image: "original-image:v1",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(existingDeployment).
+		Build()
+
+	reconciler := &ClusterBindingReconciler{
+		Client: fakeClient,
+		Log:    ctrl.Log.WithName("test"),
+		Scheme: scheme,
+	}
+
+	// Create a new deployment object with different specs (simulating an update)
+	newDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-deployment",
+			Namespace: "default",
+			Labels:    map[string]string{"updated": "true"},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &[]int32{3}[0], // Different from original
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "test"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "test",
+							Image: "updated-image:v2", // Different from original
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Set the GVK for the deployment
+	newDeployment.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "apps",
+		Version: "v1",
+		Kind:    "Deployment",
+	})
+
+	ctx := context.Background()
+
+	// Call createOrUpdateResource - should skip update for Deployment
+	err := reconciler.createOrUpdateResource(ctx, newDeployment)
+	assert.NoError(t, err)
+
+	// Verify the original deployment was not updated
+	var actualDeployment appsv1.Deployment
+	err = fakeClient.Get(ctx, client.ObjectKey{
+		Name:      "test-deployment",
+		Namespace: "default",
+	}, &actualDeployment)
+	assert.NoError(t, err)
+
+	// Check that the original values are preserved (not updated)
+	assert.Equal(t, "true", actualDeployment.Labels["original"])
+	_, hasUpdatedLabel := actualDeployment.Labels["updated"]
+	assert.False(t, hasUpdatedLabel, "Updated label should not exist")
+	assert.Equal(t, int32(1), *actualDeployment.Spec.Replicas)
+	assert.Equal(t, "original-image:v1", actualDeployment.Spec.Template.Spec.Containers[0].Image)
+}
+
+func TestClusterBindingReconciler_createOrUpdateResource_NonDeploymentUpdates(t *testing.T) {
+	// Create a fake client with scheme
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	// Create a ConfigMap that already exists
+	existingConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-configmap",
+			Namespace: "default",
+		},
+		Data: map[string]string{
+			"key": "original-value",
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(existingConfigMap).
+		Build()
+
+	reconciler := &ClusterBindingReconciler{
+		Client: fakeClient,
+		Log:    ctrl.Log.WithName("test"),
+		Scheme: scheme,
+	}
+
+	// Create a new ConfigMap object with different data (simulating an update)
+	newConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-configmap",
+			Namespace: "default",
+		},
+		Data: map[string]string{
+			"key": "updated-value",
+		},
+	}
+
+	// Set the GVK for the configmap
+	newConfigMap.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "ConfigMap",
+	})
+
+	ctx := context.Background()
+
+	// Call createOrUpdateResource - should update for non-Deployment resources
+	err := reconciler.createOrUpdateResource(ctx, newConfigMap)
+	assert.NoError(t, err)
+
+	// Verify the ConfigMap was updated
+	var actualConfigMap corev1.ConfigMap
+	err = fakeClient.Get(ctx, client.ObjectKey{
+		Name:      "test-configmap",
+		Namespace: "default",
+	}, &actualConfigMap)
+	assert.NoError(t, err)
+
+	// Check that the value was updated
+	assert.Equal(t, "updated-value", actualConfigMap.Data["key"])
 }

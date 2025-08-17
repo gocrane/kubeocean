@@ -120,19 +120,24 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	}
 
 	var policy *cloudv1beta1.ResourceLeasingPolicy
-	// If multiple policies match, sort by creation time and use the earliest
-	if len(policies) > 1 {
-		sort.Slice(policies, func(i, j int) bool {
-			// Older (earlier creation) comes first
-			return policies[i].CreationTimestamp.Time.Before(policies[j].CreationTimestamp.Time)
-		})
-		var ignored []string
-		for idx := 1; idx < len(policies); idx++ {
-			ignored = append(ignored, policies[idx].Name)
+	// If one or more policies match, use the earliest one
+	if len(policies) > 0 {
+		if len(policies) > 1 {
+			// Sort by creation time and use the earliest
+			sort.Slice(policies, func(i, j int) bool {
+				// Older (earlier creation) comes first
+				return policies[i].CreationTimestamp.Time.Before(policies[j].CreationTimestamp.Time)
+			})
+			var ignored []string
+			for idx := 1; idx < len(policies); idx++ {
+				ignored = append(ignored, policies[idx].Name)
+			}
+			log.Info("Multiple ResourceLeasingPolicies matched. Using the earliest one and ignoring others.",
+				"selected", policies[0].Name, "ignored", strings.Join(ignored, ","))
+		} else {
+			log.V(1).Info("Single ResourceLeasingPolicy matched", "selected", policies[0].Name)
 		}
-		log.Info("Multiple ResourceLeasingPolicies matched. Using the earliest one and ignoring others.",
-			"selected", policies[0].Name, "ignored", strings.Join(ignored, ","))
-		// Keep only the earliest policy effective
+		// Use the first (earliest) policy
 		policy = &policies[0]
 	}
 
@@ -140,20 +145,19 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	var availableResources corev1.ResourceList
 	if policy == nil {
 		log.V(1).Info("No matching ResourceLeasingPolicy; using all remaining resources of physical node")
-		availableResources = r.getBaseResources(physicalNode)
 	} else {
 		// Check if within time windows
 		if !r.isWithinTimeWindows([]cloudv1beta1.ResourceLeasingPolicy{*policy}) {
 			log.V(1).Info("Node outside time windows")
 			return r.handleNodeDeletion(ctx, physicalNode.Name)
 		}
+	}
 
-		// Calculate available resources (considering actual pod usage)
-		availableResources, err = r.calculateAvailableResources(ctx, physicalNode, policy)
-		if err != nil {
-			log.Error(err, "Failed to calculate available resources")
-			return ctrl.Result{}, err
-		}
+	// Calculate available resources (with or without policy constraints)
+	availableResources, err = r.calculateAvailableResources(ctx, physicalNode, policy)
+	if err != nil {
+		log.Error(err, "Failed to calculate available resources")
+		return ctrl.Result{}, err
 	}
 
 	// Create or update virtual node

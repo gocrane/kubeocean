@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -88,13 +87,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start the syncer
-	go func() {
-		if err := tapestrySyncer.Start(context.Background()); err != nil {
-			setupLog.Error(err, "problem running tapestry syncer")
-			os.Exit(1)
-		}
-	}()
+	ctx := ctrl.SetupSignalHandler()
 
 	//+kubebuilder:scaffold:builder
 
@@ -107,8 +100,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Add the tapestry syncer as a runnable to the manager
+	if err := mgr.Add(tapestrySyncer); err != nil {
+		setupLog.Error(err, "unable to add tapestry syncer to manager")
+		os.Exit(1)
+	}
+
 	setupLog.Info("starting syncer manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

@@ -11,10 +11,9 @@ metadata:
     app.kubernetes.io/managed-by: tapestry-manager
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: tapestry-syncer
-  namespace: tapestry-system
   labels:
     app.kubernetes.io/name: tapestry-syncer
     app.kubernetes.io/component: syncer
@@ -22,20 +21,37 @@ metadata:
     app.kubernetes.io/managed-by: tapestry-manager
 rules:
 - apiGroups: [""]
-  resources: ["nodes", "pods", "services", "endpoints", "endpointslices", "configmaps", "secrets", "persistentvolumes", "persistentvolumeclaims"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: [""]
+  resources: ["nodes", "pods", "serviceaccounts", "configmaps"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: [""]
+  resources: ["nodes/status", "pods/status"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 - apiGroups: ["cloud.tencent.com"]
   resources: ["clusterbindings", "resourceleasingpolicies"]
-  verbs: ["get", "list", "watch"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["cloud.tencent.com"]
+  resources: ["clusterbindings/finalizers", "resourceleasingpolicies/finalizers"]
+  verbs: ["update"]
+- apiGroups: ["cloud.tencent.com"]
+  resources: ["clusterbindings/status", "resourceleasingpolicies/status"]
+  verbs: ["get", "patch", "update"]
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: tapestry-syncer
-  namespace: tapestry-system
   labels:
     app.kubernetes.io/name: tapestry-syncer
     app.kubernetes.io/component: syncer
@@ -47,5 +63,5 @@ subjects:
   namespace: tapestry-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: tapestry-syncer

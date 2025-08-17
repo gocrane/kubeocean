@@ -99,8 +99,8 @@ rules:
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
-  - rolebindings
-  - roles
+  - clusterrolebindings
+  - clusterroles
   verbs:
   - create
   - delete

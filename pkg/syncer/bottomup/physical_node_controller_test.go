@@ -158,7 +158,6 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 			if tt.physicalNode != nil {
 				physicalObjs = append(physicalObjs, tt.physicalNode)
 			}
-			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalObjs...).Build()
 
 			virtualObjs := []client.Object{}
 			for i := range tt.policies {
@@ -174,6 +173,19 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 				},
 			}
 			virtualObjs = append(virtualObjs, clusterBinding)
+
+			// Create physical client with Pod index for spec.nodeName
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(physicalObjs...).
+				WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+					pod := rawObj.(*corev1.Pod)
+					if pod.Spec.NodeName == "" {
+						return nil
+					}
+					return []string{pod.Spec.NodeName}
+				}).Build()
+
 			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualObjs...).Build()
 
 			// Create reconciler
@@ -789,8 +801,8 @@ func TestPhysicalNodeReconciler_CalculateAvailableResources(t *testing.T) {
 	physicalClient := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(node, runningPod).
-		WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
-			pod := obj.(*corev1.Pod)
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
 			if pod.Spec.NodeName == "" {
 				return nil
 			}
@@ -976,8 +988,8 @@ func TestPhysicalNodeReconciler_CalculateNodeResourceUsage(t *testing.T) {
 	physicalClient := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objs...).
-		WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
-			pod := obj.(*corev1.Pod)
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
 			if pod.Spec.NodeName == "" {
 				return nil
 			}
@@ -1509,7 +1521,16 @@ func TestPhysicalNodeReconciler_ErrorHandling(t *testing.T) {
 			},
 		}
 
-		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalNode).Build()
+		physicalClient := fakeclient.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(physicalNode).
+			WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+				pod := rawObj.(*corev1.Pod)
+				if pod.Spec.NodeName == "" {
+					return nil
+				}
+				return []string{pod.Spec.NodeName}
+			}).Build()
 		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build() // No ClusterBinding
 
 		reconciler := &PhysicalNodeReconciler{
@@ -1536,7 +1557,15 @@ func TestPhysicalNodeReconciler_Stop(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	// Create fake clients
-	physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}).Build()
 	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 	kubeClient := fake.NewSimpleClientset()
 

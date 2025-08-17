@@ -3,8 +3,11 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	"github.com/onsi/ginkgo/v2"
@@ -132,4 +135,9 @@ func kubeconfigFromRestConfig(cfg *rest.Config, clusterName string) ([]byte, err
 		CurrentContext: "default",
 	}
 	return clientcmd.Write(c)
+}
+
+// generateUniqueID generates a unique identifier for test resources
+func generateUniqueID() string {
+	return strconv.FormatInt(time.Now().UnixNano()+int64(rand.Intn(1000)), 36)
 }

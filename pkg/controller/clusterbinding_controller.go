@@ -13,7 +13,6 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,21 +46,20 @@ const (
 
 // SyncerTemplateData holds the data for rendering Syncer templates
 type SyncerTemplateData struct {
-	ClusterBindingName string
-	Namespace          string
-	DeploymentName     string
-	ServiceAccountName string
-	RoleName           string
-	RoleBindingName    string
-	SyncerNamespace    string
+	ClusterBindingName     string
+	DeploymentName         string
+	ServiceAccountName     string
+	ClusterRoleName        string
+	ClusterRoleBindingName string
+	SyncerNamespace        string
 }
 
 // ResourceCleanupStatus tracks the cleanup status of different resource types
 type ResourceCleanupStatus struct {
-	Deployment     bool
-	ServiceAccount bool
-	Role           bool
-	RoleBinding    bool
+	Deployment         bool
+	ServiceAccount     bool
+	ClusterRole        bool
+	ClusterRoleBinding bool
 }
 
 // ClusterBindingReconciler reconciles a ClusterBinding object
@@ -80,8 +78,8 @@ type ClusterBindingReconciler struct {
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -198,7 +196,7 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Mark as Ready if validation and syncer creation passes
-	if clusterBinding.Status.Phase == "Pending" {
+	if clusterBinding.Status.Phase != "Ready" {
 		clusterBinding.Status.Phase = "Ready"
 		clusterBinding.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
 		r.updateCondition(clusterBinding, "Ready", metav1.ConditionTrue, "ValidationPassed", "ClusterBinding validation and connectivity check passed")
@@ -371,6 +369,8 @@ func (r *ClusterBindingReconciler) reconcileTapestrySyncer(ctx context.Context, 
 	// Prepare template data
 	templateData := r.prepareSyncerTemplateData(clusterBinding, templateFiles)
 
+	log.V(2).Info("Syncer template data", "templateData", *templateData)
+
 	// Create or update the Syncer Deployment (RBAC resources are shared and deployed with manager)
 	if err := r.createSyncerResourceFromTemplate(ctx, clusterBinding, templateFiles, templateData, "deployment.yaml"); err != nil {
 		return fmt.Errorf("failed to create or update syncer deployment: %w", err)
@@ -431,14 +431,14 @@ func (r *ClusterBindingReconciler) prepareSyncerTemplateData(clusterBinding *clo
 		serviceAccountName = DefaultSyncerName
 	}
 
-	roleName := templateData["roleName"]
-	if roleName == "" {
-		roleName = DefaultSyncerName
+	clusterRoleName := templateData["clusterRoleName"]
+	if clusterRoleName == "" {
+		clusterRoleName = DefaultSyncerName
 	}
 
-	roleBindingName := templateData["roleBindingName"]
-	if roleBindingName == "" {
-		roleBindingName = DefaultSyncerName
+	clusterRoleBindingName := templateData["clusterRoleBindingName"]
+	if clusterRoleBindingName == "" {
+		clusterRoleBindingName = DefaultSyncerName
 	}
 
 	// Get syncer namespace from template data or use default
@@ -448,13 +448,12 @@ func (r *ClusterBindingReconciler) prepareSyncerTemplateData(clusterBinding *clo
 	}
 
 	return &SyncerTemplateData{
-		ClusterBindingName: clusterBinding.Name,
-		Namespace:          clusterBinding.Namespace,
-		DeploymentName:     r.getSyncerName(clusterBinding),
-		ServiceAccountName: serviceAccountName,
-		RoleName:           roleName,
-		RoleBindingName:    roleBindingName,
-		SyncerNamespace:    syncerNamespace,
+		ClusterBindingName:     clusterBinding.Name,
+		DeploymentName:         r.getSyncerName(clusterBinding),
+		ServiceAccountName:     serviceAccountName,
+		ClusterRoleName:        clusterRoleName,
+		ClusterRoleBindingName: clusterRoleBindingName,
+		SyncerNamespace:        syncerNamespace,
 	}
 }
 
@@ -542,7 +541,15 @@ func (r *ClusterBindingReconciler) createOrUpdateResource(ctx context.Context, o
 		return err
 	}
 
-	// Resource exists, update it
+	// Resource exists - check if it's a Deployment
+	if clientObj.GetObjectKind().GroupVersionKind().Kind == "Deployment" {
+		// For Deployments, don't update if it already exists
+		r.Log.V(1).Info("Deployment already exists, skipping update",
+			"deployment", client.ObjectKeyFromObject(clientObj))
+		return nil
+	}
+
+	// For other resources, update as before
 	clientObj.SetResourceVersion(existingClientObj.GetResourceVersion())
 	return r.Update(ctx, clientObj)
 }
@@ -579,13 +586,13 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 
 	// Check if all resources are cleaned up
 	if !r.isCleanupComplete(cleanupStatus) {
-		log.Info("Resource cleanup still in progress", "status", cleanupStatus, "totalResources", 4)
+		log.Info("Resource cleanup still in progress", "status", cleanupStatus)
 		r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "CleanupInProgress", "Resource cleanup still in progress")
 		return ctrl.Result{}, fmt.Errorf("resource cleanup still in progress: %+v", cleanupStatus)
 	}
 
-	log.Info("All syncer resources cleaned up successfully", "status", cleanupStatus)
-	r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "Cleanup", "All syncer resources cleaned up successfully")
+	log.Info("Syncer Deployment cleaned up successfully, RBAC resources preserved", "status", cleanupStatus)
+	r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "Cleanup", "Syncer Deployment cleaned up successfully, RBAC resources preserved")
 
 	// Create a deep copy for modification
 	clusterBinding := originalClusterBinding.DeepCopy()
@@ -602,10 +609,11 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 	return ctrl.Result{}, nil
 }
 
-// deleteSyncerResources deletes all resources created for the Tapestry Syncer
+// deleteSyncerResources deletes only the Deployment created for the Tapestry Syncer
+// RBAC resources (ServiceAccount, Role, RoleBinding) are left intact for reuse
 func (r *ClusterBindingReconciler) deleteSyncerResources(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) (*ResourceCleanupStatus, error) {
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding))
-	log.Info("Starting comprehensive syncer resource cleanup")
+	log.Info("Starting syncer resource cleanup (Deployment only)")
 
 	status := &ResourceCleanupStatus{}
 
@@ -621,7 +629,7 @@ func (r *ClusterBindingReconciler) deleteSyncerResources(ctx context.Context, cl
 		templateData = r.prepareSyncerTemplateData(clusterBinding, templateFiles)
 	}
 
-	// Delete Deployment
+	// Delete only the Deployment
 	status.Deployment, err = r.deleteResourceWithFallback(ctx, clusterBinding, "Deployment",
 		func(name, namespace string) client.Object {
 			return &appsv1.Deployment{
@@ -632,40 +640,13 @@ func (r *ClusterBindingReconciler) deleteSyncerResources(ctx context.Context, cl
 		return status, fmt.Errorf("failed to delete Deployment: %w", err)
 	}
 
-	// Delete ServiceAccount
-	status.ServiceAccount, err = r.deleteResourceWithFallback(ctx, clusterBinding, "ServiceAccount",
-		func(name, namespace string) client.Object {
-			return &corev1.ServiceAccount{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			}
-		}, templateData.ServiceAccountName, templateData.SyncerNamespace)
-	if err != nil {
-		return status, fmt.Errorf("failed to delete ServiceAccount: %w", err)
-	}
+	// Mark RBAC resources as cleaned up (but don't actually delete them)
+	// This allows the cleanup completion check to pass
+	status.ServiceAccount = true
+	status.ClusterRole = true
+	status.ClusterRoleBinding = true
 
-	// Delete Role
-	status.Role, err = r.deleteResourceWithFallback(ctx, clusterBinding, "Role",
-		func(name, namespace string) client.Object {
-			return &rbacv1.Role{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			}
-		}, templateData.RoleName, templateData.SyncerNamespace)
-	if err != nil {
-		return status, fmt.Errorf("failed to delete Role: %w", err)
-	}
-
-	// Delete RoleBinding
-	status.RoleBinding, err = r.deleteResourceWithFallback(ctx, clusterBinding, "RoleBinding",
-		func(name, namespace string) client.Object {
-			return &rbacv1.RoleBinding{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			}
-		}, templateData.RoleBindingName, templateData.SyncerNamespace)
-	if err != nil {
-		return status, fmt.Errorf("failed to delete RoleBinding: %w", err)
-	}
-
-	log.Info("Syncer resource cleanup completed", "status", status)
+	log.Info("Syncer resource cleanup completed (Deployment deleted, RBAC resources preserved)", "status", status)
 	return status, nil
 }
 
@@ -765,19 +746,18 @@ func (r *ClusterBindingReconciler) findAndDeleteResource(ctx context.Context, re
 // prepareSyncerTemplateDataWithDefaults prepares template data using default values
 func (r *ClusterBindingReconciler) prepareSyncerTemplateDataWithDefaults(clusterBinding *cloudv1beta1.ClusterBinding) *SyncerTemplateData {
 	return &SyncerTemplateData{
-		ClusterBindingName: clusterBinding.Name,
-		Namespace:          clusterBinding.Namespace,
-		DeploymentName:     r.getSyncerName(clusterBinding),
-		ServiceAccountName: DefaultSyncerName,
-		RoleName:           DefaultSyncerName,
-		RoleBindingName:    DefaultSyncerName,
-		SyncerNamespace:    "tapestry-system",
+		ClusterBindingName:     clusterBinding.Name,
+		DeploymentName:         r.getSyncerName(clusterBinding),
+		ServiceAccountName:     DefaultSyncerName,
+		ClusterRoleName:        DefaultSyncerName,
+		ClusterRoleBindingName: DefaultSyncerName,
+		SyncerNamespace:        "tapestry-system",
 	}
 }
 
 // isCleanupComplete checks if all resources have been successfully cleaned up
 func (r *ClusterBindingReconciler) isCleanupComplete(status *ResourceCleanupStatus) bool {
-	return status.Deployment && status.ServiceAccount && status.Role && status.RoleBinding
+	return status.Deployment && status.ServiceAccount && status.ClusterRole && status.ClusterRoleBinding
 }
 
 // hasFinalizer checks if the ClusterBinding has the finalizer

@@ -1,6 +1,6 @@
 # Image URL to use all building/pushing image targets
-IMG_MANAGER ?= tapestry-manager:latest
-IMG_SYNCER ?= tapestry-syncer:latest
+IMG_MANAGER ?= ccr.ccs.tencentyun.com/tke-eni-test/tapestry-manager:latest
+IMG_SYNCER ?= ccr.ccs.tencentyun.com/tke-eni-test/tapestry-syncer:latest
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.28.3

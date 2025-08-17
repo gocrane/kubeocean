@@ -106,8 +106,17 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		},
 	}
 
-	// Create fake clients
-	physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalNode).Build()
+	// Create fake clients with Pod index for spec.nodeName
+	physicalClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(physicalNode).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}).Build()
 	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(policy, clusterBinding).Build()
 
 	// Create fake physical config

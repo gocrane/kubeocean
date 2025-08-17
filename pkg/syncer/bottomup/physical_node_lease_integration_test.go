@@ -28,7 +28,15 @@ func TestPhysicalNodeReconciler_LeaseControllerIntegration(t *testing.T) {
 
 	// Create fake clients
 	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-	physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}).Build()
 	kubeClient := fake.NewSimpleClientset()
 
 	// Create test node
@@ -271,7 +279,15 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 
 	// Create fake clients
 	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-	physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}).Build()
 	kubeClient := fake.NewSimpleClientset()
 
 	// Create test node with labels to match selector
