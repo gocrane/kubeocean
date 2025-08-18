@@ -13,6 +13,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -54,6 +55,7 @@ var _ = ginkgo.BeforeSuite(func(ctx context.Context) {
 	gomega.Expect(corev1.AddToScheme(scheme)).To(gomega.Succeed())
 	gomega.Expect(appsv1.AddToScheme(scheme)).To(gomega.Succeed())
 	gomega.Expect(rbacv1.AddToScheme(scheme)).To(gomega.Succeed())
+	gomega.Expect(coordinationv1.AddToScheme(scheme)).To(gomega.Succeed())
 })
 
 var _ = ginkgo.BeforeEach(func(ctx context.Context) {

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -679,12 +680,36 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		if err != nil {
 			return fmt.Errorf("failed to preserve user customizations: %w", err)
 		}
-		virtualNode.ResourceVersion = existingNode.ResourceVersion
+
+		newNode := existingNode.DeepCopy()
+		newNode.Status.Conditions = virtualNode.Status.Conditions
+		newNode.Status.Phase = virtualNode.Status.Phase
+		newNode.Status.Allocatable = virtualNode.Status.Allocatable
+		newNode.Status.Capacity = virtualNode.Status.Capacity
+		newNode.Status.NodeInfo = virtualNode.Status.NodeInfo
+		newNode.Spec.Taints = virtualNode.Spec.Taints
+		newNode.Labels = virtualNode.Labels
+		newNode.Annotations = virtualNode.Annotations
 
 		logger.V(1).Info("Updating virtual node",
 			"resources", resources,
 			"resourceVersion", virtualNode.ResourceVersion)
-		return r.VirtualClient.Update(ctx, virtualNode)
+		err = r.VirtualClient.Status().Update(ctx, newNode)
+		if err != nil {
+			return fmt.Errorf("failed to update virtual node status: %w", err)
+		}
+
+		if !reflect.DeepEqual(existingNode.Spec.Taints, virtualNode.Spec.Taints) {
+			patchNode := newNode.DeepCopy()
+			patchNode.Spec.Taints = virtualNode.Spec.Taints
+			logger.Info("taints changed, patching virtual node", "taints", patchNode.Spec.Taints)
+			err = r.VirtualClient.Patch(ctx, patchNode, client.MergeFrom(newNode))
+			if err != nil {
+				return fmt.Errorf("failed to patch virtual node: %w", err)
+			}
+		}
+
+		return nil
 	}
 }
 
@@ -794,6 +819,7 @@ func (r *PhysicalNodeReconciler) mergeLabels(existing, new *corev1.Node, previou
 		}
 		// 如果不在previousExpected中，则认为是用户添加的
 		if _, ok := previousExpected[key]; !ok {
+			r.Log.Info("user added label", "key", key, "value", value)
 			new.Labels[key] = value
 		}
 	}
@@ -818,7 +844,8 @@ func (r *PhysicalNodeReconciler) mergeAnnotations(existing, new *corev1.Node, pr
 		}
 		// 如果不在previousExpected中，则认为是用户添加的
 		if _, ok := previousExpected[key]; !ok {
-			new.Labels[key] = value
+			r.Log.Info("user added annotation", "key", key, "value", value)
+			new.Annotations[key] = value
 		}
 	}
 }
@@ -840,6 +867,7 @@ func (r *PhysicalNodeReconciler) mergeTaints(existing, new *corev1.Node, previou
 		}
 		// 如果不在previousExpected中，则认为是用户添加的
 		if _, ok := previousExpectedMap[taint.Key]; !ok {
+			r.Log.Info("user added taint", "taint", taint)
 			new.Spec.Taints = append(new.Spec.Taints, taint)
 		}
 	}
