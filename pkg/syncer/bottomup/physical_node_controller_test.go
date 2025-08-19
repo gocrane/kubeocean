@@ -377,6 +377,23 @@ func TestPhysicalNodeReconciler_IsWithinTimeWindows(t *testing.T) {
 			},
 			expected: true, // Should always match since it covers all day
 		},
+		{
+			name: "time window outside current time",
+			policies: []cloudv1beta1.ResourceLeasingPolicy{
+				{
+					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+						TimeWindows: []cloudv1beta1.TimeWindow{
+							{
+								Start: "23:00", // Very late time window - should be outside current time
+								End:   "23:30",
+								// No Days specified, should default to all days
+							},
+						},
+					},
+				},
+			},
+			expected: false, // Should be outside the time window
+		},
 	}
 
 	for _, tt := range tests {
@@ -639,6 +656,13 @@ func TestPhysicalNodeReconciler_HandleNodeDeletion(t *testing.T) {
 	virtualClient := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(virtualNode).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}).
 		Build()
 
 	reconciler := &PhysicalNodeReconciler{
@@ -655,7 +679,7 @@ func TestPhysicalNodeReconciler_HandleNodeDeletion(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("delete existing virtual node", func(t *testing.T) {
-		result, err := reconciler.handleNodeDeletion(ctx, "physical-node")
+		result, err := reconciler.handleNodeDeletion(ctx, "physical-node", true, 0)
 		require.NoError(t, err)
 		assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
@@ -665,7 +689,7 @@ func TestPhysicalNodeReconciler_HandleNodeDeletion(t *testing.T) {
 	})
 
 	t.Run("delete non-existing virtual node", func(t *testing.T) {
-		result, err := reconciler.handleNodeDeletion(ctx, "non-existing-node")
+		result, err := reconciler.handleNodeDeletion(ctx, "non-existing-node", true, 0)
 		require.NoError(t, err)
 		assert.Equal(t, time.Duration(0), result.RequeueAfter)
 	})
@@ -1625,4 +1649,859 @@ func TestPhysicalNodeReconciler_Stop(t *testing.T) {
 	assert.NotPanics(t, func() {
 		reconciler.Stop()
 	}, "Stop should be safe to call multiple times")
+}
+
+func TestPhysicalNodeReconciler_addDeletionTaint(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	tests := []struct {
+		name           string
+		virtualNode    *corev1.Node
+		expectTaint    bool
+		expectError    bool
+		expectedTaints int
+	}{
+		{
+			name: "add deletion taint to node without taint",
+			virtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-vnode",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{},
+				},
+			},
+			expectTaint:    true,
+			expectError:    false,
+			expectedTaints: 1,
+		},
+		{
+			name: "node already has deletion taint",
+			virtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-vnode",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    TaintKeyVirtualNodeDeleting,
+							Value:  "true",
+							Effect: corev1.TaintEffectNoSchedule,
+						},
+					},
+				},
+			},
+			expectTaint:    true,
+			expectError:    false,
+			expectedTaints: 1,
+		},
+		{
+			name: "node with existing taints",
+			virtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-vnode",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    "existing-taint",
+							Value:  "value",
+							Effect: corev1.TaintEffectNoExecute,
+						},
+					},
+				},
+			},
+			expectTaint:    true,
+			expectError:    false,
+			expectedTaints: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create fake client with the virtual node
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.virtualNode).
+				Build()
+
+			reconciler := &PhysicalNodeReconciler{
+				VirtualClient: fakeClient,
+				Log:           zap.New(zap.UseDevMode(true)),
+			}
+
+			ctx := context.Background()
+			updatedNode, err := reconciler.addDeletionTaint(ctx, tt.virtualNode)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, updatedNode)
+
+			// Check if deletion taint exists
+			hasTaint := reconciler.hasDeletionTaint(updatedNode)
+			assert.Equal(t, tt.expectTaint, hasTaint)
+
+			// Check total number of taints
+			assert.Equal(t, tt.expectedTaints, len(updatedNode.Spec.Taints))
+
+			// If taint was added, check annotation (only if taint was actually added, not if it already existed)
+			if tt.expectTaint && (tt.name == "add deletion taint to node without taint" || tt.name == "node with existing taints") {
+				assert.Contains(t, updatedNode.Annotations, AnnotationDeletionTaintTime)
+			}
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_hasDeletionTaint(t *testing.T) {
+	reconciler := &PhysicalNodeReconciler{
+		Log: zap.New(zap.UseDevMode(true)),
+	}
+
+	tests := []struct {
+		name        string
+		virtualNode *corev1.Node
+		expected    bool
+	}{
+		{
+			name: "node without deletion taint",
+			virtualNode: &corev1.Node{
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    "other-taint",
+							Effect: corev1.TaintEffectNoSchedule,
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "node with deletion taint",
+			virtualNode: &corev1.Node{
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    TaintKeyVirtualNodeDeleting,
+							Effect: corev1.TaintEffectNoSchedule,
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "node with multiple taints including deletion taint",
+			virtualNode: &corev1.Node{
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    "other-taint",
+							Effect: corev1.TaintEffectNoExecute,
+						},
+						{
+							Key:    TaintKeyVirtualNodeDeleting,
+							Effect: corev1.TaintEffectNoSchedule,
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := reconciler.hasDeletionTaint(tt.virtualNode)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_getDeletionTaintTime(t *testing.T) {
+	reconciler := &PhysicalNodeReconciler{
+		Log: zap.New(zap.UseDevMode(true)),
+	}
+
+	testTime := time.Now()
+	testTimeStr := testTime.Format(time.RFC3339)
+
+	tests := []struct {
+		name        string
+		virtualNode *corev1.Node
+		expectError bool
+		expectTime  bool
+	}{
+		{
+			name: "node with deletion taint time annotation",
+			virtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						AnnotationDeletionTaintTime: testTimeStr,
+					},
+				},
+			},
+			expectError: false,
+			expectTime:  true,
+		},
+		{
+			name: "node without annotations",
+			virtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			expectError: true,
+			expectTime:  false,
+		},
+		{
+			name: "node without deletion taint time annotation",
+			virtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"other-annotation": "value",
+					},
+				},
+			},
+			expectError: true,
+			expectTime:  false,
+		},
+		{
+			name: "node with invalid time format",
+			virtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						AnnotationDeletionTaintTime: "invalid-time",
+					},
+				},
+			},
+			expectError: true,
+			expectTime:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			taintTime, err := reconciler.getDeletionTaintTime(tt.virtualNode)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, taintTime)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, taintTime)
+				if tt.expectTime {
+					// Allow for small time differences due to parsing
+					assert.WithinDuration(t, testTime, *taintTime, time.Second)
+				}
+			}
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_checkPodsOnVirtualNode(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	tests := []struct {
+		name            string
+		pods            []corev1.Pod
+		virtualNodeName string
+		expectedHasPods bool
+		expectError     bool
+	}{
+		{
+			name:            "no pods on node",
+			pods:            []corev1.Pod{},
+			virtualNodeName: "test-vnode",
+			expectedHasPods: false,
+			expectError:     false,
+		},
+		{
+			name: "running pod on node",
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+					},
+				},
+			},
+			virtualNodeName: "test-vnode",
+			expectedHasPods: true,
+			expectError:     false,
+		},
+		{
+			name: "pending pod on node",
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+					},
+				},
+			},
+			virtualNodeName: "test-vnode",
+			expectedHasPods: true,
+			expectError:     false,
+		},
+		{
+			name: "succeeded pod on node",
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodSucceeded,
+					},
+				},
+			},
+			virtualNodeName: "test-vnode",
+			expectedHasPods: false,
+			expectError:     false,
+		},
+		{
+			name: "mixed pods on node",
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "running-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "succeeded-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodSucceeded,
+					},
+				},
+			},
+			virtualNodeName: "test-vnode",
+			expectedHasPods: true,
+			expectError:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create objects slice for fake client
+			var objects []client.Object
+			for i := range tt.pods {
+				objects = append(objects, &tt.pods[i])
+			}
+
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
+					pod := obj.(*corev1.Pod)
+					if pod.Spec.NodeName == "" {
+						return nil
+					}
+					return []string{pod.Spec.NodeName}
+				}).
+				Build()
+
+			reconciler := &PhysicalNodeReconciler{
+				VirtualClient: fakeClient,
+				Log:           zap.New(zap.UseDevMode(true)),
+			}
+
+			ctx := context.Background()
+			hasPods, err := reconciler.checkPodsOnVirtualNode(ctx, tt.virtualNodeName)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expectedHasPods, hasPods)
+			}
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_forceEvictPodsOnVirtualNode(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	tests := []struct {
+		name            string
+		pods            []corev1.Pod
+		virtualNodeName string
+		expectError     bool
+	}{
+		{
+			name:            "no pods to evict",
+			pods:            []corev1.Pod{},
+			virtualNodeName: "test-vnode",
+			expectError:     false,
+		},
+		{
+			name: "evict running and pending pods",
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "running-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "pending-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodPending,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "succeeded-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodSucceeded,
+					},
+				},
+			},
+			virtualNodeName: "test-vnode",
+			expectError:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create objects slice for fake client
+			var objects []client.Object
+			for i := range tt.pods {
+				objects = append(objects, &tt.pods[i])
+			}
+
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
+					pod := obj.(*corev1.Pod)
+					if pod.Spec.NodeName == "" {
+						return nil
+					}
+					return []string{pod.Spec.NodeName}
+				}).
+				Build()
+
+			reconciler := &PhysicalNodeReconciler{
+				VirtualClient: fakeClient,
+				Log:           zap.New(zap.UseDevMode(true)),
+			}
+
+			ctx := context.Background()
+			err := reconciler.forceEvictPodsOnVirtualNode(ctx, tt.virtualNodeName)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+
+				// Verify pods are deleted (in a real scenario, they would be gone)
+				// For this test, we just ensure no error occurred
+			}
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_handleNodeDeletion_Integration(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = cloudv1beta1.AddToScheme(scheme)
+
+	tests := []struct {
+		name                         string
+		physicalNodeName             string
+		forceReclaim                 bool
+		gracefulReclaimPeriodSeconds int32
+		virtualNodeExists            bool
+		virtualNodeHasTaint          bool
+		taintTime                    *time.Time
+		pods                         []corev1.Pod
+		expectedResult               ctrl.Result
+		expectedError                bool
+		expectedVirtualNodeDeleted   bool
+		expectedTaintAdded           bool
+	}{
+		{
+			name:                         "delete virtual node - no force reclaim, no pods",
+			physicalNodeName:             "physical-node-1",
+			forceReclaim:                 false,
+			gracefulReclaimPeriodSeconds: 0,
+			virtualNodeExists:            true,
+			virtualNodeHasTaint:          false,
+			pods:                         []corev1.Pod{},
+			expectedResult:               ctrl.Result{},
+			expectedError:                false,
+			expectedVirtualNodeDeleted:   true, // Should be deleted when ForceReclaim is false but no pods
+			expectedTaintAdded:           true,
+		},
+		{
+			name:                         "delete virtual node - force reclaim immediate, with pods",
+			physicalNodeName:             "physical-node-2",
+			forceReclaim:                 true,
+			gracefulReclaimPeriodSeconds: 0,
+			virtualNodeExists:            true,
+			virtualNodeHasTaint:          false,
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "vnode-test-cluster-physical-node-2",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+					},
+				},
+			},
+			expectedResult:             ctrl.Result{}, // Pods are deleted immediately, so no requeue needed
+			expectedError:              false,
+			expectedVirtualNodeDeleted: true, // Should be deleted after pods are evicted
+			expectedTaintAdded:         true,
+		},
+		{
+			name:                         "delete virtual node - force reclaim with grace period, not passed",
+			physicalNodeName:             "physical-node-3",
+			forceReclaim:                 true,
+			gracefulReclaimPeriodSeconds: 300,
+			virtualNodeExists:            true,
+			virtualNodeHasTaint:          true,
+			taintTime:                    func() *time.Time { t := time.Now().Add(-100 * time.Second); return &t }(),
+			pods:                         []corev1.Pod{},
+			expectedResult:               ctrl.Result{RequeueAfter: 200 * time.Second},
+			expectedError:                false,
+			expectedVirtualNodeDeleted:   false,
+			expectedTaintAdded:           false,
+		},
+		{
+			name:                         "delete virtual node - force reclaim with grace period, passed",
+			physicalNodeName:             "physical-node-4",
+			forceReclaim:                 true,
+			gracefulReclaimPeriodSeconds: 300,
+			virtualNodeExists:            true,
+			virtualNodeHasTaint:          true,
+			taintTime:                    func() *time.Time { t := time.Now().Add(-400 * time.Second); return &t }(),
+			pods:                         []corev1.Pod{},
+			expectedResult:               ctrl.Result{},
+			expectedError:                false,
+			expectedVirtualNodeDeleted:   true,
+			expectedTaintAdded:           false,
+		},
+		{
+			name:                         "virtual node does not exist",
+			physicalNodeName:             "physical-node-5",
+			forceReclaim:                 true,
+			gracefulReclaimPeriodSeconds: 0,
+			virtualNodeExists:            false,
+			expectedResult:               ctrl.Result{},
+			expectedError:                false,
+			expectedVirtualNodeDeleted:   false,
+			expectedTaintAdded:           false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// Create virtual node if it should exist
+			var virtualNode *corev1.Node
+			var objects []client.Object
+
+			if tt.virtualNodeExists {
+				virtualNodeName := "vnode-test-cluster-" + tt.physicalNodeName
+				virtualNode = &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: virtualNodeName,
+					},
+					Spec: corev1.NodeSpec{
+						Taints: []corev1.Taint{},
+					},
+					Status: corev1.NodeStatus{
+						Capacity: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("4"),
+							corev1.ResourceMemory: resource.MustParse("8Gi"),
+						},
+						Allocatable: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("4"),
+							corev1.ResourceMemory: resource.MustParse("8Gi"),
+						},
+					},
+				}
+
+				if tt.virtualNodeHasTaint {
+					virtualNode.Spec.Taints = append(virtualNode.Spec.Taints, corev1.Taint{
+						Key:    TaintKeyVirtualNodeDeleting,
+						Value:  "true",
+						Effect: corev1.TaintEffectNoSchedule,
+					})
+
+					if tt.taintTime != nil {
+						if virtualNode.Annotations == nil {
+							virtualNode.Annotations = make(map[string]string)
+						}
+						virtualNode.Annotations[AnnotationDeletionTaintTime] = tt.taintTime.Format(time.RFC3339)
+					}
+				}
+
+				objects = append(objects, virtualNode)
+			}
+
+			// Add pods to objects
+			for i := range tt.pods {
+				objects = append(objects, &tt.pods[i])
+			}
+
+			// Create fake clients
+			virtualClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
+					pod := obj.(*corev1.Pod)
+					if pod.Spec.NodeName == "" {
+						return nil
+					}
+					return []string{pod.Spec.NodeName}
+				}).
+				Build()
+
+			kubeClient := fake.NewSimpleClientset()
+
+			reconciler := &PhysicalNodeReconciler{
+				VirtualClient:      virtualClient,
+				KubeClient:         kubeClient,
+				Log:                zap.New(zap.UseDevMode(true)),
+				ClusterBindingName: "test-cluster",
+				leaseControllers:   make(map[string]*LeaseController),
+			}
+
+			// Execute the test
+			result, err := reconciler.handleNodeDeletion(ctx, tt.physicalNodeName, tt.forceReclaim, tt.gracefulReclaimPeriodSeconds)
+
+			// Verify results
+			if tt.expectedError {
+				assert.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+
+			// Check requeue behavior
+			if tt.expectedResult.RequeueAfter > 0 {
+				assert.True(t, result.RequeueAfter > 0, "Expected requeue but got none")
+				// Allow some tolerance in requeue time
+				assert.InDelta(t, tt.expectedResult.RequeueAfter.Seconds(), result.RequeueAfter.Seconds(), 10.0)
+			} else {
+				assert.Equal(t, tt.expectedResult.RequeueAfter, result.RequeueAfter)
+			}
+
+			// Check if virtual node was deleted
+			if tt.virtualNodeExists {
+				virtualNodeName := "vnode-test-cluster-" + tt.physicalNodeName
+				var currentNode corev1.Node
+				err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, &currentNode)
+
+				if tt.expectedVirtualNodeDeleted {
+					assert.True(t, client.IgnoreNotFound(err) == nil && err != nil, "Expected virtual node to be deleted")
+				} else {
+					require.NoError(t, err, "Expected virtual node to exist")
+
+					// Check if taint was added
+					hasTaint := reconciler.hasDeletionTaint(&currentNode)
+					if tt.expectedTaintAdded {
+						assert.True(t, hasTaint, "Expected deletion taint to be added")
+						assert.Contains(t, currentNode.Annotations, AnnotationDeletionTaintTime)
+					} else if !tt.virtualNodeHasTaint {
+						// Only check if taint should not be there if it wasn't there initially
+						assert.False(t, hasTaint, "Expected no deletion taint")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_handleNodeDeletion_ForceEviction_Integration(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	ctx := context.Background()
+	physicalNodeName := "physical-node-eviction-test"
+	virtualNodeName := "vnode-test-cluster-" + physicalNodeName
+
+	// Create virtual node with deletion taint and old taint time
+	oldTime := time.Now().Add(-400 * time.Second)
+	virtualNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: virtualNodeName,
+			Annotations: map[string]string{
+				AnnotationDeletionTaintTime: oldTime.Format(time.RFC3339),
+			},
+		},
+		Spec: corev1.NodeSpec{
+			Taints: []corev1.Taint{
+				{
+					Key:    TaintKeyVirtualNodeDeleting,
+					Value:  "true",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+		},
+	}
+
+	// Create pods that should be evicted
+	pods := []corev1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "running-pod",
+				Namespace: "default",
+			},
+			Spec: corev1.PodSpec{
+				NodeName: virtualNodeName,
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pending-pod",
+				Namespace: "default",
+			},
+			Spec: corev1.PodSpec{
+				NodeName: virtualNodeName,
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodPending,
+			},
+		},
+	}
+
+	objects := []client.Object{virtualNode}
+	for i := range pods {
+		objects = append(objects, &pods[i])
+	}
+
+	virtualClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
+			pod := obj.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}).
+		Build()
+
+	reconciler := &PhysicalNodeReconciler{
+		VirtualClient:      virtualClient,
+		KubeClient:         fake.NewSimpleClientset(),
+		Log:                zap.New(zap.UseDevMode(true)),
+		ClusterBindingName: "test-cluster",
+		leaseControllers:   make(map[string]*LeaseController),
+	}
+
+	// Test force eviction with grace period passed
+	result, err := reconciler.handleNodeDeletion(ctx, physicalNodeName, true, 300)
+
+	require.NoError(t, err)
+
+	// Should not requeue since pods are deleted immediately and node is deleted
+	assert.Equal(t, time.Duration(0), result.RequeueAfter)
+
+	// Verify virtual node is deleted (since pods were evicted and then node was deleted)
+	var currentNode corev1.Node
+	err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, &currentNode)
+	assert.True(t, client.IgnoreNotFound(err) == nil && err != nil, "Expected virtual node to be deleted")
+}
+
+func TestPhysicalNodeReconciler_generateVirtualNodeName(t *testing.T) {
+	reconciler := &PhysicalNodeReconciler{
+		ClusterBindingName: "test-cluster",
+		ClusterBinding: &cloudv1beta1.ClusterBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-cluster",
+			},
+			Spec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID: "cluster-123",
+			},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		physicalNodeName string
+		expected         string
+	}{
+		{
+			name:             "simple node name",
+			physicalNodeName: "node-1",
+			expected:         "vnode-cluster-123-node-1",
+		},
+		{
+			name:             "node with dashes",
+			physicalNodeName: "worker-node-2",
+			expected:         "vnode-cluster-123-worker-node-2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := reconciler.generateVirtualNodeName(tt.physicalNodeName)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

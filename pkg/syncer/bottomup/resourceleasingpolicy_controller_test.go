@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -70,7 +71,7 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 					ClusterID: "test-cluster",
 				},
 			},
-			expectRequeue: true,
+			expectRequeue: false,
 			expectError:   false,
 		},
 		{
@@ -118,7 +119,7 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 					ClusterID: "test-cluster",
 				},
 			},
-			expectRequeue: true,
+			expectRequeue: false,
 			expectError:   false,
 		},
 		{
@@ -149,7 +150,7 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 					ClusterID: "test-cluster",
 				},
 			},
-			expectRequeue: true,
+			expectRequeue: false,
 			expectError:   false,
 		},
 	}
@@ -178,6 +179,15 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 				Scheme:         scheme,
 				ClusterBinding: tt.clusterBinding,
 				Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
+				// Provide mock functions for testing
+				GetNodesMatchingSelector: func(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
+					// Return empty list for tests
+					return nil, nil
+				},
+				RequeueNodes: func(nodeNames []string) error {
+					// Mock implementation - just return nil
+					return nil
+				},
 			}
 
 			// Test reconcile
@@ -197,9 +207,10 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 			}
 
 			if tt.expectRequeue {
-				assert.True(t, result.RequeueAfter > 0, "Expected requeue after some time")
+				assert.True(t, result.Requeue || result.RequeueAfter > 0, "Expected requeue")
 			} else {
-				assert.Equal(t, time.Duration(0), result.RequeueAfter, "Expected no requeue")
+				assert.False(t, result.Requeue, "Expected no immediate requeue")
+				assert.Equal(t, time.Duration(0), result.RequeueAfter, "Expected no requeue after delay")
 			}
 		})
 	}
@@ -208,6 +219,7 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 func TestResourceLeasingPolicyReconciler_TriggerNodeReEvaluation(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
 
 	// Set up logger
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
@@ -229,6 +241,15 @@ func TestResourceLeasingPolicyReconciler_TriggerNodeReEvaluation(t *testing.T) {
 		Scheme:         scheme,
 		ClusterBinding: clusterBinding,
 		Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
+		// Provide mock functions for testing
+		GetNodesMatchingSelector: func(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
+			// Return empty list for tests
+			return nil, nil
+		},
+		RequeueNodes: func(nodeName []string) error {
+			// Mock implementation - just return nil
+			return nil
+		},
 	}
 
 	tests := []struct {
@@ -254,11 +275,10 @@ func TestResourceLeasingPolicyReconciler_TriggerNodeReEvaluation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := reconciler.triggerNodeReEvaluation()
+			result, err := reconciler.triggerNodeReEvaluation(nil)
 
 			assert.NoError(t, err)
-			assert.True(t, result.RequeueAfter > 0, "Should requeue after some time")
-			assert.Equal(t, DefaultPolicySyncInterval, result.RequeueAfter, "Should use default policy sync interval")
+			assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue after successful trigger")
 		})
 	}
 }
@@ -282,4 +302,154 @@ func TestResourceLeasingPolicyReconciler_SetupWithManager(t *testing.T) {
 	// This test just ensures the SetupWithManager method exists and has the correct signature
 	// In a real environment, you would create a real manager to test this
 	assert.NotNil(t, reconciler.SetupWithManager)
+}
+
+func TestResourceLeasingPolicyReconciler_Finalizer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+	}
+
+	// Create a policy with NodeSelector
+	policy := &cloudv1beta1.ResourceLeasingPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-policy",
+		},
+		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+			Cluster: "test-cluster",
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "node-type",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"worker"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	virtualClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(policy).
+		Build()
+
+	reconciler := &ResourceLeasingPolicyReconciler{
+		Client:         virtualClient,
+		VirtualClient:  virtualClient,
+		Scheme:         scheme,
+		ClusterBinding: clusterBinding,
+		Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
+		// Provide mock functions for testing
+		GetNodesMatchingSelector: func(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
+			// Return a test node that matches the selector
+			return []string{"test-node"}, nil
+		},
+		RequeueNodes: func(nodeNames []string) error {
+			// Mock implementation - just return success
+			return nil
+		},
+	}
+
+	ctx := context.Background()
+
+	t.Run("adds finalizer on first reconcile", func(t *testing.T) {
+		req := ctrl.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      "test-policy",
+				Namespace: "",
+			},
+		}
+
+		// First reconcile should add finalizer
+		result, err := reconciler.Reconcile(ctx, req)
+		require.NoError(t, err)
+		assert.False(t, result.Requeue)
+
+		// Verify finalizer was added
+		updatedPolicy := &cloudv1beta1.ResourceLeasingPolicy{}
+		err = virtualClient.Get(ctx, req.NamespacedName, updatedPolicy)
+		require.NoError(t, err)
+		assert.True(t, reconciler.hasFinalizer(updatedPolicy))
+	})
+
+	t.Run("handles deletion with finalizer", func(t *testing.T) {
+		// Create a new policy for this test with deletion timestamp already set
+		now := metav1.Now()
+		deletionTestPolicy := &cloudv1beta1.ResourceLeasingPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "test-policy-deletion",
+				Finalizers:        []string{PolicyFinalizerName},
+				DeletionTimestamp: &now,
+			},
+			Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+				Cluster: "test-cluster",
+				NodeSelector: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{
+						{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "node-type",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"worker"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Create a new client for this test
+		deletionClient := fakeclient.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(deletionTestPolicy).
+			Build()
+
+		deletionReconciler := &ResourceLeasingPolicyReconciler{
+			Client:         deletionClient,
+			VirtualClient:  deletionClient,
+			Scheme:         scheme,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
+			GetNodesMatchingSelector: func(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
+				return []string{"test-node"}, nil
+			},
+			RequeueNodes: func(nodeNames []string) error {
+				return nil
+			},
+		}
+
+		req := ctrl.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      "test-policy-deletion",
+				Namespace: "",
+			},
+		}
+
+		// Reconcile should handle deletion
+		result, err := deletionReconciler.Reconcile(ctx, req)
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(0), result.RequeueAfter)
+
+		// Verify finalizer was removed (policy should be deleted or finalizer removed)
+		updatedPolicy := &cloudv1beta1.ResourceLeasingPolicy{}
+		err = deletionClient.Get(ctx, req.NamespacedName, updatedPolicy)
+		if err == nil {
+			// If policy still exists, finalizer should be removed
+			assert.False(t, deletionReconciler.hasFinalizer(updatedPolicy))
+		} else {
+			// Policy should be deleted (NotFound error is expected)
+			assert.True(t, errors.IsNotFound(err))
+		}
+	})
 }

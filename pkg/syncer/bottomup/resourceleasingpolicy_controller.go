@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -26,23 +28,77 @@ type ResourceLeasingPolicyReconciler struct {
 	Scheme         *runtime.Scheme
 	ClusterBinding *cloudv1beta1.ClusterBinding
 	Log            logr.Logger
+	// Functions for triggering node re-evaluation, provided by BottomUpSyncer
+	GetNodesMatchingSelector func(ctx context.Context, selector *corev1.NodeSelector) ([]string, error)
+	RequeueNodes             func(nodeNames []string) error
 }
+
+const (
+	// PolicyFinalizerName is the finalizer added to ResourceLeasingPolicy objects
+	PolicyFinalizerName = "policy.tapestry.io/finalizer"
+)
 
 //+kubebuilder:rbac:groups=cloud.tencent.com,resources=resourceleasingpolicies,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=cloud.tencent.com,resources=resourceleasingpolicies/status,verbs=get;update;patch
 
+// hasFinalizer checks if the policy has our finalizer
+func (r *ResourceLeasingPolicyReconciler) hasFinalizer(policy *cloudv1beta1.ResourceLeasingPolicy) bool {
+	return controllerutil.ContainsFinalizer(policy, PolicyFinalizerName)
+}
+
+// addFinalizer adds our finalizer to the policy
+func (r *ResourceLeasingPolicyReconciler) addFinalizer(ctx context.Context, policy *cloudv1beta1.ResourceLeasingPolicy, log logr.Logger) (ctrl.Result, error) {
+	log.V(1).Info("Adding finalizer to ResourceLeasingPolicy")
+	controllerutil.AddFinalizer(policy, PolicyFinalizerName)
+	if err := r.Client.Update(ctx, policy); err != nil {
+		log.Error(err, "Failed to add finalizer")
+		return ctrl.Result{}, err
+	}
+	// not requeue, wait for it updated
+	return ctrl.Result{}, nil
+}
+
+// removeFinalizer removes our finalizer from the policy
+func (r *ResourceLeasingPolicyReconciler) removeFinalizer(ctx context.Context, policy *cloudv1beta1.ResourceLeasingPolicy, log logr.Logger) error {
+	log.V(1).Info("Removing finalizer from ResourceLeasingPolicy")
+	controllerutil.RemoveFinalizer(policy, PolicyFinalizerName)
+	return r.Client.Update(ctx, policy)
+}
+
+// handlePolicyDeletion handles the deletion of a policy using finalizer
+func (r *ResourceLeasingPolicyReconciler) handlePolicyDeletion(ctx context.Context, policy *cloudv1beta1.ResourceLeasingPolicy, log logr.Logger) (ctrl.Result, error) {
+	log.Info("ResourceLeasingPolicy is being deleted, triggering node re-evaluation with cached NodeSelector")
+
+	// At this point, we still have access to the complete policy object including NodeSelector
+	// Trigger node re-evaluation with the policy's NodeSelector
+	result, err := r.triggerNodeReEvaluation(policy)
+	if err != nil {
+		log.Error(err, "Failed to trigger node re-evaluation during deletion")
+		return ctrl.Result{}, err
+	}
+
+	// Remove finalizer to allow deletion to proceed
+	if err := r.removeFinalizer(ctx, policy, log); err != nil {
+		log.Error(err, "Failed to remove finalizer")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Successfully handled ResourceLeasingPolicy deletion")
+	return result, nil
+}
+
 // Reconcile handles ResourceLeasingPolicy events
 func (r *ResourceLeasingPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("resourceleasingpolicy", req.NamespacedName)
+	//log.V(1).Info("Reconcile", "req", req)
 
 	// Get the ResourceLeasingPolicy
 	policy := &cloudv1beta1.ResourceLeasingPolicy{}
 	err := r.Client.Get(ctx, req.NamespacedName, policy)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Policy was deleted, trigger re-evaluation to remove nodes that no longer have policies
-			log.Info("ResourceLeasingPolicy deleted, triggering node re-evaluation")
-			return r.triggerNodeReEvaluation()
+			log.V(1).Info("ResourceLeasingPolicy not found, likely already deleted")
+			return ctrl.Result{}, nil
 		}
 		log.Error(err, "Failed to get ResourceLeasingPolicy")
 		return ctrl.Result{}, err
@@ -54,9 +110,14 @@ func (r *ResourceLeasingPolicyReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil
 	}
 
-	// Handle deletion
+	// Handle deletion with finalizer
 	if policy.DeletionTimestamp != nil {
-		return r.triggerNodeReEvaluation()
+		return r.handlePolicyDeletion(ctx, policy, log)
+	}
+
+	// Add finalizer if not present
+	if !r.hasFinalizer(policy) {
+		return r.addFinalizer(ctx, policy, log)
 	}
 
 	// Update policy status (ignore errors for testing compatibility)
@@ -69,18 +130,46 @@ func (r *ResourceLeasingPolicyReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Policy was created or updated, trigger re-evaluation
 	log.Info("ResourceLeasingPolicy changed, triggering node re-evaluation")
-	res, err := r.triggerNodeReEvaluation()
+	res, err := r.triggerNodeReEvaluation(policy)
 	if err != nil {
 		return res, err
 	}
 	return ctrl.Result{RequeueAfter: DefaultPolicySyncInterval}, nil
 }
 
-// triggerNodeReEvaluation triggers re-evaluation of all nodes
-// 目前由 node controller 每5分钟定时同步更新，所以这里暂时不需要实现，后续用定时器做成定时触发
-func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation() (ctrl.Result, error) {
-	// For now, simply request a requeue after the default policy sync interval
-	return ctrl.Result{RequeueAfter: DefaultPolicySyncInterval}, nil
+// triggerNodeReEvaluation triggers re-evaluation of all nodes by using the provided functions
+func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation(policy *cloudv1beta1.ResourceLeasingPolicy) (ctrl.Result, error) {
+	policyName := ""
+	var nodeSelector *corev1.NodeSelector
+	if policy != nil {
+		policyName = policy.Name
+		nodeSelector = policy.Spec.NodeSelector
+	}
+	log := r.Log.WithValues("resourceleasingpolicy", policyName)
+	if r.GetNodesMatchingSelector == nil || r.RequeueNodes == nil {
+		log.Error(fmt.Errorf("node re-evaluation functions not provided, skipping trigger"), "Node re-evaluation functions not provided, skipping trigger")
+		return ctrl.Result{}, nil
+	}
+
+	ctx := context.Background()
+
+	// Get matching nodes
+	nodes, err := r.GetNodesMatchingSelector(ctx, nodeSelector)
+	if err != nil {
+		log.Error(err, "Failed to get nodes for re-evaluation")
+		return ctrl.Result{}, err
+	}
+
+	// Requeue each node for re-evaluation
+	log.Info("Requeuing nodes for re-evaluation", "nodes", nodes)
+	if len(nodes) > 0 {
+		if err := r.RequeueNodes(nodes); err != nil {
+			log.Error(err, "Failed to requeue nodes for re-evaluation")
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // updatePolicyStatus updates the status of a ResourceLeasingPolicy

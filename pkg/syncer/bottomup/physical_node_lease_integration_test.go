@@ -27,7 +27,15 @@ func TestPhysicalNodeReconciler_LeaseControllerIntegration(t *testing.T) {
 	_ = coordinationv1.AddToScheme(scheme)
 
 	// Create fake clients
-	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	virtualClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}).Build()
 	physicalClient := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
 		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
@@ -278,7 +286,15 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 	_ = coordinationv1.AddToScheme(scheme)
 
 	// Create fake clients
-	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	virtualClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}).Build()
 	physicalClient := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
 		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
@@ -410,7 +426,8 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 		}
 
 		// Handle node deletion (should stop lease controller and delete virtual node)
-		_, err = reconciler.handleNodeDeletion(ctx, physicalNode.Name)
+		// Physical node deleted, force reclaim immediately
+		_, err = reconciler.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 		if err != nil {
 			t.Fatalf("Failed to handle node deletion: %v", err)
 		}

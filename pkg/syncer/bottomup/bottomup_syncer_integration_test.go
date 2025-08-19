@@ -164,8 +164,8 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		// Delete the virtual node first to test deletion handling
 		virtualNodeName := nodeReconciler.generateVirtualNodeName(physicalNode.Name)
 
-		// Simulate node deletion
-		result, err := nodeReconciler.handleNodeDeletion(ctx, physicalNode.Name)
+		// Simulate node deletion (physical node deleted, force reclaim immediately)
+		result, err := nodeReconciler.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 		require.NoError(t, err)
 		assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue after deletion")
 
@@ -182,12 +182,21 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 			Scheme:         scheme,
 			ClusterBinding: clusterBinding,
 			Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
+			// Provide mock functions for testing
+			GetNodesMatchingSelector: func(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
+				// Return empty list for tests
+				return nil, nil
+			},
+			RequeueNodes: func(nodeNames []string) error {
+				// Mock implementation - just return nil
+				return nil
+			},
 		}
 
 		// Test policy reconciliation
-		result, err := policyReconciler.triggerNodeReEvaluation()
+		result, err := policyReconciler.triggerNodeReEvaluation(policy)
 		require.NoError(t, err)
-		assert.True(t, result.RequeueAfter > 0, "Should requeue for node re-evaluation")
+		assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue after successful trigger")
 	})
 
 	t.Run("BottomUpSyncer initialization", func(t *testing.T) {

@@ -93,8 +93,8 @@ func (bus *BottomUpSyncer) Start(ctx context.Context) error {
 	return nil
 }
 
-// RequeueNode triggers re-reconciliation of specific nodes
-func (bus *BottomUpSyncer) RequeueNode(nodeNames []string) error {
+// RequeueNodes triggers re-reconciliation of specific nodes
+func (bus *BottomUpSyncer) RequeueNodes(nodeNames []string) error {
 	if bus.nodeReconciler == nil {
 		return fmt.Errorf("node reconciler not initialized")
 	}
@@ -165,7 +165,7 @@ func (bus *BottomUpSyncer) setupControllers() error {
 	// Save reference to the reconciler for triggering reconciliation
 	bus.nodeReconciler = nodeReconciler
 
-	if err := nodeReconciler.SetupWithManager(bus.physicalManager); err != nil {
+	if err := nodeReconciler.SetupWithManager(bus.physicalManager, bus.virtualManager); err != nil {
 		return fmt.Errorf("failed to setup physical node controller: %w", err)
 	}
 
@@ -190,6 +190,9 @@ func (bus *BottomUpSyncer) setupControllers() error {
 		Scheme:         bus.Scheme,
 		ClusterBinding: bus.ClusterBinding,
 		Log:            bus.Log.WithName("resource-leasing-policy-controller"),
+		// Provide functions for triggering node re-evaluation
+		GetNodesMatchingSelector: bus.GetNodesMatchingSelector,
+		RequeueNodes:             bus.RequeueNodes,
 	}
 
 	if err := policyReconciler.SetupWithManager(bus.virtualManager); err != nil {

@@ -23,6 +23,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
@@ -38,6 +40,12 @@ const (
 	NodeInstanceTypeLabelBeta = "beta.kubernetes.io/instance-type"
 	NodeInstanceTypeLabel     = "node.kubernetes.io/instance-type"
 	NodeInstanceTypeExternal  = "external"
+
+	// Taint keys for node deletion
+	TaintKeyVirtualNodeDeleting = "tapestry.io/vnode-deleting"
+
+	// Annotation keys for deletion tracking
+	AnnotationDeletionTaintTime = "tapestry.io/deletion-taint-time"
 )
 
 // ExpectedNodeMetadata represents the expected metadata for a virtual node
@@ -81,7 +89,7 @@ func (r *PhysicalNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if errors.IsNotFound(err) {
 			// Node was deleted, clean up virtual node
 			log.Info("Physical node deleted, cleaning up virtual node")
-			return r.handleNodeDeletion(ctx, req.Name)
+			return r.handleNodeDeletion(ctx, req.Name, true, 0)
 		}
 		log.Error(err, "Failed to get physical node")
 		return ctrl.Result{}, err
@@ -89,7 +97,7 @@ func (r *PhysicalNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Handle deletion
 	if physicalNode.DeletionTimestamp != nil {
-		return r.handleNodeDeletion(ctx, physicalNode.Name)
+		return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
 	}
 
 	// Process the node
@@ -110,7 +118,7 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	// If node does not match ClusterBinding selector, ensure virtual node is deleted
 	if !r.nodeMatchesSelector(physicalNode, clusterBinding.Spec.NodeSelector) {
 		log.V(1).Info("Node does not match ClusterBinding selector; deleting virtual node")
-		return r.handleNodeDeletion(ctx, physicalNode.Name)
+		return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
 	}
 
 	// Find applicable ResourceLeasingPolicies by node selector
@@ -127,6 +135,9 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 			// Sort by creation time and use the earliest
 			sort.Slice(policies, func(i, j int) bool {
 				// Older (earlier creation) comes first
+				if policies[i].CreationTimestamp.Time.Equal(policies[j].CreationTimestamp.Time) {
+					return policies[i].Name < policies[j].Name
+				}
 				return policies[i].CreationTimestamp.Time.Before(policies[j].CreationTimestamp.Time)
 			})
 			var ignored []string
@@ -150,7 +161,15 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 		// Check if within time windows
 		if !r.isWithinTimeWindows([]cloudv1beta1.ResourceLeasingPolicy{*policy}) {
 			log.V(1).Info("Node outside time windows")
-			return r.handleNodeDeletion(ctx, physicalNode.Name)
+
+			// Use policy's ForceReclaim settings for time window deletion
+			forceReclaim := policy.Spec.ForceReclaim
+			gracefulPeriod := policy.Spec.GracefulReclaimPeriodSeconds
+			if gracefulPeriod < 0 {
+				gracefulPeriod = 0
+			}
+
+			return r.handleNodeDeletion(ctx, physicalNode.Name, forceReclaim, gracefulPeriod)
 		}
 	}
 
@@ -177,8 +196,136 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
 }
 
+// addDeletionTaint adds the deletion taint to a virtual node and returns the updated node
+func (r *PhysicalNodeReconciler) addDeletionTaint(ctx context.Context, virtualNode *corev1.Node) (*corev1.Node, error) {
+	logger := r.Log.WithValues("virtualNode", virtualNode.Name)
+
+	// Check if deletion taint already exists
+	for _, taint := range virtualNode.Spec.Taints {
+		if taint.Key == TaintKeyVirtualNodeDeleting {
+			logger.V(1).Info("Deletion taint already exists")
+			return virtualNode, nil
+		}
+	}
+
+	// Add deletion taint
+	deletionTaint := corev1.Taint{
+		Key:    TaintKeyVirtualNodeDeleting,
+		Value:  "true",
+		Effect: corev1.TaintEffectNoSchedule,
+	}
+
+	virtualNode.Spec.Taints = append(virtualNode.Spec.Taints, deletionTaint)
+
+	// Add annotation with taint addition time
+	if virtualNode.Annotations == nil {
+		virtualNode.Annotations = make(map[string]string)
+	}
+	virtualNode.Annotations[AnnotationDeletionTaintTime] = time.Now().Format(time.RFC3339)
+
+	// Update the node
+	if err := r.VirtualClient.Update(ctx, virtualNode); err != nil {
+		return nil, fmt.Errorf("failed to add deletion taint: %w", err)
+	}
+
+	logger.Info("Added deletion taint to virtual node")
+
+	return virtualNode, nil
+}
+
+// hasDeletionTaint checks if a virtual node has the deletion taint
+func (r *PhysicalNodeReconciler) hasDeletionTaint(virtualNode *corev1.Node) bool {
+	for _, taint := range virtualNode.Spec.Taints {
+		if taint.Key == TaintKeyVirtualNodeDeleting {
+			return true
+		}
+	}
+	return false
+}
+
+// getDeletionTaintTime gets the time when deletion taint was added
+func (r *PhysicalNodeReconciler) getDeletionTaintTime(virtualNode *corev1.Node) (*time.Time, error) {
+	if virtualNode.Annotations == nil {
+		return nil, fmt.Errorf("no annotations found")
+	}
+
+	taintTimeStr, exists := virtualNode.Annotations[AnnotationDeletionTaintTime]
+	if !exists {
+		return nil, fmt.Errorf("deletion taint time annotation not found")
+	}
+
+	taintTime, err := time.Parse(time.RFC3339, taintTimeStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse deletion taint time: %w", err)
+	}
+
+	return &taintTime, nil
+}
+
+// checkPodsOnVirtualNode checks if there are any pods (Pending or Running) on the virtual node
+func (r *PhysicalNodeReconciler) checkPodsOnVirtualNode(ctx context.Context, virtualNodeName string) (bool, error) {
+	logger := r.Log.WithValues("virtualNode", virtualNodeName)
+
+	// List all pods running on this virtual node
+	podList := &corev1.PodList{}
+	listOptions := []client.ListOption{
+		client.MatchingFields{"spec.nodeName": virtualNodeName},
+	}
+
+	if err := r.VirtualClient.List(ctx, podList, listOptions...); err != nil {
+		return false, fmt.Errorf("failed to list pods on virtual node %s: %w", virtualNodeName, err)
+	}
+
+	// Check for pods in Pending or Running state
+	for _, pod := range podList.Items {
+		if pod.Spec.NodeName == virtualNodeName && (pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning) {
+			logger.Info("Found active pod on virtual node", "pod", pod.Name, "namespace", pod.Namespace, "phase", pod.Status.Phase)
+			return true, nil
+		}
+	}
+
+	logger.V(1).Info("No active pods found on virtual node")
+	return false, nil
+}
+
+// forceEvictPodsOnVirtualNode forcefully evicts all pods on the virtual node by deleting them
+func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context, virtualNodeName string) error {
+	logger := r.Log.WithValues("virtualNode", virtualNodeName)
+
+	// List all pods on this virtual node
+	podList := &corev1.PodList{}
+	listOptions := []client.ListOption{
+		client.MatchingFields{"spec.nodeName": virtualNodeName},
+	}
+
+	if err := r.VirtualClient.List(ctx, podList, listOptions...); err != nil {
+		return fmt.Errorf("failed to list pods on virtual node %s: %w", virtualNodeName, err)
+	}
+
+	// Delete all pods
+	for _, pod := range podList.Items {
+		if pod.Spec.NodeName != virtualNodeName {
+			continue
+		}
+
+		logger.Info("Deleting pod to evict", "pod", pod.Name, "namespace", pod.Namespace, "phase", pod.Status.Phase)
+		// Delete the pod immediately
+		deleteOptions := &client.DeleteOptions{}
+		if err := r.VirtualClient.Delete(ctx, &pod, deleteOptions); err != nil && !errors.IsNotFound(err) {
+			logger.Error(err, "Failed to delete pod", "pod", pod.Name, "namespace", pod.Namespace)
+			// Continue with other pods even if one fails
+		} else {
+			logger.Info("Successfully deleted pod", "pod", pod.Name, "namespace", pod.Namespace)
+		}
+	}
+
+	return nil
+}
+
 // handleNodeDeletion handles deletion of physical node
-func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physicalNodeName string) (ctrl.Result, error) {
+// forceReclaim: whether to force reclaim resources by evicting pods
+// gracefulReclaimPeriodSeconds: graceful period before force eviction (0 means immediate)
+func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physicalNodeName string, forceReclaim bool, gracefulReclaimPeriodSeconds int32) (ctrl.Result, error) {
 	logger := r.Log.WithValues("physicalNode", physicalNodeName)
 
 	virtualNodeName := r.generateVirtualNodeName(physicalNodeName)
@@ -188,17 +335,86 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Virtual node doesn't exist, nothing to do
+			logger.V(1).Info("Virtual node not found, nothing to delete")
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get virtual node for deletion")
 		return ctrl.Result{}, err
 	}
 
+	// Step 1: Add deletion taint to prevent new pod scheduling
+	if !r.hasDeletionTaint(virtualNode) {
+		logger.Info("Adding deletion taint to virtual node")
+		updatedVirtualNode, err := r.addDeletionTaint(ctx, virtualNode)
+		if err != nil {
+			logger.Error(err, "Failed to add deletion taint")
+			return ctrl.Result{}, err
+		}
+		// Use the updated virtual node for subsequent operations
+		virtualNode = updatedVirtualNode
+		logger.Info("Deletion taint added, continuing with deletion process")
+	}
+
+	// Step 2: Handle ForceReclaim based on input parameters
+	logger.Info("Processing deletion", "forceReclaim", forceReclaim, "gracefulPeriod", gracefulReclaimPeriodSeconds)
+
+	if forceReclaim {
+		if gracefulReclaimPeriodSeconds == 0 {
+			// Immediate force eviction (physical node deleted scenario)
+			logger.Info("Immediate force eviction requested, evicting all pods")
+			if err := r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName); err != nil {
+				logger.Error(err, "Failed to force evict pods")
+				return ctrl.Result{}, err
+			}
+			// Continue to final deletion step
+		} else {
+			// Graceful force eviction (policy time window scenario)
+			logger.Info("Graceful force eviction requested, checking graceful period", "gracefulPeriod", gracefulReclaimPeriodSeconds)
+
+			// Check if graceful reclaim period has passed
+			taintTime, err := r.getDeletionTaintTime(virtualNode)
+			if err != nil {
+				logger.Error(err, "Failed to get deletion taint time")
+				return ctrl.Result{}, err
+			}
+
+			gracefulDuration := time.Duration(gracefulReclaimPeriodSeconds) * time.Second
+			if time.Since(*taintTime) < gracefulDuration {
+				remainingTime := gracefulDuration - time.Since(*taintTime)
+				logger.Info("Graceful reclaim period not yet passed, waiting", "remainingTime", remainingTime)
+				return ctrl.Result{RequeueAfter: remainingTime}, nil
+			}
+			logger.Info("Graceful reclaim period passed, force evicting pods")
+			if err := r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName); err != nil {
+				logger.Error(err, "Failed to force evict pods")
+				return ctrl.Result{}, err
+			}
+			// continue to next step
+		}
+	} else {
+		logger.Info("ForceReclaim disabled, not force evicting pods")
+		// continue to next step
+	}
+
+	// Step 3: Check if there are still pods on the virtual node
+	hasPods, err := r.checkPodsOnVirtualNode(ctx, virtualNodeName)
+	if err != nil {
+		logger.Error(err, "Failed to check pods on virtual node")
+		return ctrl.Result{}, err
+	}
+
+	if hasPods {
+		logger.Info("Virtual node still has active pods, cannot delete node")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	// Step 4: All conditions met, proceed with virtual node deletion
+	logger.Info("No active pods found, proceeding with virtual node deletion")
+
 	// Stop lease controller for the virtual node
 	r.stopLeaseController(virtualNodeName)
 
 	// Delete virtual node
-	// TODO: needs to drain node first, and wait for no pods
 	logger.Info("Deleting virtual node", "virtualNode", virtualNodeName)
 	err = r.VirtualClient.Delete(ctx, virtualNode)
 	if err != nil && !errors.IsNotFound(err) {
@@ -206,6 +422,7 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 		return ctrl.Result{}, err
 	}
 
+	logger.Info("Successfully deleted virtual node", "virtualNode", virtualNodeName)
 	return ctrl.Result{}, nil
 }
 
@@ -219,7 +436,7 @@ func (r *PhysicalNodeReconciler) getApplicablePolicies(ctx context.Context, node
 	var applicablePolicies []cloudv1beta1.ResourceLeasingPolicy
 	for _, policy := range policyList.Items {
 		// Check if policy references our ClusterBinding
-		if policy.Spec.Cluster == r.ClusterBindingName {
+		if policy.DeletionTimestamp == nil && policy.Spec.Cluster == r.ClusterBindingName {
 			// Check if node matches the intersection of policy and ClusterBinding nodeSelectors
 			if r.nodeMatchesCombinedSelector(node, policy.Spec.NodeSelector, clusterSelector) {
 				applicablePolicies = append(applicablePolicies, policy)
@@ -691,12 +908,15 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		newNode.Labels = virtualNode.Labels
 		newNode.Annotations = virtualNode.Annotations
 
-		logger.V(1).Info("Updating virtual node",
-			"resources", resources,
-			"resourceVersion", virtualNode.ResourceVersion)
-		err = r.VirtualClient.Status().Update(ctx, newNode)
-		if err != nil {
-			return fmt.Errorf("failed to update virtual node status: %w", err)
+		if !reflect.DeepEqual(existingNode, newNode) {
+			logger.V(1).Info("Updating virtual node",
+				"resources", resources,
+				"resourceVersion", newNode.ResourceVersion,
+				"conditions", newNode.Status.Conditions)
+			err = r.VirtualClient.Status().Update(ctx, newNode)
+			if err != nil {
+				return fmt.Errorf("failed to update virtual node status: %w", err)
+			}
 		}
 
 		if !reflect.DeepEqual(existingNode.Spec.Taints, virtualNode.Spec.Taints) {
@@ -819,7 +1039,7 @@ func (r *PhysicalNodeReconciler) mergeLabels(existing, new *corev1.Node, previou
 		}
 		// 如果不在previousExpected中，则认为是用户添加的
 		if _, ok := previousExpected[key]; !ok {
-			r.Log.Info("user added label", "key", key, "value", value)
+			r.Log.Info("user added label", "key", key, "value", value, "node", new.Name)
 			new.Labels[key] = value
 		}
 	}
@@ -842,9 +1062,13 @@ func (r *PhysicalNodeReconciler) mergeAnnotations(existing, new *corev1.Node, pr
 		if _, ok := currentExpected[key]; ok {
 			continue
 		}
+		if key == AnnotationDeletionTaintTime {
+			r.Log.Info("skipping deletion taint time", "key", key, "value", value, "node", new.Name)
+			continue
+		}
 		// 如果不在previousExpected中，则认为是用户添加的
 		if _, ok := previousExpected[key]; !ok {
-			r.Log.Info("user added annotation", "key", key, "value", value)
+			r.Log.Info("user added annotation", "key", key, "value", value, "node", new.Name)
 			new.Annotations[key] = value
 		}
 	}
@@ -865,9 +1089,13 @@ func (r *PhysicalNodeReconciler) mergeTaints(existing, new *corev1.Node, previou
 		if _, ok := currentExpectedMap[taint.Key]; ok {
 			continue
 		}
+		if taint.Key == TaintKeyVirtualNodeDeleting {
+			r.Log.Info("skipping deletion taint", "taint", taint, "node", new.Name)
+			continue
+		}
 		// 如果不在previousExpected中，则认为是用户添加的
 		if _, ok := previousExpectedMap[taint.Key]; !ok {
-			r.Log.Info("user added taint", "taint", taint)
+			r.Log.Info("user added taint", "taint", taint, "node", new.Name)
 			new.Spec.Taints = append(new.Spec.Taints, taint)
 		}
 	}
@@ -1052,25 +1280,35 @@ func (r *PhysicalNodeReconciler) TriggerReconciliation(nodeName string) error {
 }
 
 // SetupWithManager sets up the controller with the Manager
-func (r *PhysicalNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManager ctrl.Manager) error {
 	// Initialize lease controllers map
 	r.initLeaseControllers()
 
 	// Add index for pods by node name to efficiently query pods running on a specific node
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+	if err := physicalManager.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
 		pod := rawObj.(*corev1.Pod)
 		if pod.Spec.NodeName == "" {
 			return nil
 		}
 		return []string{pod.Spec.NodeName}
 	}); err != nil {
-		return fmt.Errorf("failed to setup pod index by node name: %w", err)
+		return fmt.Errorf("failed to setup pod index by node name for physical manager: %w", err)
+	}
+
+	if err := virtualManager.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+		pod := rawObj.(*corev1.Pod)
+		if pod.Spec.NodeName == "" {
+			return nil
+		}
+		return []string{pod.Spec.NodeName}
+	}); err != nil {
+		return fmt.Errorf("failed to setup pod index by node name for virtual manager: %w", err)
 	}
 
 	// Generate unique controller name using cluster binding name
 	uniqueControllerName := fmt.Sprintf("node-%s", r.ClusterBindingName)
 
-	return ctrl.NewControllerManagedBy(mgr).
+	return ctrl.NewControllerManagedBy(physicalManager).
 		For(&corev1.Node{}).
 		Named(uniqueControllerName).
 		WithOptions(controller.Options{
@@ -1084,5 +1322,36 @@ func (r *PhysicalNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return wq
 			},
 		}).
+		Watches(
+			&corev1.Pod{},
+			handler.Funcs{
+				CreateFunc: func(ctx context.Context, event event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+					pod := event.Object.(*corev1.Pod)
+					if pod == nil || pod.Spec.NodeName == "" {
+						return
+					}
+					r.Log.Info("pod created", "namespace", pod.Namespace, "name", pod.Name, "node", pod.Spec.NodeName)
+					q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: pod.Spec.NodeName}})
+				},
+				UpdateFunc: func(ctx context.Context, event event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+					opod := event.ObjectOld.(*corev1.Pod)
+					npod := event.ObjectNew.(*corev1.Pod)
+					if opod == nil || npod == nil || npod.Spec.NodeName == "" {
+						return
+					}
+					if opod.Spec.NodeName != npod.Spec.NodeName {
+						r.Log.Info("pod updated", "namespace", npod.Namespace, "name", npod.Name, "node", npod.Spec.NodeName)
+						q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: npod.Spec.NodeName}})
+					}
+				},
+				DeleteFunc: func(ctx context.Context, event event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+					pod := event.Object.(*corev1.Pod)
+					if pod == nil || pod.Spec.NodeName == "" {
+						return
+					}
+					r.Log.Info("pod deleted", "namespace", pod.Namespace, "name", pod.Name, "node", pod.Spec.NodeName)
+					q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: pod.Spec.NodeName}})
+				}},
+		).
 		Complete(r)
 }

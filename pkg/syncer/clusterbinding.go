@@ -129,7 +129,7 @@ func (r *ClusterBindingReconciler) handleNodeSelectorChange(ctx context.Context,
 	// Trigger node re-evaluation in bottomUpSyncer
 	if r.BottomUpSyncer != nil && len(affectedNodes) > 0 {
 		r.Log.Info("Triggering node re-evaluation due to nodeSelector change", "affectedNodes", affectedNodes)
-		if err := r.BottomUpSyncer.RequeueNode(affectedNodes); err != nil {
+		if err := r.BottomUpSyncer.RequeueNodes(affectedNodes); err != nil {
 			r.Log.Error(err, "Failed to requeue nodes")
 			return ctrl.Result{}, err
 		}
