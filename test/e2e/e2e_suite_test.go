@@ -39,6 +39,7 @@ var (
 	mgrPhysical     ctrl.Manager
 	suiteCtx        context.Context
 	suiteCancel     context.CancelFunc
+	uniqueID        string
 )
 
 func TestE2E(t *testing.T) {
@@ -101,6 +102,7 @@ var _ = ginkgo.BeforeEach(func(ctx context.Context) {
 			ginkgo.Fail(fmt.Sprintf("Virtual manager failed to start: %v", err))
 		}
 	}()
+	uniqueID = generateUniqueID()
 })
 
 var _ = ginkgo.AfterEach(func() {

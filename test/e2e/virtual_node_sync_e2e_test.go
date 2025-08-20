@@ -125,7 +125,6 @@ var _ = Describe("Virtual Node Sync Test", func() {
 	ginkgo.Describe("Virtual Node Resource Tests", func() {
 		var (
 			testNamespace = "tapestry-system"
-			uniqueID      = generateUniqueID()
 			clusterName   = "test-" + uniqueID // 缩短名称以避免超过63字符限制
 			secretName    = clusterName + "-kc"
 		)
@@ -135,6 +134,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNamespace}})
 
 			// Create kubeconfig secret
+			clusterName = "test-" + uniqueID
+			secretName = clusterName + "-kc"
 			kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			secret := &corev1.Secret{

@@ -6,6 +6,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	LabelManagedBy      = "tapestry.io/managed-by"
+	LabelManagedByValue = "tapestry"
+)
+
 // ClusterBindingSpec defines the desired state of ClusterBinding
 type ClusterBindingSpec struct {
 	// ClusterID is a unique identifier for the cluster that will be used as part of virtual node names

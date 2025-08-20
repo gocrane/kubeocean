@@ -234,7 +234,7 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 					assert.Equal(t, virtualNodeName, virtualNode.Name)
 					assert.Equal(t, "test-cluster", virtualNode.Labels[LabelPhysicalClusterID])
 					assert.Equal(t, "test-node", virtualNode.Labels[LabelPhysicalNodeName])
-					assert.Equal(t, "tapestry", virtualNode.Labels[LabelManagedBy])
+					assert.Equal(t, "tapestry", virtualNode.Labels[cloudv1beta1.LabelManagedBy])
 				} else {
 					assert.True(t, client.IgnoreNotFound(err) == nil, "Virtual node should not exist")
 				}

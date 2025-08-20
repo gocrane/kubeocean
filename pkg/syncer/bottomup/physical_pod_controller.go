@@ -3,26 +3,30 @@ package bottomup
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 )
 
 const (
 	// Annotations for Pod mapping
-	AnnotationVirtualPodNamespace = "tapestry.io/virtual-pod-namespace"
-	AnnotationVirtualPodName      = "tapestry.io/virtual-pod-name"
-	AnnotationPhysicalPodUID      = "tapestry.io/physical-pod-uid"
-	AnnotationSyncTimestamp       = "tapestry.io/sync-timestamp"
+	AnnotationVirtualPodNamespace  = "tapestry.io/virtual-pod-namespace"
+	AnnotationVirtualPodName       = "tapestry.io/virtual-pod-name"
+	AnnotationVirtualPodUID        = "tapestry.io/virtual-pod-uid"
+	AnnotationPhysicalPodNamespace = "tapestry.io/physical-pod-namespace"
+	AnnotationPhysicalPodName      = "tapestry.io/physical-pod-name"
 )
 
 // PhysicalPodReconciler reconciles Pod objects from physical cluster
@@ -43,45 +47,93 @@ type PhysicalPodReconciler struct {
 func (r *PhysicalPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := r.Log.WithValues("physicalPod", req.NamespacedName)
 
-	// Get the physical pod
+	// 1. Get the physical pod, if not exists, do nothing
 	physicalPod := &corev1.Pod{}
 	err := r.PhysicalClient.Get(ctx, req.NamespacedName, physicalPod)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Pod was deleted, sync deletion to virtual cluster
-			logger.Info("Physical pod deleted, syncing to virtual cluster")
-			return r.handlePodDeletion(ctx, req.NamespacedName)
+			// Physical pod not exists, do nothing
+			logger.V(1).Info("Physical pod not found, doing nothing")
+			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get physical pod")
 		return ctrl.Result{}, err
 	}
 
-	// Check if this is a Tapestry-managed pod (has virtual pod mapping)
+	// Check if this is a Tapestry-managed pod (has managed-by label)
 	if !r.isTapestryManagedPod(physicalPod) {
 		// Not a Tapestry pod, ignore
 		return ctrl.Result{}, nil
 	}
 
-	// Handle deletion
-	if physicalPod.DeletionTimestamp != nil {
-		return r.handlePodDeletion(ctx, req.NamespacedName)
+	// ignore deletion
+	// 2. Check required annotations on physical pod
+	if !r.hasRequiredAnnotations(physicalPod) {
+		logger.Info("Physical pod missing required annotations, triggering deletion")
+		return r.deletePhysicalPod(ctx, physicalPod)
 	}
 
-	// Sync pod status to virtual cluster
-	return r.syncPodStatus(ctx, physicalPod)
-}
-
-// syncPodStatus syncs physical pod status to corresponding virtual pod
-// This implements requirement 3.5 - ensuring Pod status sync idempotency
-func (r *PhysicalPodReconciler) syncPodStatus(ctx context.Context, physicalPod *corev1.Pod) (ctrl.Result, error) {
-	logger := r.Log.WithValues("physicalPod", physicalPod.Namespace+"/"+physicalPod.Name)
-
-	// Extract virtual pod information from annotations
-	virtualNamespace, virtualName, err := r.getVirtualPodInfo(physicalPod)
+	// 3 Get corresponding virtual pod and validate
+	virtualPod, isVirtualPodMatched, err := r.getAndValidateVirtualPod(ctx, physicalPod)
 	if err != nil {
-		logger.Error(err, "Failed to get virtual pod info from physical pod")
+		logger.Error(err, "Failed to get or validate virtual pod, triggering physical pod deletion")
 		return ctrl.Result{}, err
 	}
+	if virtualPod == nil || !isVirtualPodMatched {
+		logger.Info("Virtual pod not found or not matched, triggering physical pod deletion")
+		return r.deletePhysicalPod(ctx, physicalPod)
+	}
+
+	// 4. Check virtual pod annotations point back to current physical pod
+	if !r.validateVirtualPodAnnotations(virtualPod, physicalPod) {
+		logger.Info("Virtual pod annotations don't point back to current physical pod, triggering deletion")
+		return r.deletePhysicalPod(ctx, physicalPod)
+	}
+
+	// 5. All checks passed, sync physical pod to virtual pod
+	return r.syncPhysicalPodToVirtual(ctx, physicalPod, virtualPod)
+}
+
+// isTapestryManagedPod checks if a pod is managed by Tapestry
+func (r *PhysicalPodReconciler) isTapestryManagedPod(pod *corev1.Pod) bool {
+	// Check for Tapestry managed-by label
+	if pod.Labels == nil {
+		return false
+	}
+
+	managedBy, exists := pod.Labels[cloudv1beta1.LabelManagedBy]
+	return exists && managedBy == cloudv1beta1.LabelManagedByValue
+}
+
+// hasRequiredAnnotations checks if physical pod has all required annotations
+func (r *PhysicalPodReconciler) hasRequiredAnnotations(physicalPod *corev1.Pod) bool {
+	if physicalPod.Annotations == nil {
+		return false
+	}
+
+	requiredAnnotations := []string{
+		AnnotationVirtualPodNamespace,
+		AnnotationVirtualPodName,
+		AnnotationVirtualPodUID,
+	}
+
+	for _, annotation := range requiredAnnotations {
+		if value, exists := physicalPod.Annotations[annotation]; !exists || value == "" {
+			return false
+		}
+	}
+
+	return true
+}
+
+// getAndValidateVirtualPod gets virtual pod and validates its existence and UID
+// return: virtual pod, is virtual pod matched, error
+func (r *PhysicalPodReconciler) getAndValidateVirtualPod(ctx context.Context, physicalPod *corev1.Pod) (*corev1.Pod, bool, error) {
+	// Extract virtual pod information from annotations
+	virtualNamespace := physicalPod.Annotations[AnnotationVirtualPodNamespace]
+	virtualName := physicalPod.Annotations[AnnotationVirtualPodName]
+	expectedUID := physicalPod.Annotations[AnnotationVirtualPodUID]
+	logger := r.Log.WithValues("physicalPod", physicalPod.Namespace+"/"+physicalPod.Name, "virtualPod", virtualNamespace+"/"+virtualName, "expectedUID", expectedUID)
 
 	// Get the virtual pod
 	virtualPod := &corev1.Pod{}
@@ -90,225 +142,147 @@ func (r *PhysicalPodReconciler) syncPodStatus(ctx context.Context, physicalPod *
 		Name:      virtualName,
 	}
 
-	err = r.VirtualClient.Get(ctx, virtualPodKey, virtualPod)
+	err := r.VirtualClient.Get(ctx, virtualPodKey, virtualPod)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			logger.Info("Virtual pod not found, physical pod may be orphaned",
-				"virtualPod", virtualPodKey)
-			return ctrl.Result{}, nil
+			logger.Info("Virtual pod not found, triggering deletion")
+			return nil, true, nil
 		}
-		logger.Error(err, "Failed to get virtual pod")
-		return ctrl.Result{}, err
+		return nil, false, fmt.Errorf("failed to get virtual pod: %w", err)
 	}
 
-	// Check if status sync is needed (idempotency check)
-	if !r.needsStatusSync(virtualPod, physicalPod) {
-		logger.V(1).Info("Pod status already in sync, skipping update")
+	// Check if UID matches
+	if string(virtualPod.UID) != expectedUID {
+		logger.Info("Virtual pod UID mismatch, triggering deletion", "virtualPodUID", string(virtualPod.UID), "expectedUID", expectedUID)
+		return nil, false, nil
+	}
+
+	return virtualPod, true, nil
+}
+
+// validateVirtualPodAnnotations checks if virtual pod annotations point back to current physical pod
+func (r *PhysicalPodReconciler) validateVirtualPodAnnotations(virtualPod, physicalPod *corev1.Pod) bool {
+	if virtualPod.Annotations == nil {
+		return false
+	}
+
+	expectedNamespace := physicalPod.Namespace
+	expectedName := physicalPod.Name
+
+	actualNamespace, hasNamespace := virtualPod.Annotations[AnnotationPhysicalPodNamespace]
+	actualName, hasName := virtualPod.Annotations[AnnotationPhysicalPodName]
+
+	return hasNamespace && hasName && actualNamespace == expectedNamespace && actualName == expectedName
+}
+
+// deletePhysicalPod deletes the physical pod
+func (r *PhysicalPodReconciler) deletePhysicalPod(ctx context.Context, physicalPod *corev1.Pod) (ctrl.Result, error) {
+	logger := r.Log.WithValues("physicalPod", physicalPod.Namespace+"/"+physicalPod.Name)
+
+	if physicalPod.DeletionTimestamp != nil {
+		logger.Info("Physical pod is being deleted, skipping deletion")
 		return ctrl.Result{}, nil
 	}
 
-	// Update virtual pod status
-	err = r.updateVirtualPodStatus(ctx, virtualPod, physicalPod)
-	if err != nil {
-		logger.Error(err, "Failed to update virtual pod status")
+	deleteOpt := &client.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &physicalPod.UID},
+	}
+	err := r.PhysicalClient.Delete(ctx, physicalPod, deleteOpt)
+	if err != nil && !errors.IsNotFound(err) {
+		logger.Error(err, "Failed to delete physical pod")
 		return ctrl.Result{}, err
 	}
 
-	logger.V(1).Info("Successfully synced pod status",
-		"virtualPod", virtualPodKey,
-		"phase", physicalPod.Status.Phase)
+	logger.Info("Successfully triggered physical pod deletion")
+	return ctrl.Result{}, nil
+}
+
+// syncPhysicalPodToVirtual syncs physical pod annotations, labels, and status to virtual pod
+func (r *PhysicalPodReconciler) syncPhysicalPodToVirtual(ctx context.Context, physicalPod, virtualPod *corev1.Pod) (ctrl.Result, error) {
+	logger := r.Log.WithValues("physicalPod", physicalPod.Namespace+"/"+physicalPod.Name, "virtualPod", virtualPod.Namespace+"/"+virtualPod.Name)
+
+	// 1. Build syncPod object based on current physical pod and virtual pod
+	syncPod := r.buildSyncPod(physicalPod, virtualPod)
+
+	// 2. Compare syncPod with virtual pod using reflect.DeepEqual
+	if r.isPodsStatusEqual(syncPod, virtualPod) {
+		logger.V(1).Info("Pod already in sync, skipping update")
+		return ctrl.Result{}, nil
+	}
+
+	// 3. Update virtual pod if not equal
+	syncPod.Annotations[AnnotationLastSyncTime] = time.Now().Format(time.RFC3339)
+	err := r.VirtualClient.Status().Update(ctx, syncPod)
+	if err != nil {
+		logger.Error(err, "Failed to update virtual pod")
+		return ctrl.Result{}, err
+	}
+
+	logger.V(1).Info("Successfully synced physical pod to virtual pod",
+		"status", syncPod.Status)
 
 	return ctrl.Result{}, nil
 }
 
-// handlePodDeletion handles deletion of physical pod
-func (r *PhysicalPodReconciler) handlePodDeletion(ctx context.Context, physicalPodKey types.NamespacedName) (ctrl.Result, error) {
-	logger := r.Log.WithValues("physicalPod", physicalPodKey)
+// buildSyncPod builds the expected virtual pod state based on physical pod and current virtual pod
+func (r *PhysicalPodReconciler) buildSyncPod(physicalPod, virtualPod *corev1.Pod) *corev1.Pod {
+	// Start with a deep copy of the virtual pod to preserve its structure
+	syncPod := virtualPod.DeepCopy()
 
-	// We can't get the virtual pod info from the deleted physical pod
-	// In a production system, we might maintain a mapping cache or use finalizers
-	// For now, we'll just log the deletion
-	logger.Info("Physical pod deleted, virtual pod status may need manual cleanup")
+	// Replace labels
+	syncPod.Labels = make(map[string]string)
+	// Copy labels from physical pod
+	for k, v := range physicalPod.Labels {
+		syncPod.Labels[k] = v
+	}
 
-	return ctrl.Result{}, nil
+	// Replace annotations (excluding Tapestry internal annotations)
+	syncPod.Annotations = make(map[string]string)
+	// Copy annotations from physical pod (excluding Tapestry internal ones)
+	for k, v := range physicalPod.Annotations {
+		if k != AnnotationVirtualPodNamespace && k != AnnotationVirtualPodName && k != AnnotationVirtualPodUID &&
+			k != AnnotationPhysicalPodNamespace && k != AnnotationPhysicalPodName {
+			syncPod.Annotations[k] = v
+		}
+	}
+	syncPod.Annotations[AnnotationPhysicalPodNamespace] = virtualPod.Annotations[AnnotationPhysicalPodNamespace]
+	syncPod.Annotations[AnnotationPhysicalPodName] = virtualPod.Annotations[AnnotationPhysicalPodName]
+	syncPod.Annotations[AnnotationLastSyncTime] = virtualPod.Annotations[AnnotationLastSyncTime]
+
+	// Update status fields from physical pod
+	syncPod.Status.Phase = physicalPod.Status.Phase
+	syncPod.Status.Conditions = physicalPod.Status.Conditions
+	syncPod.Status.Message = physicalPod.Status.Message
+	syncPod.Status.Reason = physicalPod.Status.Reason
+	syncPod.Status.HostIP = physicalPod.Status.PodIP
+	syncPod.Status.PodIP = physicalPod.Status.PodIP
+	syncPod.Status.PodIPs = physicalPod.Status.PodIPs
+	syncPod.Status.StartTime = physicalPod.Status.StartTime
+	syncPod.Status.ContainerStatuses = physicalPod.Status.ContainerStatuses
+	syncPod.Status.InitContainerStatuses = physicalPod.Status.InitContainerStatuses
+	syncPod.Status.EphemeralContainerStatuses = physicalPod.Status.EphemeralContainerStatuses
+
+	return syncPod
 }
 
-// isTapestryManagedPod checks if a pod is managed by Tapestry
-func (r *PhysicalPodReconciler) isTapestryManagedPod(pod *corev1.Pod) bool {
-	// Check for Tapestry annotations
-	if pod.Annotations == nil {
+// isPodsEqual compares two pods using reflect.DeepEqual for status, annotations, and labels
+func (r *PhysicalPodReconciler) isPodsStatusEqual(pod1, pod2 *corev1.Pod) bool {
+	// Compare status
+	if !reflect.DeepEqual(pod1.Status, pod2.Status) {
 		return false
 	}
 
-	_, hasVirtualNamespace := pod.Annotations[AnnotationVirtualPodNamespace]
-	_, hasVirtualName := pod.Annotations[AnnotationVirtualPodName]
-
-	return hasVirtualNamespace && hasVirtualName
-}
-
-// getVirtualPodInfo extracts virtual pod information from physical pod annotations
-func (r *PhysicalPodReconciler) getVirtualPodInfo(physicalPod *corev1.Pod) (namespace, name string, err error) {
-	if physicalPod.Annotations == nil {
-		return "", "", fmt.Errorf("physical pod has no annotations")
-	}
-
-	namespace, hasNamespace := physicalPod.Annotations[AnnotationVirtualPodNamespace]
-	name, hasName := physicalPod.Annotations[AnnotationVirtualPodName]
-
-	if !hasNamespace || !hasName {
-		return "", "", fmt.Errorf("physical pod missing virtual pod mapping annotations")
-	}
-
-	if namespace == "" || name == "" {
-		return "", "", fmt.Errorf("virtual pod mapping annotations are empty")
-	}
-
-	return namespace, name, nil
-}
-
-// needsStatusSync checks if virtual pod status needs to be updated
-// This implements requirement 3.5 - idempotent status synchronization
-func (r *PhysicalPodReconciler) needsStatusSync(virtualPod, physicalPod *corev1.Pod) bool {
-	// Check if phase has changed
-	if virtualPod.Status.Phase != physicalPod.Status.Phase {
-		return true
-	}
-
-	// Check if container statuses have changed
-	if len(virtualPod.Status.ContainerStatuses) != len(physicalPod.Status.ContainerStatuses) {
-		return true
-	}
-
-	// Compare container statuses
-	for i, vStatus := range virtualPod.Status.ContainerStatuses {
-		if i >= len(physicalPod.Status.ContainerStatuses) {
-			return true
-		}
-
-		pStatus := physicalPod.Status.ContainerStatuses[i]
-
-		if vStatus.Name != pStatus.Name ||
-			vStatus.Ready != pStatus.Ready ||
-			vStatus.RestartCount != pStatus.RestartCount {
-			return true
-		}
-
-		// Compare state
-		if !r.containerStatesEqual(vStatus.State, pStatus.State) {
-			return true
-		}
-	}
-
-	// Check if conditions have changed significantly
-	if r.hasSignificantConditionChanges(virtualPod.Status.Conditions, physicalPod.Status.Conditions) {
-		return true
-	}
-
-	return false
-}
-
-// containerStatesEqual compares two container states
-func (r *PhysicalPodReconciler) containerStatesEqual(state1, state2 corev1.ContainerState) bool {
-	// Compare running state
-	if (state1.Running != nil) != (state2.Running != nil) {
+	// Compare annotations
+	if !reflect.DeepEqual(pod1.Annotations, pod2.Annotations) {
 		return false
 	}
 
-	// Compare waiting state
-	if (state1.Waiting != nil) != (state2.Waiting != nil) {
+	// Compare labels
+	if !reflect.DeepEqual(pod1.Labels, pod2.Labels) {
 		return false
-	}
-	if state1.Waiting != nil && state2.Waiting != nil {
-		if state1.Waiting.Reason != state2.Waiting.Reason {
-			return false
-		}
-	}
-
-	// Compare terminated state
-	if (state1.Terminated != nil) != (state2.Terminated != nil) {
-		return false
-	}
-	if state1.Terminated != nil && state2.Terminated != nil {
-		if state1.Terminated.ExitCode != state2.Terminated.ExitCode ||
-			state1.Terminated.Reason != state2.Terminated.Reason {
-			return false
-		}
 	}
 
 	return true
-}
-
-// hasSignificantConditionChanges checks if there are significant changes in pod conditions
-func (r *PhysicalPodReconciler) hasSignificantConditionChanges(virtualConditions, physicalConditions []corev1.PodCondition) bool {
-	// Create maps for easier comparison
-	vCondMap := make(map[corev1.PodConditionType]corev1.PodCondition)
-	for _, cond := range virtualConditions {
-		vCondMap[cond.Type] = cond
-	}
-
-	pCondMap := make(map[corev1.PodConditionType]corev1.PodCondition)
-	for _, cond := range physicalConditions {
-		pCondMap[cond.Type] = cond
-	}
-
-	// Check important condition types
-	importantTypes := []corev1.PodConditionType{
-		corev1.PodReady,
-		corev1.PodInitialized,
-		corev1.PodScheduled,
-		corev1.ContainersReady,
-	}
-
-	for _, condType := range importantTypes {
-		vCond, vExists := vCondMap[condType]
-		pCond, pExists := pCondMap[condType]
-
-		if vExists != pExists {
-			return true
-		}
-
-		if vExists && pExists {
-			if vCond.Status != pCond.Status || vCond.Reason != pCond.Reason {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// updateVirtualPodStatus updates the virtual pod status based on physical pod
-func (r *PhysicalPodReconciler) updateVirtualPodStatus(ctx context.Context, virtualPod, physicalPod *corev1.Pod) error {
-	// Create a copy for update
-	updatedPod := virtualPod.DeepCopy()
-
-	// Update status fields
-	updatedPod.Status.Phase = physicalPod.Status.Phase
-	updatedPod.Status.Conditions = physicalPod.Status.Conditions
-	updatedPod.Status.Message = physicalPod.Status.Message
-	updatedPod.Status.Reason = physicalPod.Status.Reason
-	updatedPod.Status.HostIP = physicalPod.Status.HostIP
-	updatedPod.Status.PodIP = physicalPod.Status.PodIP
-	updatedPod.Status.PodIPs = physicalPod.Status.PodIPs
-	updatedPod.Status.StartTime = physicalPod.Status.StartTime
-	updatedPod.Status.ContainerStatuses = physicalPod.Status.ContainerStatuses
-	updatedPod.Status.InitContainerStatuses = physicalPod.Status.InitContainerStatuses
-	updatedPod.Status.EphemeralContainerStatuses = physicalPod.Status.EphemeralContainerStatuses
-
-	// Add sync timestamp annotation
-	if updatedPod.Annotations == nil {
-		updatedPod.Annotations = make(map[string]string)
-	}
-	updatedPod.Annotations[AnnotationSyncTimestamp] = time.Now().Format(time.RFC3339)
-	updatedPod.Annotations[AnnotationPhysicalPodUID] = string(physicalPod.UID)
-
-	// First update the annotations (metadata)
-	if err := r.VirtualClient.Update(ctx, updatedPod); err != nil {
-		return err
-	}
-
-	// Then update the status
-	return r.VirtualClient.Status().Update(ctx, updatedPod)
 }
 
 // SetupWithManager sets up the controller with the Manager
@@ -316,11 +290,21 @@ func (r *PhysicalPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Generate unique controller name using cluster binding name
 	uniqueControllerName := fmt.Sprintf("pod-%s", r.ClusterBinding.Name)
 
+	// Create predicate to only watch Tapestry-managed pods
+	tapestryPodPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		pod, ok := obj.(*corev1.Pod)
+		if !ok {
+			return false
+		}
+		return r.isTapestryManagedPod(pod)
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
 		Named(uniqueControllerName).
 		WithOptions(controller.Options{
-			MaxConcurrentReconciles: 50, // Higher concurrency for pod status sync
+			MaxConcurrentReconciles: 100, // Higher concurrency for pod status sync
 		}).
+		WithEventFilter(tapestryPodPredicate).
 		Complete(r)
 }

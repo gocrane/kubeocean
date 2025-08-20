@@ -1185,7 +1185,7 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physica
 	labels[LabelClusterBinding] = r.ClusterBindingName
 	labels[LabelPhysicalClusterID] = r.getClusterID()
 	labels[LabelPhysicalNodeName] = physicalNode.Name
-	labels[LabelManagedBy] = "tapestry"
+	labels[cloudv1beta1.LabelManagedBy] = "tapestry"
 	labels[LabelVirtualNodeType] = VirtualNodeTypeValue
 	labels[NodeInstanceTypeLabel] = NodeInstanceTypeExternal
 	labels[NodeInstanceTypeLabelBeta] = NodeInstanceTypeExternal
