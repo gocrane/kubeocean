@@ -101,9 +101,25 @@ docker-build: ## Build docker images for manager and syncer.
 	docker build -t ${IMG_MANAGER} -f Dockerfile.manager .
 	docker build -t ${IMG_SYNCER} -f Dockerfile.syncer .
 
+.PHONY: docker-build.manager
+docker-build.manager: ## Build docker image for manager only.
+	docker build -t ${IMG_MANAGER} -f Dockerfile.manager .
+
+.PHONY: docker-build.syncer
+docker-build.syncer: ## Build docker image for syncer only.
+	docker build -t ${IMG_SYNCER} -f Dockerfile.syncer .
+
 .PHONY: docker-push
-docker-push: ## Push docker images for manager and syncer.
+docker-push: docker-build ## Push docker images for manager and syncer.
 	docker push ${IMG_MANAGER}
+	docker push ${IMG_SYNCER}
+
+.PHONY: docker-push.manager
+docker-push.manager: docker-build.manager ## Push docker image for manager only.
+	docker push ${IMG_MANAGER}
+
+.PHONY: docker-push.syncer
+docker-push.syncer: docker-build.syncer ## Push docker image for syncer only.
 	docker push ${IMG_SYNCER}
 
 # PLATFORMS defines the target platforms for the manager image be build to provide support to multiple

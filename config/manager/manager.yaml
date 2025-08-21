@@ -28,13 +28,15 @@ spec:
   selector:
     matchLabels:
       control-plane: tapestry-manager
-  replicas: 3
+      k8s-app: tapestry-manager
+  replicas: 2
   template:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
       labels:
         control-plane: tapestry-manager
+        k8s-app: tapestry-manager
     spec:
       affinity:
         nodeAffinity:
@@ -66,7 +68,7 @@ spec:
         env:
         - name: KUBERNETES_CLUSTER_DOMAIN
           value: cluster.local
-        image: controller:latest
+        image: ccr.ccs.tencentyun.com/tke-eni-test/tapestry-manager:latest
         livenessProbe:
           httpGet:
             path: /healthz
@@ -104,11 +106,17 @@ spec:
         - name: syncer-template
           mountPath: /etc/tapestry/syncer-template
           readOnly: true
+        - name: tz-config
+          mountPath: /etc/localtime
+          readOnly: true
 
       volumes:
       - name: syncer-template
         configMap:
           name: tapestry-syncer-template
+      - name: tz-config
+        hostPath:
+          path: /etc/localtime
       securityContext:
         runAsNonRoot: true
         seccompProfile:

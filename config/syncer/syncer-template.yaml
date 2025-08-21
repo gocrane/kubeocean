@@ -9,8 +9,8 @@ metadata:
     app.kubernetes.io/component: config
 data:
   serviceAccountName: "tapestry-syncer"
-  ClusterRoleName: "tapestry-syncer"
-  ClusterRoleBindingName: "tapestry-syncer"
+  clusterRoleName: "tapestry-syncer"
+  clusterRoleBindingName: "tapestry-syncer"
   syncerNamespace: "tapestry-system"
   
   deployment.yaml: |
@@ -33,6 +33,7 @@ data:
           app.kubernetes.io/name: tapestry-syncer
           app.kubernetes.io/instance: "{{.ClusterBindingName}}"
           app.kubernetes.io/component: syncer
+          k8s-app: "{{.DeploymentName}}"
       template:
         metadata:
           labels:
@@ -42,6 +43,7 @@ data:
             app.kubernetes.io/part-of: tapestry
             app.kubernetes.io/managed-by: tapestry-manager
             tapestry.io/cluster-binding: "{{.ClusterBindingName}}"
+            k8s-app: "{{.DeploymentName}}"
         spec:
           serviceAccountName: "{{.ServiceAccountName}}"
           securityContext:
@@ -50,7 +52,7 @@ data:
               type: RuntimeDefault
           containers:
           - name: syncer
-            image: "tapestry-syncer:latest"
+            image: "ccr.ccs.tencentyun.com/tke-eni-test/tapestry-syncer:latest"
             args:
             - --leader-elect=true
             - --leader-election-id={{.DeploymentName}}
@@ -93,4 +95,12 @@ data:
               capabilities:
                 drop:
                 - ALL
+            volumeMounts:
+            - name: tz-config
+              mountPath: /etc/localtime
+              readOnly: true
           terminationGracePeriodSeconds: 10
+          volumes:
+          - name: tz-config
+            hostPath:
+              path: /etc/localtime
