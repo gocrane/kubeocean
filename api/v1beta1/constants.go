@@ -21,4 +21,8 @@ const (
 	// Finalizers
 	VirtualPodFinalizer = "tapestry.io/virtual-pod"
 	PolicyFinalizerName = "policy.tapestry.io/finalizer"
+
+	// Taints
+	TaintPhysicalNodeUnschedulable = "tapestry.io/physical-node-unschedulable"
+	TaintOutOfTimeWindows          = "tapestry.io/out-of-time-windows"
 )

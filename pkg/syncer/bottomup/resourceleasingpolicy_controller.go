@@ -169,6 +169,28 @@ func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation(policy *cloudv
 
 // updatePolicyStatus updates the status of a ResourceLeasingPolicy
 func (r *ResourceLeasingPolicyReconciler) updatePolicyStatus(ctx context.Context, policy *cloudv1beta1.ResourceLeasingPolicy) (bool, error) {
+	// First, validate time windows format
+	if validationErr := r.validateTimeWindows(policy); validationErr != nil {
+		// Set policy to Failed phase with validation error
+		statusChanged := policy.Status.Phase != cloudv1beta1.ResourceLeasingPolicyPhaseFailed
+
+		if statusChanged {
+			policy.Status.Phase = cloudv1beta1.ResourceLeasingPolicyPhaseFailed
+			policy.Status.ActiveTimeWindow = false
+			policy.Status.LastAppliedTime = &metav1.Time{Time: time.Now()}
+
+			// Update conditions with validation error
+			r.updatePolicyConditionsWithValidationError(policy, validationErr.Error())
+
+			// Update the status
+			if err := r.Client.Status().Update(ctx, policy); err != nil {
+				return false, err
+			}
+		}
+
+		return statusChanged, nil
+	}
+
 	// Check if policy is currently in an active time window
 	isActive := r.isPolicyActiveNow(policy)
 
@@ -202,50 +224,45 @@ func (r *ResourceLeasingPolicyReconciler) updatePolicyStatus(ctx context.Context
 
 // isPolicyActiveNow checks if a policy is currently active based on time windows
 func (r *ResourceLeasingPolicyReconciler) isPolicyActiveNow(policy *cloudv1beta1.ResourceLeasingPolicy) bool {
-	// If no time windows specified, policy is always active
-	if len(policy.Spec.TimeWindows) == 0 {
-		return true
-	}
-
 	now := time.Now()
 	currentDay := strings.ToLower(now.Weekday().String())
 	currentTime := now.Format("15:04")
+	r.Log.V(1).Info("Checking if policy is active now", "policy", policy.Name, "timeWindows", policy.Spec.TimeWindows, "currentDay", currentDay, "currentTime", currentTime)
 
-	for _, window := range policy.Spec.TimeWindows {
-		// Check if current day is in the allowed days
-		dayMatches := len(window.Days) == 0 // If no days specified, assume all days
-		if !dayMatches {
-			for _, day := range window.Days {
-				if strings.ToLower(day) == currentDay {
-					dayMatches = true
-					break
-				}
-			}
-		}
-
-		if dayMatches {
-			// Check if current time is within the window
-			if r.isTimeInRange(currentTime, window.Start, window.End) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// isTimeInRange checks if current time is within the specified range
-func (r *ResourceLeasingPolicyReconciler) isTimeInRange(current, start, end string) bool {
-	// Handle the case where end time is before start time (crosses midnight)
-	if end < start {
-		return current >= start || current <= end
-	}
-	return current >= start && current <= end
+	return policy.IsWithinTimeWindowsAt(currentDay, currentTime)
 }
 
 // updatePolicyConditions updates the conditions of a ResourceLeasingPolicy
 func (r *ResourceLeasingPolicyReconciler) updatePolicyConditions(policy *cloudv1beta1.ResourceLeasingPolicy, isActive bool) {
 	now := metav1.Now()
+
+	// Update Valid condition to True since validation passed
+	var validCondition *metav1.Condition
+	for i := range policy.Status.Conditions {
+		if policy.Status.Conditions[i].Type == "Valid" {
+			validCondition = &policy.Status.Conditions[i]
+			break
+		}
+	}
+
+	if validCondition == nil {
+		// Create new Valid condition
+		policy.Status.Conditions = append(policy.Status.Conditions, metav1.Condition{
+			Type:               "Valid",
+			LastTransitionTime: now,
+		})
+		validCondition = &policy.Status.Conditions[len(policy.Status.Conditions)-1]
+	}
+
+	// Set Valid condition to True
+	if validCondition.Status != metav1.ConditionTrue || validCondition.Reason != "ValidationPassed" {
+		validCondition.LastTransitionTime = now
+	}
+
+	validCondition.Status = metav1.ConditionTrue
+	validCondition.Reason = "ValidationPassed"
+	validCondition.Message = "Policy validation passed successfully"
+	validCondition.ObservedGeneration = policy.Generation
 
 	// Find or create the Active condition
 	var activeCondition *metav1.Condition
@@ -312,4 +329,141 @@ func (r *ResourceLeasingPolicyReconciler) SetupWithManager(mgr ctrl.Manager) err
 			)).
 		Named(uniqueControllerName).
 		Complete(r)
+}
+
+// validateTimeWindows validates the format of time windows in a policy
+func (r *ResourceLeasingPolicyReconciler) validateTimeWindows(policy *cloudv1beta1.ResourceLeasingPolicy) error {
+	for i, window := range policy.Spec.TimeWindows {
+		// Validate start time format
+		if !isValidTimeFormat(window.Start) {
+			return fmt.Errorf("invalid start time format in time window %d: %q, expected HH:MM format", i, window.Start)
+		}
+
+		// Validate end time format
+		if !isValidTimeFormat(window.End) {
+			return fmt.Errorf("invalid end time format in time window %d: %q, expected HH:MM format", i, window.End)
+		}
+
+		// Validate days if specified
+		for j, day := range window.Days {
+			dayLower := strings.ToLower(day)
+			validDays := []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+			isValidDay := false
+			for _, validDay := range validDays {
+				if dayLower == validDay {
+					isValidDay = true
+					break
+				}
+			}
+			if !isValidDay {
+				return fmt.Errorf("invalid day in time window %d, day %d: %q, expected one of: %v", i, j, day, validDays)
+			}
+		}
+	}
+	return nil
+}
+
+// updatePolicyConditionsWithValidationError updates conditions with validation error
+func (r *ResourceLeasingPolicyReconciler) updatePolicyConditionsWithValidationError(policy *cloudv1beta1.ResourceLeasingPolicy, errorMessage string) {
+	now := metav1.Now()
+
+	// Find or create the Valid condition
+	var validCondition *metav1.Condition
+	for i := range policy.Status.Conditions {
+		if policy.Status.Conditions[i].Type == "Valid" {
+			validCondition = &policy.Status.Conditions[i]
+			break
+		}
+	}
+
+	if validCondition == nil {
+		// Create new condition
+		policy.Status.Conditions = append(policy.Status.Conditions, metav1.Condition{
+			Type:               "Valid",
+			LastTransitionTime: now,
+		})
+		validCondition = &policy.Status.Conditions[len(policy.Status.Conditions)-1]
+	}
+
+	// Update condition with validation error
+	newStatus := metav1.ConditionFalse
+	newReason := "ValidationError"
+	newMessage := fmt.Sprintf("Policy validation failed: %s", errorMessage)
+
+	// Update condition if status changed
+	if validCondition.Status != newStatus || validCondition.Reason != newReason {
+		validCondition.LastTransitionTime = now
+	}
+
+	validCondition.Status = newStatus
+	validCondition.Reason = newReason
+	validCondition.Message = newMessage
+	validCondition.ObservedGeneration = policy.Generation
+
+	// Also update or remove the Active condition since the policy is invalid
+	var activeCondition *metav1.Condition
+	for i := range policy.Status.Conditions {
+		if policy.Status.Conditions[i].Type == "Active" {
+			activeCondition = &policy.Status.Conditions[i]
+			break
+		}
+	}
+
+	if activeCondition == nil {
+		// Create new Active condition
+		policy.Status.Conditions = append(policy.Status.Conditions, metav1.Condition{
+			Type:               "Active",
+			LastTransitionTime: now,
+		})
+		activeCondition = &policy.Status.Conditions[len(policy.Status.Conditions)-1]
+	}
+
+	// Set Active condition to False due to validation error
+	if activeCondition.Status != metav1.ConditionFalse || activeCondition.Reason != "ValidationError" {
+		activeCondition.LastTransitionTime = now
+	}
+
+	activeCondition.Status = metav1.ConditionFalse
+	activeCondition.Reason = "ValidationError"
+	activeCondition.Message = "Policy cannot be activated due to validation errors"
+	activeCondition.ObservedGeneration = policy.Generation
+}
+
+// isValidTimeFormat checks if the time string is in valid HH:MM format
+// This is a duplicate of the function in api/v1beta1 package to avoid circular import
+func isValidTimeFormat(timeStr string) bool {
+	if len(timeStr) != 5 {
+		return false
+	}
+
+	// Check format: HH:MM
+	if timeStr[2] != ':' {
+		return false
+	}
+
+	// Parse hours
+	hourStr := timeStr[0:2]
+	for _, r := range hourStr {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	hour := int(hourStr[0]-'0')*10 + int(hourStr[1]-'0')
+	if hour < 0 || hour > 23 {
+		return false
+	}
+
+	// Parse minutes
+	minuteStr := timeStr[3:5]
+	for _, r := range minuteStr {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	minute := int(minuteStr[0]-'0')*10 + int(minuteStr[1]-'0')
+	if minute < 0 || minute > 59 {
+		return false
+	}
+
+	return true
 }

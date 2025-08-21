@@ -1,6 +1,9 @@
 package v1beta1
 
 import (
+	"strings"
+	"time"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -119,4 +122,111 @@ type ResourceLeasingPolicyList struct {
 
 func init() {
 	SchemeBuilder.Register(&ResourceLeasingPolicy{}, &ResourceLeasingPolicyList{})
+}
+
+// IsWithinTimeWindows checks if the current time is within any of the policy's time windows
+// If no time windows are specified, it returns true (policy is always active)
+func (p *ResourceLeasingPolicy) IsWithinTimeWindows() bool {
+	now := time.Now()
+	currentDay := strings.ToLower(now.Weekday().String())
+	currentTime := now.Format("15:04")
+	return p.IsWithinTimeWindowsAt(currentDay, currentTime)
+}
+
+// IsWithinTimeWindowsAt checks if the specified time is within any of the policy's time windows
+// If no time windows are specified, it returns true (policy is always active)
+// currentDay should be in lowercase (e.g., "monday", "tuesday")
+// currentTime should be in HH:MM format (e.g., "14:30")
+func (p *ResourceLeasingPolicy) IsWithinTimeWindowsAt(currentDay, currentTime string) bool {
+	return IsWithinTimeWindows(p.Spec.TimeWindows, currentDay, currentTime)
+}
+
+// IsWithinTimeWindows checks if the specified time is within any of the time windows
+// If no time windows are specified, it returns true (always active)
+// currentDay should be in lowercase (e.g., "monday", "tuesday")
+// currentTime should be in HH:MM format (e.g., "14:30")
+func IsWithinTimeWindows(timeWindows []TimeWindow, currentDay, currentTime string) bool {
+	// If no time windows specified, always active
+	if len(timeWindows) == 0 {
+		return true
+	}
+
+	for _, window := range timeWindows {
+		// Check if current day is in the allowed days
+		// If no days specified, assume all days are allowed
+		dayMatches := len(window.Days) == 0
+		if !dayMatches {
+			for _, day := range window.Days {
+				if strings.ToLower(day) == currentDay {
+					dayMatches = true
+					break
+				}
+			}
+		}
+
+		if !dayMatches {
+			continue
+		}
+
+		// Check if current time is within the window
+		if isTimeInRange(currentTime, window.Start, window.End) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isTimeInRange checks if current time is within the specified range
+// Handles the case where end time is before start time (crosses midnight)
+// Returns false if start or end time format is invalid (not HH:MM format)
+func isTimeInRange(current, start, end string) bool {
+	// Validate time format for start and end times
+	if !isValidTimeFormat(start) || !isValidTimeFormat(end) {
+		return false
+	}
+
+	// Handle the case where end time is before start time (crosses midnight)
+	if end < start {
+		return current >= start || current <= end
+	}
+	return current >= start && current <= end
+}
+
+// isValidTimeFormat checks if the time string is in valid HH:MM format
+func isValidTimeFormat(timeStr string) bool {
+	if len(timeStr) != 5 {
+		return false
+	}
+
+	// Check format: HH:MM
+	if timeStr[2] != ':' {
+		return false
+	}
+
+	// Parse hours
+	hourStr := timeStr[0:2]
+	for _, r := range hourStr {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	hour := int(hourStr[0]-'0')*10 + int(hourStr[1]-'0')
+	if hour < 0 || hour > 23 {
+		return false
+	}
+
+	// Parse minutes
+	minuteStr := timeStr[3:5]
+	for _, r := range minuteStr {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	minute := int(minuteStr[0]-'0')*10 + int(minuteStr[1]-'0')
+	if minute < 0 || minute > 59 {
+		return false
+	}
+
+	return true
 }

@@ -2205,47 +2205,34 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			}, ginkgo.SpecTimeout(180*time.Second))
 		})
 
-		ginkgo.Describe("Policy-based Node Deletion", func() {
-			ginkgo.It("should handle policy-based deletion with ForceReclaim", func(ctx context.Context) {
+		ginkgo.Describe("Policy Time Window Taint Management", func() {
+			ginkgo.It("should manage taints based on ForceReclaim and time windows", func(ctx context.Context) {
 				// Create namespace for secrets
-				ns := "tapestry-system-policy-deletion"
+				ns := "tapestry-system-taint-management"
 				_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 				// Create kubeconfig secret
 				kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				secret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{Name: "policy-deletion-test-kc", Namespace: ns},
+					ObjectMeta: metav1.ObjectMeta{Name: "taint-management-test-kc", Namespace: ns},
 					Data:       map[string][]byte{"kubeconfig": kc},
 				}
 				gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
 
 				// Create ClusterBinding resource
 				clusterBinding := &cloudv1beta1.ClusterBinding{
-					ObjectMeta: metav1.ObjectMeta{Name: "policy-deletion-test-cluster"},
+					ObjectMeta: metav1.ObjectMeta{Name: "taint-management-test-cluster"},
 					Spec: cloudv1beta1.ClusterBindingSpec{
-						ClusterID:      "policy-deletion-test-cls",
-						SecretRef:      corev1.SecretReference{Name: "policy-deletion-test-kc", Namespace: ns},
+						ClusterID:      "taint-management-test-cls",
+						SecretRef:      corev1.SecretReference{Name: "taint-management-test-kc", Namespace: ns},
 						MountNamespace: "default",
 					},
 				}
 				gomega.Expect(k8sVirtual.Create(ctx, clusterBinding)).To(gomega.Succeed())
 
-				// Start syncer
-				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
-				gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-				go func() {
-					defer ginkgo.GinkgoRecover()
-					err := syncer.Start(ctx)
-					if err != nil && ctx.Err() == nil {
-						ginkgo.Fail(fmt.Sprintf("TapestrySyncer failed: %v", err))
-					}
-				}()
-
-				// Step 1: Create physical node without RLP, ensure virtual node is created normally
-				ginkgo.By("Create physical node without RLP, ensure virtual node is created normally")
-				physicalNodeName := "policy-deletion-test-node"
+				// Create physical node
+				physicalNodeName := "taint-management-test-node"
 				physicalNode := &corev1.Node{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: physicalNodeName,
@@ -2270,6 +2257,18 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				}
 				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
+				// Start syncer
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				go func() {
+					defer ginkgo.GinkgoRecover()
+					err := syncer.Start(ctx)
+					if err != nil && ctx.Err() == nil {
+						ginkgo.Fail(fmt.Sprintf("TapestrySyncer failed: %v", err))
+					}
+				}()
+
 				virtualNodeName := fmt.Sprintf("vnode-%s-%s", clusterBinding.Spec.ClusterID, physicalNodeName)
 
 				// Wait for virtual node to be created
@@ -2279,43 +2278,11 @@ var _ = Describe("Virtual Node Sync Test", func() {
 					return err == nil && virtualNode.Status.Phase != corev1.NodePending
 				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
-				// Step 2: Create Pod and schedule it onto virtual node
-				ginkgo.By("Create Pod and schedule it onto virtual node")
-				testPod := &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "policy-test-pod",
-						Namespace: "default",
-					},
-					Spec: corev1.PodSpec{
-						NodeName: virtualNodeName,
-						Containers: []corev1.Container{
-							{
-								Name:  "test-container",
-								Image: "nginx:alpine",
-								Resources: corev1.ResourceRequirements{
-									Requests: corev1.ResourceList{
-										corev1.ResourceCPU:    resource.MustParse("100m"),
-										corev1.ResourceMemory: resource.MustParse("128Mi"),
-									},
-								},
-							},
-						},
-					},
-				}
-				gomega.Expect(k8sVirtual.Create(ctx, testPod)).To(gomega.Succeed())
-
-				// Wait for pod to be scheduled
-				gomega.Eventually(func() bool {
-					var pod corev1.Pod
-					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "policy-test-pod", Namespace: "default"}, &pod)
-					return err == nil && pod.Spec.NodeName == virtualNodeName
-				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
-
-				// Step 3: Create RLP with ForceReclaim=false and time window outside current time
-				ginkgo.By("Create RLP with ForceReclaim=false and time window outside current time")
+				// Step 1: Create policy with time window outside current time, ForceReclaim=false
+				ginkgo.By("Create policy with time window outside current time, ForceReclaim=false")
 				policy := &cloudv1beta1.ResourceLeasingPolicy{
 					ObjectMeta: metav1.ObjectMeta{
-						Name: "policy-deletion-test-policy",
+						Name: "taint-management-test-policy",
 					},
 					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
 						Cluster: clusterBinding.Name,
@@ -2325,57 +2292,99 @@ var _ = Describe("Virtual Node Sync Test", func() {
 								End:   time.Now().Add(2 * time.Hour).Format("15:04"),
 							},
 						},
-						ForceReclaim:                 false, // Initially set to false
-						GracefulReclaimPeriodSeconds: 60,    // Initial value, will be changed later
+						ForceReclaim:                 false,
+						GracefulReclaimPeriodSeconds: 0,
 					},
 				}
 				gomega.Expect(k8sVirtual.Create(ctx, policy)).To(gomega.Succeed())
 
-				// Step 4: Verify Pod and node still exist and are not deleted
-				ginkgo.By("Verify Pod and node still exist and are not deleted")
-				gomega.Consistently(func() bool {
-					var pod corev1.Pod
+				// Step 2: Check node has taint with NoSchedule effect
+				ginkgo.By("Check node has taint with NoSchedule effect")
+				gomega.Eventually(func() bool {
 					var virtualNode corev1.Node
-					podErr := k8sVirtual.Get(ctx, types.NamespacedName{Name: "policy-test-pod", Namespace: "default"}, &pod)
-					nodeErr := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
-					return podErr == nil && nodeErr == nil
-				}, 5*time.Second, 2*time.Second).Should(gomega.BeTrue())
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					if err != nil {
+						return false
+					}
 
-				// Step 5: Modify RLP to set ForceReclaim=true and GracefulReclaimPeriodSeconds=10
-				ginkgo.By("Modify RLP to set ForceReclaim=true and GracefulReclaimPeriodSeconds=10")
+					for _, taint := range virtualNode.Spec.Taints {
+						if taint.Key == cloudv1beta1.TaintOutOfTimeWindows && taint.Effect == corev1.TaintEffectNoSchedule {
+							return true
+						}
+					}
+					return false
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Step 3: Update policy to ForceReclaim=true, GracefulReclaimPeriodSeconds=5
+				ginkgo.By("Update policy to ForceReclaim=true, GracefulReclaimPeriodSeconds=5")
 				var currentPolicy cloudv1beta1.ResourceLeasingPolicy
-				gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: "policy-deletion-test-policy"}, &currentPolicy)).To(gomega.Succeed())
+				gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: "taint-management-test-policy"}, &currentPolicy)).To(gomega.Succeed())
 
 				currentPolicy.Spec.ForceReclaim = true
-				currentPolicy.Spec.GracefulReclaimPeriodSeconds = 10
+				currentPolicy.Spec.GracefulReclaimPeriodSeconds = 5
 				gomega.Expect(k8sVirtual.Update(ctx, &currentPolicy)).To(gomega.Succeed())
 
-				// Step 6: Wait for 10s, then verify that both Pod and node are eventually deleted
-				ginkgo.By("Wait for 10s, then verify that both Pod and node are eventually deleted")
+				// Step 4: Check taint effect remains NoSchedule for 3 seconds
+				ginkgo.By("Check taint effect remains NoSchedule for 3 seconds")
+				gomega.Consistently(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					if err != nil {
+						return false
+					}
 
-				// TODO: Pod 应由 bottomup pod controller 回收，这里为了测试通过暂时直接删除
-				gomega.Eventually(func() bool {
-					var pod corev1.Pod
-					podErr := k8sVirtual.Get(ctx, types.NamespacedName{Name: "policy-test-pod", Namespace: "default"}, &pod)
-					return podErr == nil && pod.DeletionTimestamp != nil
-				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
-				ginkgo.By("Delete pod")
-				zero := int64(0)
-				gomega.Expect(k8sVirtual.Delete(ctx, testPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
+					for _, taint := range virtualNode.Spec.Taints {
+						if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
+							return taint.Effect == corev1.TaintEffectNoSchedule
+						}
+					}
+					return false
+				}, 3*time.Second, 500*time.Millisecond).Should(gomega.BeTrue())
 
-				gomega.Eventually(func() bool {
-					var pod corev1.Pod
-					podErr := k8sVirtual.Get(ctx, types.NamespacedName{Name: "policy-test-pod", Namespace: "default"}, &pod)
-					return apierrors.IsNotFound(podErr)
-				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
-
+				// Step 5: Wait additional 2 seconds and check taint becomes NoExecute
+				ginkgo.By("Wait additional 2 seconds and check taint becomes NoExecute")
 				gomega.Eventually(func() bool {
 					var virtualNode corev1.Node
-					nodeErr := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
-					return apierrors.IsNotFound(nodeErr)
-				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					if err != nil {
+						return false
+					}
 
-				ginkgo.By("Clean up")
+					for _, taint := range virtualNode.Spec.Taints {
+						if taint.Key == cloudv1beta1.TaintOutOfTimeWindows && taint.Effect == corev1.TaintEffectNoExecute {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Step 6: Update time window to include current time
+				ginkgo.By("Update time window to include current time")
+				currentHour := time.Now().Hour()
+				startTime := fmt.Sprintf("%02d:00", currentHour)
+				endTime := fmt.Sprintf("%02d:59", currentHour)
+
+				gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: "taint-management-test-policy"}, &currentPolicy)).To(gomega.Succeed())
+				currentPolicy.Spec.TimeWindows[0].Start = startTime
+				currentPolicy.Spec.TimeWindows[0].End = endTime
+				gomega.Expect(k8sVirtual.Update(ctx, &currentPolicy)).To(gomega.Succeed())
+
+				// Step 7: Check taint is removed
+				ginkgo.By("Check taint is removed")
+				gomega.Eventually(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					if err != nil {
+						return false
+					}
+
+					for _, taint := range virtualNode.Spec.Taints {
+						if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
+							return false // Taint still exists
+						}
+					}
+					return true // Taint removed
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
 				// Clean up
 				syncer.Stop()
@@ -2383,7 +2392,151 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				_ = k8sPhysical.Delete(ctx, physicalNode)
 				_ = k8sVirtual.Delete(ctx, clusterBinding)
 				_ = k8sVirtual.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
-			}, ginkgo.SpecTimeout(180*time.Second))
+			}, ginkgo.SpecTimeout(300*time.Second))
+
+			ginkgo.It("should handle taint timeout with TimeAdded tracking", func(ctx context.Context) {
+				// Create namespace for secrets
+				ns := "tapestry-system-taint-timeout"
+				_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+
+				// Create kubeconfig secret
+				kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: "taint-timeout-test-kc", Namespace: ns},
+					Data:       map[string][]byte{"kubeconfig": kc},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
+
+				// Create ClusterBinding resource
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{Name: "taint-timeout-test-cluster"},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:      "taint-timeout-test-cls",
+						SecretRef:      corev1.SecretReference{Name: "taint-timeout-test-kc", Namespace: ns},
+						MountNamespace: "default",
+					},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, clusterBinding)).To(gomega.Succeed())
+
+				// Create physical node
+				physicalNodeName := "taint-timeout-test-node"
+				physicalNode := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: physicalNodeName,
+					},
+					Spec: corev1.NodeSpec{},
+					Status: corev1.NodeStatus{
+						Capacity: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+						Allocatable: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+				// Start syncer
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				go func() {
+					defer ginkgo.GinkgoRecover()
+					err := syncer.Start(ctx)
+					if err != nil && ctx.Err() == nil {
+						ginkgo.Fail(fmt.Sprintf("TapestrySyncer failed: %v", err))
+					}
+				}()
+
+				virtualNodeName := fmt.Sprintf("vnode-%s-%s", clusterBinding.Spec.ClusterID, physicalNodeName)
+
+				// Wait for virtual node to be created
+				gomega.Eventually(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					return err == nil && virtualNode.Status.Phase != corev1.NodePending
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Step 1: Create policy with time window outside current time, ForceReclaim=true, GracefulReclaimPeriodSeconds=5
+				ginkgo.By("Create policy with time window outside current time, ForceReclaim=true, GracefulReclaimPeriodSeconds=5")
+				policy := &cloudv1beta1.ResourceLeasingPolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "taint-timeout-test-policy",
+					},
+					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+						Cluster: clusterBinding.Name,
+						TimeWindows: []cloudv1beta1.TimeWindow{
+							{
+								Start: time.Now().Add(1 * time.Hour).Format("15:04"),
+								End:   time.Now().Add(2 * time.Hour).Format("15:04"),
+							},
+						},
+						ForceReclaim:                 true,
+						GracefulReclaimPeriodSeconds: 5,
+					},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, policy)).To(gomega.Succeed())
+
+				// Step 2: Check node has taint with NoSchedule effect and get TimeAdded
+				ginkgo.By("Check node has taint with NoSchedule effect and get TimeAdded")
+				var taintTimeAdded *metav1.Time
+				gomega.Eventually(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					if err != nil {
+						return false
+					}
+
+					for _, taint := range virtualNode.Spec.Taints {
+						if taint.Key == cloudv1beta1.TaintOutOfTimeWindows && taint.Effect == corev1.TaintEffectNoSchedule {
+							taintTimeAdded = taint.TimeAdded
+							return taintTimeAdded != nil
+						}
+					}
+					return false
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				gomega.Expect(taintTimeAdded).NotTo(gomega.BeNil())
+				ginkgo.By(fmt.Sprintf("Taint TimeAdded: %v", taintTimeAdded.Time))
+
+				// Step 3: Wait for 5 seconds from TimeAdded and check taint becomes NoExecute
+				ginkgo.By("Wait for 5 seconds from TimeAdded and check taint becomes NoExecute")
+				timeToWait := 5*time.Second - time.Since(taintTimeAdded.Time)
+				if timeToWait > 0 {
+					time.Sleep(timeToWait)
+				}
+
+				gomega.Eventually(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					if err != nil {
+						return false
+					}
+
+					for _, taint := range virtualNode.Spec.Taints {
+						if taint.Key == cloudv1beta1.TaintOutOfTimeWindows && taint.Effect == corev1.TaintEffectNoExecute {
+							return true
+						}
+					}
+					return false
+				}, 10*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Clean up
+				syncer.Stop()
+				_ = k8sVirtual.Delete(ctx, policy)
+				_ = k8sPhysical.Delete(ctx, physicalNode)
+				_ = k8sVirtual.Delete(ctx, clusterBinding)
+				_ = k8sVirtual.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+			}, ginkgo.SpecTimeout(300*time.Second))
 		})
 
 		ginkgo.Describe("Virtual Node Recovery", func() {

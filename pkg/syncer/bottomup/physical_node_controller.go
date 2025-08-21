@@ -153,23 +153,19 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 		policy = &policies[0]
 	}
 
-	// If no matching policy, use all remaining resources; otherwise validate time windows and apply policy
+	// Handle time window management for policy-managed nodes
 	var availableResources corev1.ResourceList
 	if policy == nil {
 		log.V(1).Info("No matching ResourceLeasingPolicy; using all remaining resources of physical node")
 	} else {
-		// Check if within time windows
-		if !r.isWithinTimeWindows([]cloudv1beta1.ResourceLeasingPolicy{*policy}) {
-			log.V(1).Info("Node outside time windows")
+		// Check if within time windows and handle taint management
+		withinTimeWindows := r.isWithinTimeWindows(policy)
 
-			// Use policy's ForceReclaim settings for time window deletion
-			forceReclaim := policy.Spec.ForceReclaim
-			gracefulPeriod := policy.Spec.GracefulReclaimPeriodSeconds
-			if gracefulPeriod < 0 {
-				gracefulPeriod = 0
-			}
-
-			return r.handleNodeDeletion(ctx, physicalNode.Name, forceReclaim, gracefulPeriod)
+		if !withinTimeWindows {
+			log.V(1).Info("Node outside time windows, managing out-of-time-windows taint")
+			return r.handleOutOfTimeWindowsTaint(ctx, physicalNode.Name, policy)
+		} else {
+			log.V(1).Info("Node within time windows, will removing out-of-time-windows taint if exists")
 		}
 	}
 
@@ -453,46 +449,13 @@ func (r *PhysicalNodeReconciler) nodeMatchesSelector(node *corev1.Node, nodeSele
 }
 
 // isWithinTimeWindows checks if current time is within any of the policy time windows
-func (r *PhysicalNodeReconciler) isWithinTimeWindows(policies []cloudv1beta1.ResourceLeasingPolicy) bool {
+func (r *PhysicalNodeReconciler) isWithinTimeWindows(policy *cloudv1beta1.ResourceLeasingPolicy) bool {
 	now := time.Now()
 	currentDay := strings.ToLower(now.Weekday().String())
 	currentTime := now.Format("15:04")
+	r.Log.V(1).Info("Checking if policy is active now", "policy", policy.Name, "timeWindows", policy.Spec.TimeWindows, "currentDay", currentDay, "currentTime", currentTime)
 
-	for _, policy := range policies {
-		for _, window := range policy.Spec.TimeWindows {
-			// Check if current day is in the allowed days
-			// If no days specified, assume all days are allowed
-			dayMatches := len(window.Days) == 0
-			if !dayMatches {
-				for _, day := range window.Days {
-					if strings.ToLower(day) == currentDay {
-						dayMatches = true
-						break
-					}
-				}
-			}
-
-			if !dayMatches {
-				continue
-			}
-
-			// Check if current time is within the window
-			if currentTime >= window.Start && currentTime <= window.End {
-				return true
-			}
-		}
-	}
-
-	// If no time windows specified, assume always available
-	hasTimeWindows := false
-	for _, policy := range policies {
-		if len(policy.Spec.TimeWindows) > 0 {
-			hasTimeWindows = true
-			break
-		}
-	}
-
-	return !hasTimeWindows
+	return policy.IsWithinTimeWindowsAt(currentDay, currentTime)
 }
 
 // calculateNodeResourceUsage calculates the total resource usage of all pods running on the node
@@ -856,7 +819,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 			Annotations: r.buildVirtualNodeAnnotations(physicalNode, policies),
 		},
 		Spec: corev1.NodeSpec{
-			Taints: physicalNode.Spec.Taints,
+			Taints: r.transformTaints(physicalNode.Spec.Taints),
 		},
 		Status: corev1.NodeStatus{
 			Capacity:    resources,
@@ -1093,6 +1056,10 @@ func (r *PhysicalNodeReconciler) mergeTaints(existing, new *corev1.Node, previou
 			r.Log.Info("skipping deletion taint", "taint", taint, "node", new.Name)
 			continue
 		}
+		if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
+			r.Log.Info("skipping out-of-time-windows taint", "taint", taint, "node", new.Name)
+			continue
+		}
 		// 如果不在previousExpected中，则认为是用户添加的
 		if _, ok := previousExpectedMap[taint.Key]; !ok {
 			r.Log.Info("user added taint", "taint", taint, "node", new.Name)
@@ -1242,6 +1209,163 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 	r.Log.V(1).Info("Built virtual node annotations", "physicalNode", physicalNode.Name, "annotationCount", len(annotations))
 
 	return annotations
+}
+
+// transformTaints transforms physical node taints to virtual node taints
+// Specifically converts node.kubernetes.io/unschedulable to tapestry.io/physical-node-unschedulable
+func (r *PhysicalNodeReconciler) transformTaints(physicalTaints []corev1.Taint) []corev1.Taint {
+	if len(physicalTaints) == 0 {
+		return nil
+	}
+
+	virtualTaints := make([]corev1.Taint, 0, len(physicalTaints))
+
+	for _, taint := range physicalTaints {
+		if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
+			// Delete out-of-time-windows taint
+			continue
+		}
+		// Transform node.kubernetes.io/unschedulable to tapestry.io/physical-node-unschedulable
+		if taint.Key == "node.kubernetes.io/unschedulable" {
+			transformedTaint := corev1.Taint{
+				Key:    cloudv1beta1.TaintPhysicalNodeUnschedulable,
+				Value:  taint.Value,
+				Effect: taint.Effect,
+			}
+			virtualTaints = append(virtualTaints, transformedTaint)
+		} else {
+			// Keep other taints as-is
+			virtualTaints = append(virtualTaints, taint)
+		}
+	}
+
+	return virtualTaints
+}
+
+// handleOutOfTimeWindowsTaint handles the out-of-time-windows taint management
+func (r *PhysicalNodeReconciler) handleOutOfTimeWindowsTaint(ctx context.Context, physicalNodeName string, policy *cloudv1beta1.ResourceLeasingPolicy) (ctrl.Result, error) {
+	logger := r.Log.WithValues("physicalNode", physicalNodeName)
+	virtualNodeName := r.generateVirtualNodeName(physicalNodeName)
+
+	// Get the virtual node
+	virtualNode := &corev1.Node{}
+	err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Virtual node doesn't exist, nothing to do
+			logger.V(1).Info("Virtual node not found, nothing to taint")
+			return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to get virtual node: %w", err)
+	}
+
+	// Check if out-of-time-windows taint already exists
+	var existingTaint *corev1.Taint
+	for i, taint := range virtualNode.Spec.Taints {
+		if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
+			existingTaint = &virtualNode.Spec.Taints[i]
+			break
+		}
+	}
+
+	gracefulPeriod := policy.Spec.GracefulReclaimPeriodSeconds
+	var taintEffect corev1.TaintEffect
+
+	resyncTime := DefaultNodeSyncInterval
+	if !policy.Spec.ForceReclaim {
+		taintEffect = corev1.TaintEffectNoSchedule
+		logger.Info("Adding out-of-time-windows taint with NoSchedule effect", "ForceReclaim", policy.Spec.ForceReclaim)
+	} else if gracefulPeriod == 0 {
+		// No graceful period or set to 0, use NoExecute immediately
+		taintEffect = corev1.TaintEffectNoExecute
+	} else {
+		// Check if we need to add the taint or upgrade its effect
+		if existingTaint == nil {
+			// Add new taint with NoSchedule effect
+			taintEffect = corev1.TaintEffectNoSchedule
+			logger.Info("Adding out-of-time-windows taint with NoSchedule effect", "gracefulPeriod", gracefulPeriod)
+			resyncTime = time.Duration(gracefulPeriod) * time.Second
+		} else {
+			// Taint exists, check if we need to upgrade to NoExecute
+			if existingTaint.Effect == corev1.TaintEffectNoExecute {
+				// Already NoExecute, nothing to change
+				logger.V(1).Info("Taint already has NoExecute effect")
+				return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
+			} // not NoExecute
+			if existingTaint.TimeAdded == nil {
+				taintEffect = corev1.TaintEffectNoExecute
+				logger.Info("Taint has no time added, upgrading to NoExecute")
+			} else {
+				taintTime := existingTaint.TimeAdded.Time
+				timeSinceTaint := time.Since(taintTime)
+				if timeSinceTaint.Seconds() >= float64(gracefulPeriod) {
+					// Graceful period has passed, upgrade to NoExecute
+					logger.Info("Graceful period passed, upgrading taint to NoExecute",
+						"timeSinceTaint", timeSinceTaint, "gracefulPeriod", gracefulPeriod)
+					taintEffect = corev1.TaintEffectNoExecute
+				} else {
+					// Still within graceful period, keep NoSchedule and requeue
+					remainingTime := time.Duration(gracefulPeriod)*time.Second - timeSinceTaint
+					logger.Info("Still within graceful period, keeping NoSchedule taint",
+						"remainingTime", remainingTime, "gracefulPeriod", gracefulPeriod)
+					return ctrl.Result{RequeueAfter: remainingTime}, nil
+				}
+			}
+		}
+	}
+
+	// Add or update the taint
+	err = r.addOrUpdateOutOfTimeWindowsTaint(ctx, virtualNode, taintEffect)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to add/update out-of-time-windows taint: %w", err)
+	}
+
+	return ctrl.Result{RequeueAfter: resyncTime}, nil
+}
+
+// addOrUpdateOutOfTimeWindowsTaint adds or updates the out-of-time-windows taint
+func (r *PhysicalNodeReconciler) addOrUpdateOutOfTimeWindowsTaint(ctx context.Context, virtualNode *corev1.Node, effect corev1.TaintEffect) error {
+	logger := r.Log.WithValues("virtualNode", virtualNode.Name)
+
+	// Find existing taint
+	newNode := virtualNode.DeepCopy()
+	var taintIndex = -1
+	for i, taint := range newNode.Spec.Taints {
+		if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
+			taintIndex = i
+			break
+		}
+	}
+
+	newTaint := corev1.Taint{
+		Key:       cloudv1beta1.TaintOutOfTimeWindows,
+		Value:     "true",
+		Effect:    effect,
+		TimeAdded: &metav1.Time{Time: time.Now()},
+	}
+
+	if taintIndex == -1 {
+		// Add new taint
+		newNode.Spec.Taints = append(newNode.Spec.Taints, newTaint)
+		logger.Info("Added out-of-time-windows taint", "effect", effect)
+	} else {
+		// Update existing taint
+		oldEffect := newNode.Spec.Taints[taintIndex].Effect
+		if oldEffect == effect {
+			logger.Info("Taint effect is the same, no need to update")
+			return nil
+		}
+		newNode.Spec.Taints[taintIndex] = newTaint
+		logger.Info("Updated out-of-time-windows taint", "oldEffect", oldEffect, "newEffect", effect)
+	}
+
+	// Update the virtual node
+	err := r.VirtualClient.Update(ctx, newNode)
+	if err != nil {
+		return fmt.Errorf("failed to update out-of-time-windows taint: %w", err)
+	}
+
+	return nil
 }
 
 // nodeMatchesCombinedSelector checks if node matches the intersection of policy and ClusterBinding nodeSelectors

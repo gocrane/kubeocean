@@ -25,7 +25,7 @@ const (
 	testMountNamespace  = "default"
 )
 
-var _ = ginkgo.Describe("Pod Synchronization E2E Tests", func() {
+var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 	var (
 		testCtx            context.Context
 		testCancel         context.CancelFunc

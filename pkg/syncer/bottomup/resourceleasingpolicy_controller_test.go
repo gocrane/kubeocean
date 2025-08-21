@@ -453,3 +453,277 @@ func TestResourceLeasingPolicyReconciler_Finalizer(t *testing.T) {
 		}
 	})
 }
+
+func TestResourceLeasingPolicyReconciler_ValidateTimeWindows(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	// Set up logger
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+	}
+
+	reconciler := &ResourceLeasingPolicyReconciler{
+		ClusterBinding: clusterBinding,
+		Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
+	}
+
+	tests := []struct {
+		name          string
+		policy        *cloudv1beta1.ResourceLeasingPolicy
+		expectError   bool
+		expectedError string
+	}{
+		{
+			name: "valid time windows",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "valid-policy",
+				},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					TimeWindows: []cloudv1beta1.TimeWindow{
+						{
+							Start: "09:00",
+							End:   "17:00",
+							Days:  []string{"monday", "tuesday", "wednesday"},
+						},
+						{
+							Start: "22:00",
+							End:   "02:00",
+							Days:  []string{"friday", "saturday"},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid start time format",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "invalid-start-policy",
+				},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					TimeWindows: []cloudv1beta1.TimeWindow{
+						{
+							Start: "9:00", // Invalid: should be "09:00"
+							End:   "17:00",
+						},
+					},
+				},
+			},
+			expectError:   true,
+			expectedError: "invalid start time format in time window 0",
+		},
+		{
+			name: "invalid end time format",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "invalid-end-policy",
+				},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					TimeWindows: []cloudv1beta1.TimeWindow{
+						{
+							Start: "09:00",
+							End:   "25:00", // Invalid: hour > 23
+						},
+					},
+				},
+			},
+			expectError:   true,
+			expectedError: "invalid end time format in time window 0",
+		},
+		{
+			name: "invalid day",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "invalid-day-policy",
+				},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					TimeWindows: []cloudv1beta1.TimeWindow{
+						{
+							Start: "09:00",
+							End:   "17:00",
+							Days:  []string{"monday", "invalid-day"},
+						},
+					},
+				},
+			},
+			expectError:   true,
+			expectedError: "invalid day in time window 0",
+		},
+		{
+			name: "empty time windows - should be valid",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "empty-windows-policy",
+				},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					TimeWindows: []cloudv1beta1.TimeWindow{},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "multiple validation errors - should return first",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "multiple-errors-policy",
+				},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					TimeWindows: []cloudv1beta1.TimeWindow{
+						{
+							Start: "invalid", // First error
+							End:   "also-invalid",
+							Days:  []string{"bad-day"},
+						},
+					},
+				},
+			},
+			expectError:   true,
+			expectedError: "invalid start time format in time window 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := reconciler.validateTimeWindows(tt.policy)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectedError)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestResourceLeasingPolicyReconciler_UpdatePolicyStatusWithValidation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	// Set up logger
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	tests := []struct {
+		name                 string
+		policy               *cloudv1beta1.ResourceLeasingPolicy
+		expectedPhase        cloudv1beta1.ResourceLeasingPolicyPhase
+		expectedValidStatus  metav1.ConditionStatus
+		expectedActiveStatus metav1.ConditionStatus
+		expectedValidReason  string
+		expectedActiveReason string
+	}{
+		{
+			name: "policy with valid time windows",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "valid-policy",
+				},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					Cluster: "test-cluster",
+					TimeWindows: []cloudv1beta1.TimeWindow{
+						{
+							Start: "09:00",
+							End:   "17:00",
+						},
+					},
+				},
+				Status: cloudv1beta1.ResourceLeasingPolicyStatus{},
+			},
+			expectedPhase:        cloudv1beta1.ResourceLeasingPolicyPhaseInactive, // Assuming current time is outside 09:00-17:00
+			expectedValidStatus:  metav1.ConditionTrue,
+			expectedActiveStatus: metav1.ConditionFalse,
+			expectedValidReason:  "ValidationPassed",
+			expectedActiveReason: "InactiveTimeWindow",
+		},
+		{
+			name: "policy with invalid time windows",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "invalid-policy",
+				},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					Cluster: "test-cluster",
+					TimeWindows: []cloudv1beta1.TimeWindow{
+						{
+							Start: "invalid-time",
+							End:   "17:00",
+						},
+					},
+				},
+				Status: cloudv1beta1.ResourceLeasingPolicyStatus{},
+			},
+			expectedPhase:        cloudv1beta1.ResourceLeasingPolicyPhaseFailed,
+			expectedValidStatus:  metav1.ConditionFalse,
+			expectedActiveStatus: metav1.ConditionFalse,
+			expectedValidReason:  "ValidationError",
+			expectedActiveReason: "ValidationError",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create fake client with the policy
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.policy).
+				WithStatusSubresource(tt.policy).
+				Build()
+
+			clusterBinding := &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+			}
+
+			reconciler := &ResourceLeasingPolicyReconciler{
+				Client:         fakeClient,
+				ClusterBinding: clusterBinding,
+				Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
+			}
+
+			ctx := context.Background()
+			statusChanged, err := reconciler.updatePolicyStatus(ctx, tt.policy)
+
+			require.NoError(t, err)
+			assert.True(t, statusChanged) // Should be changed since we're starting from empty status
+
+			// Check phase
+			assert.Equal(t, tt.expectedPhase, tt.policy.Status.Phase)
+
+			// Check conditions
+			require.Len(t, tt.policy.Status.Conditions, 2) // Valid and Active conditions
+
+			var validCondition, activeCondition *metav1.Condition
+			for i := range tt.policy.Status.Conditions {
+				switch tt.policy.Status.Conditions[i].Type {
+				case "Valid":
+					validCondition = &tt.policy.Status.Conditions[i]
+				case "Active":
+					activeCondition = &tt.policy.Status.Conditions[i]
+				}
+			}
+
+			require.NotNil(t, validCondition)
+			require.NotNil(t, activeCondition)
+
+			assert.Equal(t, tt.expectedValidStatus, validCondition.Status)
+			assert.Equal(t, tt.expectedValidReason, validCondition.Reason)
+
+			assert.Equal(t, tt.expectedActiveStatus, activeCondition.Status)
+			assert.Equal(t, tt.expectedActiveReason, activeCondition.Reason)
+
+			if tt.expectedValidStatus == metav1.ConditionFalse {
+				assert.Contains(t, validCondition.Message, "Policy validation failed")
+			} else {
+				assert.Contains(t, validCondition.Message, "Policy validation passed successfully")
+			}
+		})
+	}
+}

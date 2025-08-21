@@ -346,31 +346,27 @@ func TestPhysicalNodeReconciler_IsWithinTimeWindows(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		policies []cloudv1beta1.ResourceLeasingPolicy
+		policy   *cloudv1beta1.ResourceLeasingPolicy
 		expected bool
 	}{
 		{
 			name: "no time windows - always available",
-			policies: []cloudv1beta1.ResourceLeasingPolicy{
-				{
-					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
-						TimeWindows: []cloudv1beta1.TimeWindow{},
-					},
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					TimeWindows: []cloudv1beta1.TimeWindow{},
 				},
 			},
 			expected: true,
 		},
 		{
 			name: "time window covers current time",
-			policies: []cloudv1beta1.ResourceLeasingPolicy{
-				{
-					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
-						TimeWindows: []cloudv1beta1.TimeWindow{
-							{
-								Start: "00:00",
-								End:   "23:59",
-								Days:  []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"},
-							},
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					TimeWindows: []cloudv1beta1.TimeWindow{
+						{
+							Start: "00:00",
+							End:   "23:59",
+							Days:  []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"},
 						},
 					},
 				},
@@ -379,15 +375,13 @@ func TestPhysicalNodeReconciler_IsWithinTimeWindows(t *testing.T) {
 		},
 		{
 			name: "time window outside current time",
-			policies: []cloudv1beta1.ResourceLeasingPolicy{
-				{
-					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
-						TimeWindows: []cloudv1beta1.TimeWindow{
-							{
-								Start: "23:00", // Very late time window - should be outside current time
-								End:   "23:30",
-								// No Days specified, should default to all days
-							},
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					TimeWindows: []cloudv1beta1.TimeWindow{
+						{
+							Start: "23:00", // Very late time window - should be outside current time
+							End:   "23:30",
+							// No Days specified, should default to all days
 						},
 					},
 				},
@@ -398,7 +392,7 @@ func TestPhysicalNodeReconciler_IsWithinTimeWindows(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := reconciler.isWithinTimeWindows(tt.policies)
+			result := reconciler.isWithinTimeWindows(tt.policy)
 			// Note: This test might be flaky depending on when it runs
 			// In a production environment, you'd want to inject time dependencies
 			_ = result // We acknowledge the result but don't assert due to time dependency
@@ -1902,6 +1896,146 @@ func TestPhysicalNodeReconciler_getDeletionTaintTime(t *testing.T) {
 	}
 }
 
+func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
+	reconciler := &PhysicalNodeReconciler{
+		Log: zap.New(zap.UseDevMode(true)),
+	}
+
+	tests := []struct {
+		name           string
+		physicalTaints []corev1.Taint
+		expectedTaints []corev1.Taint
+	}{
+		{
+			name:           "empty taints",
+			physicalTaints: nil,
+			expectedTaints: nil,
+		},
+		{
+			name: "no unschedulable taint",
+			physicalTaints: []corev1.Taint{
+				{
+					Key:    "example.com/test",
+					Value:  "test-value",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+			expectedTaints: []corev1.Taint{
+				{
+					Key:    "example.com/test",
+					Value:  "test-value",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+		},
+		{
+			name: "transform unschedulable taint",
+			physicalTaints: []corev1.Taint{
+				{
+					Key:    "node.kubernetes.io/unschedulable",
+					Value:  "",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+			expectedTaints: []corev1.Taint{
+				{
+					Key:    cloudv1beta1.TaintPhysicalNodeUnschedulable,
+					Value:  "",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+		},
+		{
+			name: "transform unschedulable taint with value",
+			physicalTaints: []corev1.Taint{
+				{
+					Key:    "node.kubernetes.io/unschedulable",
+					Value:  "maintenance",
+					Effect: corev1.TaintEffectNoExecute,
+				},
+			},
+			expectedTaints: []corev1.Taint{
+				{
+					Key:    cloudv1beta1.TaintPhysicalNodeUnschedulable,
+					Value:  "maintenance",
+					Effect: corev1.TaintEffectNoExecute,
+				},
+			},
+		},
+		{
+			name: "filter out-of-time-windows taint",
+			physicalTaints: []corev1.Taint{
+				{
+					Key:    cloudv1beta1.TaintOutOfTimeWindows,
+					Value:  "",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "example.com/test",
+					Value:  "test-value",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+			expectedTaints: []corev1.Taint{
+				{
+					Key:    "example.com/test",
+					Value:  "test-value",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+		},
+		{
+			name: "mixed taints with unschedulable and out-of-time-windows",
+			physicalTaints: []corev1.Taint{
+				{
+					Key:    "example.com/test",
+					Value:  "test-value",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    cloudv1beta1.TaintOutOfTimeWindows,
+					Value:  "",
+					Effect: corev1.TaintEffectNoExecute,
+				},
+				{
+					Key:    "node.kubernetes.io/unschedulable",
+					Value:  "",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "node.kubernetes.io/not-ready",
+					Value:  "",
+					Effect: corev1.TaintEffectNoExecute,
+				},
+			},
+			expectedTaints: []corev1.Taint{
+				{
+					Key:    "example.com/test",
+					Value:  "test-value",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    cloudv1beta1.TaintPhysicalNodeUnschedulable,
+					Value:  "",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "node.kubernetes.io/not-ready",
+					Value:  "",
+					Effect: corev1.TaintEffectNoExecute,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := reconciler.transformTaints(tt.physicalTaints)
+			assert.Equal(t, tt.expectedTaints, result)
+		})
+	}
+}
+
 func TestPhysicalNodeReconciler_checkPodsOnVirtualNode(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -2502,6 +2636,355 @@ func TestPhysicalNodeReconciler_generateVirtualNodeName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := reconciler.generateVirtualNodeName(tt.physicalNodeName)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	tests := []struct {
+		name                 string
+		policy               *cloudv1beta1.ResourceLeasingPolicy
+		existingVirtualNode  *corev1.Node
+		expectedTaintEffect  corev1.TaintEffect
+		expectedRequeueAfter time.Duration
+		expectError          bool
+		expectNoUpdate       bool
+	}{
+		{
+			name: "ForceReclaim false - NoSchedule effect",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ForceReclaim:                 false,
+					GracefulReclaimPeriodSeconds: 300,
+				},
+			},
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{},
+				},
+			},
+			expectedTaintEffect:  corev1.TaintEffectNoSchedule,
+			expectedRequeueAfter: DefaultNodeSyncInterval,
+		},
+		{
+			name: "ForceReclaim true and graceful period 0 - immediate NoExecute",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ForceReclaim:                 true,
+					GracefulReclaimPeriodSeconds: 0,
+				},
+			},
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{},
+				},
+			},
+			expectedTaintEffect:  corev1.TaintEffectNoExecute,
+			expectedRequeueAfter: DefaultNodeSyncInterval,
+		},
+		{
+			name: "ForceReclaim true and graceful period set - initial NoSchedule",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ForceReclaim:                 true,
+					GracefulReclaimPeriodSeconds: 300,
+				},
+			},
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{},
+				},
+			},
+			expectedTaintEffect:  corev1.TaintEffectNoSchedule,
+			expectedRequeueAfter: DefaultNodeSyncInterval,
+		},
+		{
+			name: "existing taint with TimeAdded - graceful period passed",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ForceReclaim:                 true,
+					GracefulReclaimPeriodSeconds: 300,
+				},
+			},
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:       cloudv1beta1.TaintOutOfTimeWindows,
+							Effect:    corev1.TaintEffectNoSchedule,
+							TimeAdded: &metav1.Time{Time: time.Now().Add(-400 * time.Second)},
+						},
+					},
+				},
+			},
+			expectedTaintEffect:  corev1.TaintEffectNoExecute,
+			expectedRequeueAfter: DefaultNodeSyncInterval,
+		},
+		{
+			name: "existing taint with TimeAdded - graceful period not passed",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ForceReclaim:                 true,
+					GracefulReclaimPeriodSeconds: 300,
+				},
+			},
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:       cloudv1beta1.TaintOutOfTimeWindows,
+							Effect:    corev1.TaintEffectNoSchedule,
+							TimeAdded: &metav1.Time{Time: time.Now().Add(-100 * time.Second)},
+						},
+					},
+				},
+			},
+			expectedTaintEffect:  corev1.TaintEffectNoSchedule, // Should remain NoSchedule
+			expectedRequeueAfter: 200 * time.Second,            // Approximate remaining time
+			expectNoUpdate:       true,                         // No taint update expected, just requeue
+		},
+		{
+			name: "existing taint without TimeAdded - upgrade to NoExecute",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ForceReclaim:                 true,
+					GracefulReclaimPeriodSeconds: 300,
+				},
+			},
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    cloudv1beta1.TaintOutOfTimeWindows,
+							Effect: corev1.TaintEffectNoSchedule,
+							// TimeAdded is nil
+						},
+					},
+				},
+			},
+			expectedTaintEffect:  corev1.TaintEffectNoExecute,
+			expectedRequeueAfter: DefaultNodeSyncInterval,
+		},
+		{
+			name: "existing NoExecute taint - no change needed",
+			policy: &cloudv1beta1.ResourceLeasingPolicy{
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					ForceReclaim:                 true,
+					GracefulReclaimPeriodSeconds: 300,
+				},
+			},
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    cloudv1beta1.TaintOutOfTimeWindows,
+							Effect: corev1.TaintEffectNoExecute,
+						},
+					},
+				},
+			},
+			expectedTaintEffect:  corev1.TaintEffectNoExecute, // Should remain NoExecute
+			expectedRequeueAfter: DefaultNodeSyncInterval,
+			expectNoUpdate:       true, // No update needed
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.existingVirtualNode).
+				Build()
+
+			reconciler := &PhysicalNodeReconciler{
+				VirtualClient:      fakeClient,
+				ClusterBindingName: "test-cluster",
+				Log:                zap.New(zap.UseDevMode(true)),
+			}
+
+			ctx := context.Background()
+			result, err := reconciler.handleOutOfTimeWindowsTaint(ctx, "test-node", tt.policy)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+
+				// Check requeue time (allow some tolerance for timing differences)
+				if tt.expectedRequeueAfter > time.Minute {
+					// For long waits, check that it's within a reasonable range
+					assert.True(t, result.RequeueAfter >= tt.expectedRequeueAfter-10*time.Second)
+					assert.True(t, result.RequeueAfter <= tt.expectedRequeueAfter+10*time.Second)
+				} else {
+					assert.Equal(t, tt.expectedRequeueAfter, result.RequeueAfter)
+				}
+
+				// Verify the taint was added/updated correctly (except for cases that should just requeue)
+				if !tt.expectNoUpdate {
+					updatedNode := &corev1.Node{}
+					err = fakeClient.Get(ctx, client.ObjectKey{Name: "vnode-test-cluster-test-node"}, updatedNode)
+					require.NoError(t, err)
+
+					// Find the out-of-time-windows taint
+					var foundTaint *corev1.Taint
+					for _, taint := range updatedNode.Spec.Taints {
+						if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
+							foundTaint = &taint
+							break
+						}
+					}
+
+					require.NotNil(t, foundTaint, "Expected out-of-time-windows taint to be present")
+					assert.Equal(t, tt.expectedTaintEffect, foundTaint.Effect)
+				}
+			}
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_addOrUpdateOutOfTimeWindowsTaint(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	tests := []struct {
+		name                string
+		existingVirtualNode *corev1.Node
+		taintEffect         corev1.TaintEffect
+		expectError         bool
+		expectNoUpdate      bool
+	}{
+		{
+			name: "add new taint to node without taints",
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{},
+				},
+			},
+			taintEffect: corev1.TaintEffectNoSchedule,
+		},
+		{
+			name: "add taint to node with existing different taints",
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    "other-taint",
+							Effect: corev1.TaintEffectNoSchedule,
+						},
+					},
+				},
+			},
+			taintEffect: corev1.TaintEffectNoExecute,
+		},
+		{
+			name: "update existing taint effect",
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    cloudv1beta1.TaintOutOfTimeWindows,
+							Effect: corev1.TaintEffectNoSchedule,
+						},
+					},
+				},
+			},
+			taintEffect: corev1.TaintEffectNoExecute,
+		},
+		{
+			name: "no update needed - same effect",
+			existingVirtualNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-test-cluster-test-node",
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{
+							Key:    cloudv1beta1.TaintOutOfTimeWindows,
+							Effect: corev1.TaintEffectNoSchedule,
+						},
+					},
+				},
+			},
+			taintEffect:    corev1.TaintEffectNoSchedule,
+			expectNoUpdate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.existingVirtualNode).
+				Build()
+
+			reconciler := &PhysicalNodeReconciler{
+				VirtualClient:      fakeClient,
+				ClusterBindingName: "test-cluster",
+				Log:                zap.New(zap.UseDevMode(true)),
+			}
+
+			ctx := context.Background()
+			err := reconciler.addOrUpdateOutOfTimeWindowsTaint(ctx, tt.existingVirtualNode, tt.taintEffect)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+
+				if !tt.expectNoUpdate {
+					// Verify the taint was added/updated correctly
+					updatedNode := &corev1.Node{}
+					err = fakeClient.Get(ctx, client.ObjectKey{Name: "vnode-test-cluster-test-node"}, updatedNode)
+					require.NoError(t, err)
+
+					// Find the out-of-time-windows taint
+					var foundTaint *corev1.Taint
+					for _, taint := range updatedNode.Spec.Taints {
+						if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
+							foundTaint = &taint
+							break
+						}
+					}
+
+					require.NotNil(t, foundTaint, "Expected out-of-time-windows taint to be present")
+					assert.Equal(t, tt.taintEffect, foundTaint.Effect)
+				}
+			}
 		})
 	}
 }
