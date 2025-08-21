@@ -1,4 +1,4 @@
-package e2e
+package integration
 
 import (
 	"context"
@@ -16,11 +16,14 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -57,6 +60,7 @@ var _ = ginkgo.BeforeSuite(func(ctx context.Context) {
 	gomega.Expect(appsv1.AddToScheme(scheme)).To(gomega.Succeed())
 	gomega.Expect(rbacv1.AddToScheme(scheme)).To(gomega.Succeed())
 	gomega.Expect(coordinationv1.AddToScheme(scheme)).To(gomega.Succeed())
+	gomega.Expect(storagev1.AddToScheme(scheme)).To(gomega.Succeed())
 })
 
 var _ = ginkgo.BeforeEach(func(ctx context.Context) {
@@ -87,6 +91,15 @@ var _ = ginkgo.BeforeEach(func(ctx context.Context) {
 		Scheme: scheme,
 		Metrics: server.Options{
 			BindAddress: "0",
+		},
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.Node{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+					}),
+				},
+			},
 		},
 	})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())

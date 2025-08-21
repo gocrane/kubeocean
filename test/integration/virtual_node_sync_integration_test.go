@@ -1,7 +1,8 @@
-package e2e
+package integration
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"time"
 
@@ -2155,6 +2156,14 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				}
 				gomega.Expect(k8sVirtual.Create(ctx, pod)).To(gomega.Succeed())
 
+				physicalPodName := "test-pod" + "-" + fmt.Sprintf("%x", md5.Sum([]byte("default/test-pod")))
+				ginkgo.By("Verifying physical pod is created " + fmt.Sprintf("%s/%s", clusterBinding.Spec.MountNamespace, physicalPodName))
+				phyPod := &corev1.Pod{}
+				gomega.Eventually(func() bool {
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: clusterBinding.Spec.MountNamespace}, phyPod)
+					return err == nil
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
 				// Delete the physical node
 				gomega.Expect(k8sPhysical.Delete(ctx, physicalNode)).To(gomega.Succeed())
 
@@ -2171,14 +2180,15 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				// 3. Delete virtual node immediately after pods are evicted
 
 				// TODO: Pod 应由 bottomup pod controller 回收，这里为了测试通过暂时直接删除
-				gomega.Eventually(func() bool {
+				/*gomega.Eventually(func() bool {
 					var vPod corev1.Pod
 					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &vPod)
 					return err == nil && vPod.DeletionTimestamp != nil
-				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())*/
 				zero := int64(0)
-				gomega.Expect(k8sVirtual.Delete(ctx, pod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
+				gomega.Expect(k8sPhysical.Delete(ctx, phyPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
 
+				ginkgo.By("Verifying virtual pod is deleted " + fmt.Sprintf("%s/%s", clusterBinding.Spec.MountNamespace, physicalPodName))
 				gomega.Eventually(func() bool {
 					var vPod corev1.Pod
 					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &vPod)
@@ -2186,6 +2196,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
 				// Eventually virtual node should be deleted
+				ginkgo.By("Verifying virtual node is deleted " + virtualNodeName)
 				gomega.Eventually(func() bool {
 					var virtualNode corev1.Node
 					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)

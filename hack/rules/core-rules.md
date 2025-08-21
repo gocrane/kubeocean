@@ -1,0 +1,54 @@
+# Tapestry 核心规则
+
+## 代码规范
+
+1. **Go 1.24+**，遵循 `golangci-lint` 配置
+2. **Apache 2.0** 许可证头，使用 `hack/boilerplate.go.txt`
+3. **驼峰命名**，公开函数首字母大写，包名小写
+4. **结构化日志**，包含 `component`、`operation` 上下文
+
+## 架构原则
+
+1. **分层设计**: Manager(管理) → Syncer(同步) → Controller(控制)
+2. **Leader Election**: 所有控制器支持高可用
+3. **幂等操作**: 使用 ResourceVersion 和状态哈希
+4. **故障隔离**: 每个物理集群独立 Syncer 实例
+
+## 测试要求
+
+1. **三层测试**: Unit(fakeclient) → Integration(envtest) → E2E
+2. **覆盖率 80%+**，使用 Ginkgo + Gomega
+3. **命令**: `make test`(简洁) / `make test-verbose`(详细) / `make test-int` / `make test-int-focus FOCUS="pattern"`
+4. **要求**: 每次代码提交都要保证测试通过
+
+## 资源规范
+
+1. **CRD**: `cloud.tencent.com/v1beta1`，复数命名
+2. **标签前缀**: `tapestry.io/`，关键标签 `managed-by`、`cluster-id`
+3. **常量集中**: `api/v1beta1/constants.go`
+4. **状态管理**: Phase + Conditions + Events
+
+## 错误处理
+
+1. **分类处理**: 连接(重试) → 权限(状态) → 冲突(哈希) → 验证(Failed)
+2. **状态更新**: 失败时设置 `Failed` phase 和 condition
+3. **日志记录**: Error(系统) → Info(操作) → Debug(调试)
+
+## 部署规范
+
+1. **镜像**: Manager/Syncer 分离，多阶段构建，非 root 运行
+2. **RBAC**: 最小权限，专用 ServiceAccount，权限分离
+3. **监控**: `:8080/metrics`(Prometheus) + `:8081/healthz`(健康检查)
+
+## 关键命令
+
+```bash
+# 开发
+make build test lint fmt vet
+
+# 部署  
+make install deploy
+
+# 生成
+make manifests generate
+```

@@ -67,16 +67,25 @@ test: manifests generate fmt vet envtest ginkgo ## Run tests with ginkgo in para
 test-verbose: manifests generate fmt vet envtest ginkgo ## Run tests with ginkgo in parallel with verbose output.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GINKGO) -p -v --cover --coverprofile=cover.out ./...
 
-##@ E2E
+##@ integration test
 
-.PHONY: e2e-build
-e2e-build: manifests generate envtest ## Build e2e test binary without running.
+.PHONY: test-int-build
+test-int-build: manifests generate envtest ## Build integration test binary without running.
 	mkdir -p .testcache
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -c ./test/e2e -o ./.testcache/e2e.test
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -c ./test/integration -o ./.testcache/integration.test
 
-.PHONY: e2e
-e2e: manifests generate envtest ginkgo ## Run e2e tests in parallel.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GINKGO) -p -v ./test/e2e
+.PHONY: test-int
+test-int: manifests generate envtest ginkgo ## Run integration tests in parallel.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GINKGO) -p -v ./test/integration
+
+.PHONY: test-int-focus
+test-int-focus: manifests generate envtest ginkgo ## Run integration tests with focus filter. Usage: make test-int-focus FOCUS="test pattern"
+	@if [ -z "$(FOCUS)" ]; then \
+		echo "Error: FOCUS parameter is required. Usage: make test-int-focus FOCUS=\"test pattern\""; \
+		echo "Example: make test-int-focus FOCUS=\"Virtual Node Resource Tests\""; \
+		exit 1; \
+	fi
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GINKGO) -v --focus="$(FOCUS)" ./test/integration
 
 ##@ Build
 
