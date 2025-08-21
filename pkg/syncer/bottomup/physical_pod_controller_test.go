@@ -47,9 +47,9 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 					Annotations: map[string]string{
-						AnnotationVirtualPodNamespace: "virtual-ns",
-						AnnotationVirtualPodName:      "virtual-pod-1",
-						AnnotationVirtualPodUID:       "virtual-uid-456",
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod-1",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid-456",
 					},
 				},
 				Status: corev1.PodStatus{
@@ -62,8 +62,8 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 					Namespace: "virtual-ns",
 					UID:       "virtual-uid-456",
 					Annotations: map[string]string{
-						AnnotationPhysicalPodNamespace: "physical-ns",
-						AnnotationPhysicalPodName:      "physical-pod-1",
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod-1",
 					},
 				},
 				Status: corev1.PodStatus{
@@ -121,9 +121,9 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 					Annotations: map[string]string{
-						AnnotationVirtualPodNamespace: "virtual-ns",
-						AnnotationVirtualPodName:      "non-existent-pod",
-						AnnotationVirtualPodUID:       "virtual-uid-789",
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "non-existent-pod",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid-789",
 					},
 				},
 				Status: corev1.PodStatus{
@@ -145,9 +145,9 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 					Annotations: map[string]string{
-						AnnotationVirtualPodNamespace: "virtual-ns",
-						AnnotationVirtualPodName:      "virtual-pod-4",
-						AnnotationVirtualPodUID:       "wrong-uid",
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod-4",
+						cloudv1beta1.AnnotationVirtualPodUID:       "wrong-uid",
 					},
 				},
 				Status: corev1.PodStatus{
@@ -160,8 +160,8 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 					Namespace: "virtual-ns",
 					UID:       "correct-uid",
 					Annotations: map[string]string{
-						AnnotationPhysicalPodNamespace: "physical-ns",
-						AnnotationPhysicalPodName:      "physical-pod-4",
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod-4",
 					},
 				},
 				Status: corev1.PodStatus{
@@ -182,9 +182,9 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 					Annotations: map[string]string{
-						AnnotationVirtualPodNamespace: "virtual-ns",
-						AnnotationVirtualPodName:      "virtual-pod-5",
-						AnnotationVirtualPodUID:       "virtual-uid-555",
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod-5",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid-555",
 					},
 				},
 				Status: corev1.PodStatus{
@@ -197,8 +197,8 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 					Namespace: "virtual-ns",
 					UID:       "virtual-uid-555",
 					Annotations: map[string]string{
-						AnnotationPhysicalPodNamespace: "other-ns",
-						AnnotationPhysicalPodName:      "other-pod",
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "other-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "other-pod",
 					},
 				},
 				Status: corev1.PodStatus{
@@ -373,9 +373,9 @@ func TestPhysicalPodReconciler_HasRequiredAnnotations(t *testing.T) {
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						AnnotationVirtualPodNamespace: "virtual-ns",
-						AnnotationVirtualPodName:      "virtual-pod",
-						AnnotationVirtualPodUID:       "virtual-uid",
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid",
 					},
 				},
 			},
@@ -393,7 +393,7 @@ func TestPhysicalPodReconciler_HasRequiredAnnotations(t *testing.T) {
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
 						// Missing other required annotations
 					},
 				},
@@ -405,9 +405,9 @@ func TestPhysicalPodReconciler_HasRequiredAnnotations(t *testing.T) {
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						AnnotationVirtualPodNamespace: "",
-						AnnotationVirtualPodName:      "virtual-pod",
-						AnnotationVirtualPodUID:       "virtual-uid",
+						cloudv1beta1.AnnotationVirtualPodNamespace: "",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid",
 					},
 				},
 			},
@@ -447,8 +447,8 @@ func TestPhysicalPodReconciler_ValidateVirtualPodAnnotations(t *testing.T) {
 			virtualPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						AnnotationPhysicalPodNamespace: "physical-ns",
-						AnnotationPhysicalPodName:      "physical-pod",
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
 					},
 				},
 			},
@@ -466,8 +466,8 @@ func TestPhysicalPodReconciler_ValidateVirtualPodAnnotations(t *testing.T) {
 			virtualPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						AnnotationPhysicalPodNamespace: "physical-ns",
-						AnnotationPhysicalPodName:      "wrong-pod",
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "wrong-pod",
 					},
 				},
 			},
@@ -478,8 +478,8 @@ func TestPhysicalPodReconciler_ValidateVirtualPodAnnotations(t *testing.T) {
 			virtualPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						AnnotationPhysicalPodNamespace: "wrong-ns",
-						AnnotationPhysicalPodName:      "physical-pod",
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "wrong-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
 					},
 				},
 			},
@@ -490,8 +490,8 @@ func TestPhysicalPodReconciler_ValidateVirtualPodAnnotations(t *testing.T) {
 			virtualPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						AnnotationPhysicalPodNamespace: "physical-ns",
-						// Missing AnnotationPhysicalPodName
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+						// Missing cloudv1beta1.AnnotationPhysicalPodName
 					},
 				},
 			},
@@ -522,11 +522,11 @@ func TestPhysicalPodReconciler_BuildSyncPod(t *testing.T) {
 				"version":                   "v1.0",
 			},
 			Annotations: map[string]string{
-				AnnotationVirtualPodNamespace:       "virtual-ns",
-				AnnotationVirtualPodName:            "virtual-pod",
-				AnnotationVirtualPodUID:             "virtual-uid-123",
-				"deployment.kubernetes.io/revision": "1",
-				"app.kubernetes.io/version":         "1.0.0",
+				cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+				cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+				cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid-123",
+				"deployment.kubernetes.io/revision":        "1",
+				"app.kubernetes.io/version":                "1.0.0",
 			},
 		},
 		Status: corev1.PodStatus{
@@ -564,10 +564,10 @@ func TestPhysicalPodReconciler_BuildSyncPod(t *testing.T) {
 				"old-label": "old-value",
 			},
 			Annotations: map[string]string{
-				AnnotationPhysicalPodNamespace: "physical-ns",
-				AnnotationPhysicalPodName:      "physical-pod",
-				AnnotationLastSyncTime:         "2023-01-01T00:00:00Z",
-				"old-annotation":               "old-value",
+				cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+				cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
+				cloudv1beta1.AnnotationLastSyncTime:         "2023-01-01T00:00:00Z",
+				"old-annotation":                            "old-value",
 			},
 		},
 		Status: corev1.PodStatus{
@@ -587,15 +587,15 @@ func TestPhysicalPodReconciler_BuildSyncPod(t *testing.T) {
 	// Check annotations - should have physical pod annotations but not virtual ones
 	assert.Equal(t, "1", syncPod.Annotations["deployment.kubernetes.io/revision"])
 	assert.Equal(t, "1.0.0", syncPod.Annotations["app.kubernetes.io/version"])
-	assert.NotContains(t, syncPod.Annotations, AnnotationVirtualPodNamespace)
-	assert.NotContains(t, syncPod.Annotations, AnnotationVirtualPodName)
-	assert.NotContains(t, syncPod.Annotations, AnnotationVirtualPodUID)
+	assert.NotContains(t, syncPod.Annotations, cloudv1beta1.AnnotationVirtualPodNamespace)
+	assert.NotContains(t, syncPod.Annotations, cloudv1beta1.AnnotationVirtualPodName)
+	assert.NotContains(t, syncPod.Annotations, cloudv1beta1.AnnotationVirtualPodUID)
 	assert.NotContains(t, syncPod.Annotations, "old-annotation")
 
 	// Check preserved virtual pod annotations
-	assert.Equal(t, "physical-ns", syncPod.Annotations[AnnotationPhysicalPodNamespace])
-	assert.Equal(t, "physical-pod", syncPod.Annotations[AnnotationPhysicalPodName])
-	assert.Contains(t, syncPod.Annotations, AnnotationLastSyncTime)
+	assert.Equal(t, "physical-ns", syncPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace])
+	assert.Equal(t, "physical-pod", syncPod.Annotations[cloudv1beta1.AnnotationPhysicalPodName])
+	assert.Contains(t, syncPod.Annotations, cloudv1beta1.AnnotationLastSyncTime)
 
 	// Check status - should match physical pod
 	assert.Equal(t, corev1.PodRunning, syncPod.Status.Phase)

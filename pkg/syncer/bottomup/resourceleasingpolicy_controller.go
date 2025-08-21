@@ -33,23 +33,18 @@ type ResourceLeasingPolicyReconciler struct {
 	RequeueNodes             func(nodeNames []string) error
 }
 
-const (
-	// PolicyFinalizerName is the finalizer added to ResourceLeasingPolicy objects
-	PolicyFinalizerName = "policy.tapestry.io/finalizer"
-)
-
 //+kubebuilder:rbac:groups=cloud.tencent.com,resources=resourceleasingpolicies,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=cloud.tencent.com,resources=resourceleasingpolicies/status,verbs=get;update;patch
 
 // hasFinalizer checks if the policy has our finalizer
 func (r *ResourceLeasingPolicyReconciler) hasFinalizer(policy *cloudv1beta1.ResourceLeasingPolicy) bool {
-	return controllerutil.ContainsFinalizer(policy, PolicyFinalizerName)
+	return controllerutil.ContainsFinalizer(policy, cloudv1beta1.PolicyFinalizerName)
 }
 
 // addFinalizer adds our finalizer to the policy
 func (r *ResourceLeasingPolicyReconciler) addFinalizer(ctx context.Context, policy *cloudv1beta1.ResourceLeasingPolicy, log logr.Logger) (ctrl.Result, error) {
 	log.V(1).Info("Adding finalizer to ResourceLeasingPolicy")
-	controllerutil.AddFinalizer(policy, PolicyFinalizerName)
+	controllerutil.AddFinalizer(policy, cloudv1beta1.PolicyFinalizerName)
 	if err := r.Client.Update(ctx, policy); err != nil {
 		log.Error(err, "Failed to add finalizer")
 		return ctrl.Result{}, err
@@ -61,7 +56,7 @@ func (r *ResourceLeasingPolicyReconciler) addFinalizer(ctx context.Context, poli
 // removeFinalizer removes our finalizer from the policy
 func (r *ResourceLeasingPolicyReconciler) removeFinalizer(ctx context.Context, policy *cloudv1beta1.ResourceLeasingPolicy, log logr.Logger) error {
 	log.V(1).Info("Removing finalizer from ResourceLeasingPolicy")
-	controllerutil.RemoveFinalizer(policy, PolicyFinalizerName)
+	controllerutil.RemoveFinalizer(policy, cloudv1beta1.PolicyFinalizerName)
 	return r.Client.Update(ctx, policy)
 }
 

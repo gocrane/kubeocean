@@ -20,15 +20,6 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 )
 
-const (
-	// Annotations for Pod mapping
-	AnnotationVirtualPodNamespace  = "tapestry.io/virtual-pod-namespace"
-	AnnotationVirtualPodName       = "tapestry.io/virtual-pod-name"
-	AnnotationVirtualPodUID        = "tapestry.io/virtual-pod-uid"
-	AnnotationPhysicalPodNamespace = "tapestry.io/physical-pod-namespace"
-	AnnotationPhysicalPodName      = "tapestry.io/physical-pod-name"
-)
-
 // PhysicalPodReconciler reconciles Pod objects from physical cluster
 // This implements requirement 3.4, 3.5 - Pod status synchronization
 type PhysicalPodReconciler struct {
@@ -112,9 +103,9 @@ func (r *PhysicalPodReconciler) hasRequiredAnnotations(physicalPod *corev1.Pod) 
 	}
 
 	requiredAnnotations := []string{
-		AnnotationVirtualPodNamespace,
-		AnnotationVirtualPodName,
-		AnnotationVirtualPodUID,
+		cloudv1beta1.AnnotationVirtualPodNamespace,
+		cloudv1beta1.AnnotationVirtualPodName,
+		cloudv1beta1.AnnotationVirtualPodUID,
 	}
 
 	for _, annotation := range requiredAnnotations {
@@ -130,9 +121,9 @@ func (r *PhysicalPodReconciler) hasRequiredAnnotations(physicalPod *corev1.Pod) 
 // return: virtual pod, is virtual pod matched, error
 func (r *PhysicalPodReconciler) getAndValidateVirtualPod(ctx context.Context, physicalPod *corev1.Pod) (*corev1.Pod, bool, error) {
 	// Extract virtual pod information from annotations
-	virtualNamespace := physicalPod.Annotations[AnnotationVirtualPodNamespace]
-	virtualName := physicalPod.Annotations[AnnotationVirtualPodName]
-	expectedUID := physicalPod.Annotations[AnnotationVirtualPodUID]
+	virtualNamespace := physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace]
+	virtualName := physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName]
+	expectedUID := physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]
 	logger := r.Log.WithValues("physicalPod", physicalPod.Namespace+"/"+physicalPod.Name, "virtualPod", virtualNamespace+"/"+virtualName, "expectedUID", expectedUID)
 
 	// Get the virtual pod
@@ -169,8 +160,8 @@ func (r *PhysicalPodReconciler) validateVirtualPodAnnotations(virtualPod, physic
 	expectedNamespace := physicalPod.Namespace
 	expectedName := physicalPod.Name
 
-	actualNamespace, hasNamespace := virtualPod.Annotations[AnnotationPhysicalPodNamespace]
-	actualName, hasName := virtualPod.Annotations[AnnotationPhysicalPodName]
+	actualNamespace, hasNamespace := virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace]
+	actualName, hasName := virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodName]
 
 	return hasNamespace && hasName && actualNamespace == expectedNamespace && actualName == expectedName
 }
@@ -211,7 +202,7 @@ func (r *PhysicalPodReconciler) syncPhysicalPodToVirtual(ctx context.Context, ph
 	}
 
 	// 3. Update virtual pod if not equal
-	syncPod.Annotations[AnnotationLastSyncTime] = time.Now().Format(time.RFC3339)
+	syncPod.Annotations[cloudv1beta1.AnnotationLastSyncTime] = time.Now().Format(time.RFC3339)
 	err := r.VirtualClient.Status().Update(ctx, syncPod)
 	if err != nil {
 		logger.Error(err, "Failed to update virtual pod")
@@ -240,14 +231,18 @@ func (r *PhysicalPodReconciler) buildSyncPod(physicalPod, virtualPod *corev1.Pod
 	syncPod.Annotations = make(map[string]string)
 	// Copy annotations from physical pod (excluding Tapestry internal ones)
 	for k, v := range physicalPod.Annotations {
-		if k != AnnotationVirtualPodNamespace && k != AnnotationVirtualPodName && k != AnnotationVirtualPodUID &&
-			k != AnnotationPhysicalPodNamespace && k != AnnotationPhysicalPodName {
+		if k != cloudv1beta1.AnnotationVirtualPodNamespace && k != cloudv1beta1.AnnotationVirtualPodName && k != cloudv1beta1.AnnotationVirtualPodUID &&
+			k != cloudv1beta1.AnnotationPhysicalPodNamespace && k != cloudv1beta1.AnnotationPhysicalPodName && k != cloudv1beta1.AnnotationPhysicalPodUID {
 			syncPod.Annotations[k] = v
 		}
 	}
-	syncPod.Annotations[AnnotationPhysicalPodNamespace] = virtualPod.Annotations[AnnotationPhysicalPodNamespace]
-	syncPod.Annotations[AnnotationPhysicalPodName] = virtualPod.Annotations[AnnotationPhysicalPodName]
-	syncPod.Annotations[AnnotationLastSyncTime] = virtualPod.Annotations[AnnotationLastSyncTime]
+	syncPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace] = virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace]
+	syncPod.Annotations[cloudv1beta1.AnnotationPhysicalPodName] = virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodName]
+	syncPod.Annotations[cloudv1beta1.AnnotationPhysicalPodUID] = virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodUID]
+	if syncPod.Annotations[cloudv1beta1.AnnotationPhysicalPodUID] == "" {
+		syncPod.Annotations[cloudv1beta1.AnnotationPhysicalPodUID] = string(physicalPod.UID)
+	}
+	syncPod.Annotations[cloudv1beta1.AnnotationLastSyncTime] = virtualPod.Annotations[cloudv1beta1.AnnotationLastSyncTime]
 
 	// Update status fields from physical pod
 	syncPod.Status.Phase = physicalPod.Status.Phase

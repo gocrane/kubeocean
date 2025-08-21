@@ -388,7 +388,7 @@ func TestResourceLeasingPolicyReconciler_Finalizer(t *testing.T) {
 		deletionTestPolicy := &cloudv1beta1.ResourceLeasingPolicy{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:              "test-policy-deletion",
-				Finalizers:        []string{PolicyFinalizerName},
+				Finalizers:        []string{cloudv1beta1.PolicyFinalizerName},
 				DeletionTimestamp: &now,
 			},
 			Spec: cloudv1beta1.ResourceLeasingPolicySpec{

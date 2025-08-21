@@ -1087,7 +1087,7 @@ func TestPhysicalNodeReconciler_UserCustomizationPreservation(t *testing.T) {
 	reconciler.preserveUserCustomizations(existing, new)
 
 	// Verify the method completed and the expected metadata annotation was added
-	assert.Contains(t, new.Annotations, AnnotationExpectedMetadata)
+	assert.Contains(t, new.Annotations, cloudv1beta1.AnnotationExpectedMetadata)
 
 	// Verify Tapestry-managed values are still present
 	assert.Equal(t, "tapestry", new.Labels["tapestry.io/managed-by"])
@@ -1127,7 +1127,7 @@ func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify the annotation is base64 encoded
-		encodedData := node.Annotations[AnnotationExpectedMetadata]
+		encodedData := node.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
 		assert.NotEmpty(t, encodedData)
 
 		// Verify it's valid base64
@@ -1162,7 +1162,7 @@ func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {
 		node := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{
-					AnnotationExpectedMetadata: "invalid-base64!@#",
+					cloudv1beta1.AnnotationExpectedMetadata: "invalid-base64!@#",
 				},
 			},
 		}
@@ -1179,7 +1179,7 @@ func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {
 		node := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{
-					AnnotationExpectedMetadata: invalidJSON,
+					cloudv1beta1.AnnotationExpectedMetadata: invalidJSON,
 				},
 			},
 		}
@@ -1207,7 +1207,7 @@ func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify annotation exists and is valid base64
-		encodedData := node.Annotations[AnnotationExpectedMetadata]
+		encodedData := node.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
 		assert.NotEmpty(t, encodedData)
 
 		decodedData, err := base64.StdEncoding.DecodeString(encodedData)
@@ -1263,7 +1263,7 @@ func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify base64 encoding
-		encodedData := node.Annotations[AnnotationExpectedMetadata]
+		encodedData := node.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
 		assert.NotEmpty(t, encodedData)
 
 		// Verify it's valid base64
@@ -1303,7 +1303,7 @@ func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should create empty metadata structure
-		encodedData := node.Annotations[AnnotationExpectedMetadata]
+		encodedData := node.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
 		assert.NotEmpty(t, encodedData)
 
 		// Test get from nil metadata annotation
@@ -1342,8 +1342,8 @@ func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {
 		require.NoError(t, err2)
 
 		// Encoded data should be identical
-		encoded1 := node1.Annotations[AnnotationExpectedMetadata]
-		encoded2 := node2.Annotations[AnnotationExpectedMetadata]
+		encoded1 := node1.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
+		encoded2 := node2.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
 		assert.Equal(t, encoded1, encoded2, "Same metadata should produce identical base64 encoding")
 
 		// Retrieved data should be identical
@@ -1399,7 +1399,7 @@ func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify base64 encoding
-		encodedData := node.Annotations[AnnotationExpectedMetadata]
+		encodedData := node.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
 		assert.NotEmpty(t, encodedData)
 
 		// Test get large metadata
@@ -1454,7 +1454,7 @@ func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {
 				node := &corev1.Node{
 					ObjectMeta: metav1.ObjectMeta{
 						Annotations: map[string]string{
-							AnnotationExpectedMetadata: tc.base64Data,
+							cloudv1beta1.AnnotationExpectedMetadata: tc.base64Data,
 						},
 					},
 				}

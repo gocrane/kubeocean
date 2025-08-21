@@ -20,6 +20,7 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	"github.com/TKEColocation/tapestry/pkg/syncer/bottomup"
+	"github.com/TKEColocation/tapestry/pkg/syncer/topdown"
 )
 
 const (
@@ -45,7 +46,7 @@ type TapestrySyncer struct {
 	// Cluster binding and syncers
 	clusterBinding *cloudv1beta1.ClusterBinding
 	bottomUpSyncer *bottomup.BottomUpSyncer
-	topDownSyncer  *TopDownSyncer
+	topDownSyncer  *topdown.TopDownSyncer
 
 	// virtual cluster manager
 	manager manager.Manager
@@ -53,8 +54,8 @@ type TapestrySyncer struct {
 	physicalManager manager.Manager
 
 	// Control channels
-	stopCh chan struct{}
-	doneCh chan struct{}
+	stopCh   chan struct{}
+	phyMgrCh chan struct{}
 }
 
 // NewTapestrySyncer creates a new TapestrySyncer instance
@@ -68,14 +69,13 @@ func NewTapestrySyncer(mgr manager.Manager, client client.Client, scheme *runtim
 		ClusterBindingName: bindingName,
 		manager:            mgr,
 		stopCh:             make(chan struct{}),
-		doneCh:             make(chan struct{}),
+		phyMgrCh:           make(chan struct{}),
 	}, nil
 }
 
 // Start starts the Tapestry Syncer
 func (ts *TapestrySyncer) Start(ctx context.Context) error {
 	ts.Log.Info("Starting Tapestry Syncer")
-	defer close(ts.doneCh)
 
 	// Load the ClusterBinding
 	if err := ts.loadClusterBinding(ctx); err != nil {
@@ -102,6 +102,11 @@ func (ts *TapestrySyncer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to setup BottomUp syncer: %w", err)
 	}
 
+	// Setup TopDown Syncer
+	if err := ts.topDownSyncer.Setup(ctx); err != nil {
+		return fmt.Errorf("failed to setup TopDown syncer: %w", err)
+	}
+
 	// Start the synchronization control loop
 	ts.startSyncLoop(ctx)
 
@@ -120,6 +125,8 @@ func (ts *TapestrySyncer) Start(ctx context.Context) error {
 	// Graceful shutdown
 	ts.Log.Info("Tapestry Syncer stopping")
 	ts.shutdown(ctx)
+	<-ts.phyMgrCh
+	ts.Log.Info("Physical cluster manager stopped")
 	return nil
 }
 
@@ -284,7 +291,8 @@ func (ts *TapestrySyncer) initializeSyncers() error {
 	ts.bottomUpSyncer = bottomup.NewBottomUpSyncer(ts.manager, ts.physicalManager, ts.Scheme, ts.clusterBinding)
 
 	// Initialize top-down syncer (virtual -> physical)
-	ts.topDownSyncer = NewTopDownSyncer(ts.Client, ts.Scheme, ts.clusterBinding)
+	// Pass both virtualManager, physicalManager and physicalConfig from TapestrySyncer
+	ts.topDownSyncer = topdown.NewTopDownSyncer(ts.manager, ts.physicalManager, ts.physicalConfig, ts.Scheme, ts.clusterBinding)
 
 	ts.Log.Info("Syncers initialized successfully")
 	return nil
@@ -316,6 +324,7 @@ func (ts *TapestrySyncer) startSyncLoop(ctx context.Context) {
 		if err := ts.physicalManager.Start(ctx); err != nil {
 			ts.Log.Error(err, "Physical cluster manager failed")
 		}
+		close(ts.phyMgrCh)
 	}()
 
 	ts.Log.Info("Sync loop started successfully")
@@ -325,8 +334,11 @@ func (ts *TapestrySyncer) startSyncLoop(ctx context.Context) {
 func (ts *TapestrySyncer) shutdown(_ context.Context) {
 	ts.Log.Info("Shutting down Tapestry Syncer")
 
-	// TODO: Implement graceful shutdown of syncers
-	// This will be enhanced when syncers have more complex lifecycle management
+	// Top-down syncer doesn't need explicit stop
+	// It's managed by the controller-runtime manager lifecycle
+
+	// Bottom-up syncer doesn't have a Stop method yet
+	// It's managed by the controller-runtime manager lifecycle
 
 	ts.Log.Info("Tapestry Syncer shutdown completed")
 }
@@ -334,11 +346,6 @@ func (ts *TapestrySyncer) shutdown(_ context.Context) {
 // Stop stops the Tapestry Syncer
 func (ts *TapestrySyncer) Stop() {
 	close(ts.stopCh)
-}
-
-// Done returns a channel that's closed when the syncer is completely stopped
-func (ts *TapestrySyncer) Done() <-chan struct{} {
-	return ts.doneCh
 }
 
 // setupClusterBindingController sets up the ClusterBinding controller

@@ -26,12 +26,6 @@ const (
 	LabelPhysicalNodeName  = "tapestry.io/physical-node-name"
 	LabelManagedBy         = "tapestry.io/managed-by"
 
-	// Annotations for virtual nodes
-	AnnotationLastSyncTime    = "tapestry.io/last-sync-time"
-	AnnotationPoliciesApplied = "tapestry.io/policies-applied"
-	// Annotation to store expected virtual node metadata for user customization preservation
-	AnnotationExpectedMetadata = "tapestry.io/expected-metadata"
-
 	// Sync intervals
 	DefaultNodeSyncInterval   = 300 * time.Second
 	DefaultPolicySyncInterval = 300 * time.Second

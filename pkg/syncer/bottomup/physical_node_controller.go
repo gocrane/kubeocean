@@ -970,7 +970,7 @@ func (r *PhysicalNodeReconciler) getExpectedMetadataFromAnnotation(node *corev1.
 		return &ExpectedNodeMetadata{}, nil
 	}
 
-	encodedMetadata, exists := node.Annotations[AnnotationExpectedMetadata]
+	encodedMetadata, exists := node.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
 	if !exists {
 		return &ExpectedNodeMetadata{}, nil
 	}
@@ -1004,7 +1004,7 @@ func (r *PhysicalNodeReconciler) saveExpectedMetadataToAnnotation(node *corev1.N
 
 	// Base64 encode the JSON data
 	encodedMetadata := base64.StdEncoding.EncodeToString(metadataBytes)
-	node.Annotations[AnnotationExpectedMetadata] = encodedMetadata
+	node.Annotations[cloudv1beta1.AnnotationExpectedMetadata] = encodedMetadata
 	return nil
 }
 
@@ -1206,7 +1206,7 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 	}
 
 	// Add Tapestry-specific annotations
-	annotations[AnnotationLastSyncTime] = time.Now().Format(time.RFC3339)
+	annotations[cloudv1beta1.AnnotationLastSyncTime] = time.Now().Format(time.RFC3339)
 
 	// Add physical node metadata
 	annotations["tapestry.io/physical-cluster-name"] = r.ClusterBindingName
@@ -1233,10 +1233,10 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 			policyDetails = append(policyDetails, policyDetail)
 		}
 
-		annotations[AnnotationPoliciesApplied] = strings.Join(policyNames, ",")
+		annotations[cloudv1beta1.AnnotationPoliciesApplied] = strings.Join(policyNames, ",")
 		annotations["tapestry.io/policy-details"] = strings.Join(policyDetails, ";")
 	} else {
-		annotations[AnnotationPoliciesApplied] = ""
+		annotations[cloudv1beta1.AnnotationPoliciesApplied] = ""
 	}
 
 	r.Log.V(1).Info("Built virtual node annotations", "physicalNode", physicalNode.Name, "annotationCount", len(annotations))
