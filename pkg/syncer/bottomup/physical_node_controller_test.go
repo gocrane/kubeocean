@@ -232,8 +232,8 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 				if tt.expectedVirtualNode {
 					assert.NoError(t, err, "Virtual node should exist")
 					assert.Equal(t, virtualNodeName, virtualNode.Name)
-					assert.Equal(t, "test-cluster", virtualNode.Labels[LabelPhysicalClusterID])
-					assert.Equal(t, "test-node", virtualNode.Labels[LabelPhysicalNodeName])
+					assert.Equal(t, "test-cluster", virtualNode.Labels[cloudv1beta1.LabelPhysicalClusterID])
+					assert.Equal(t, "test-node", virtualNode.Labels[cloudv1beta1.LabelPhysicalNodeName])
 					assert.Equal(t, "tapestry", virtualNode.Labels[cloudv1beta1.LabelManagedBy])
 				} else {
 					assert.True(t, client.IgnoreNotFound(err) == nil, "Virtual node should not exist")
@@ -531,13 +531,17 @@ func TestPhysicalNodeReconciler_GetClusterID(t *testing.T) {
 			expected: "cluster-123",
 		},
 		{
-			name:        "fallback to binding name",
+			name: "fallback to binding name",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-cluster"},
+				Spec:       cloudv1beta1.ClusterBindingSpec{},
+			},
 			bindingName: "test-cluster",
-			expected:    "test-cluster",
+			expected:    "",
 		},
 		{
 			name:     "no binding and no name",
-			expected: "unknown-cluster",
+			expected: "",
 		},
 	}
 
@@ -2333,7 +2337,7 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_Integration(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: corev1.PodSpec{
-						NodeName: "vnode-test-cluster-physical-node-2",
+						NodeName: "vnode-test-cluster-id-physical-node-2",
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
@@ -2395,7 +2399,7 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_Integration(t *testing.T) {
 			var objects []client.Object
 
 			if tt.virtualNodeExists {
-				virtualNodeName := "vnode-test-cluster-" + tt.physicalNodeName
+				virtualNodeName := "vnode-test-cluster-id-" + tt.physicalNodeName
 				virtualNode = &corev1.Node{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: virtualNodeName,
@@ -2453,11 +2457,22 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_Integration(t *testing.T) {
 
 			kubeClient := fake.NewSimpleClientset()
 
+			// Create ClusterBinding for testing
+			clusterBinding := &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster-id",
+				},
+			}
+
 			reconciler := &PhysicalNodeReconciler{
 				VirtualClient:      virtualClient,
 				KubeClient:         kubeClient,
 				Log:                zap.New(zap.UseDevMode(true)),
 				ClusterBindingName: "test-cluster",
+				ClusterBinding:     clusterBinding,
 				leaseControllers:   make(map[string]*LeaseController),
 			}
 
@@ -2483,7 +2498,7 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_Integration(t *testing.T) {
 
 			// Check if virtual node was deleted
 			if tt.virtualNodeExists {
-				virtualNodeName := "vnode-test-cluster-" + tt.physicalNodeName
+				virtualNodeName := "vnode-test-cluster-id-" + tt.physicalNodeName
 				var currentNode corev1.Node
 				err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, &currentNode)
 
@@ -2513,7 +2528,7 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_ForceEviction_Integration(t *
 
 	ctx := context.Background()
 	physicalNodeName := "physical-node-eviction-test"
-	virtualNodeName := "vnode-test-cluster-" + physicalNodeName
+	virtualNodeName := "vnode-test-cluster-id-" + physicalNodeName
 
 	// Create virtual node with deletion taint and old taint time
 	oldTime := time.Now().Add(-400 * time.Second)
@@ -2580,11 +2595,22 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_ForceEviction_Integration(t *
 		}).
 		Build()
 
+	// Create ClusterBinding for testing
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster-id",
+		},
+	}
+
 	reconciler := &PhysicalNodeReconciler{
 		VirtualClient:      virtualClient,
 		KubeClient:         fake.NewSimpleClientset(),
 		Log:                zap.New(zap.UseDevMode(true)),
 		ClusterBindingName: "test-cluster",
+		ClusterBinding:     clusterBinding,
 		leaseControllers:   make(map[string]*LeaseController),
 	}
 
@@ -2664,7 +2690,7 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 			},
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{},
@@ -2683,7 +2709,7 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 			},
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{},
@@ -2702,7 +2728,7 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 			},
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{},
@@ -2721,7 +2747,7 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 			},
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{
@@ -2746,7 +2772,7 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 			},
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{
@@ -2772,7 +2798,7 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 			},
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{
@@ -2797,7 +2823,7 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 			},
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{
@@ -2821,9 +2847,20 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 				WithObjects(tt.existingVirtualNode).
 				Build()
 
+			// Create ClusterBinding for testing
+			clusterBinding := &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster-id",
+				},
+			}
+
 			reconciler := &PhysicalNodeReconciler{
 				VirtualClient:      fakeClient,
 				ClusterBindingName: "test-cluster",
+				ClusterBinding:     clusterBinding,
 				Log:                zap.New(zap.UseDevMode(true)),
 			}
 
@@ -2847,7 +2884,7 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 				// Verify the taint was added/updated correctly (except for cases that should just requeue)
 				if !tt.expectNoUpdate {
 					updatedNode := &corev1.Node{}
-					err = fakeClient.Get(ctx, client.ObjectKey{Name: "vnode-test-cluster-test-node"}, updatedNode)
+					err = fakeClient.Get(ctx, client.ObjectKey{Name: "vnode-test-cluster-id-test-node"}, updatedNode)
 					require.NoError(t, err)
 
 					// Find the out-of-time-windows taint
@@ -2883,7 +2920,7 @@ func TestPhysicalNodeReconciler_addOrUpdateOutOfTimeWindowsTaint(t *testing.T) {
 			name: "add new taint to node without taints",
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{},
@@ -2895,7 +2932,7 @@ func TestPhysicalNodeReconciler_addOrUpdateOutOfTimeWindowsTaint(t *testing.T) {
 			name: "add taint to node with existing different taints",
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{
@@ -2912,7 +2949,7 @@ func TestPhysicalNodeReconciler_addOrUpdateOutOfTimeWindowsTaint(t *testing.T) {
 			name: "update existing taint effect",
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{
@@ -2929,7 +2966,7 @@ func TestPhysicalNodeReconciler_addOrUpdateOutOfTimeWindowsTaint(t *testing.T) {
 			name: "no update needed - same effect",
 			existingVirtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "vnode-test-cluster-test-node",
+					Name: "vnode-test-cluster-id-test-node",
 				},
 				Spec: corev1.NodeSpec{
 					Taints: []corev1.Taint{
@@ -2952,9 +2989,20 @@ func TestPhysicalNodeReconciler_addOrUpdateOutOfTimeWindowsTaint(t *testing.T) {
 				WithObjects(tt.existingVirtualNode).
 				Build()
 
+			// Create ClusterBinding for testing
+			clusterBinding := &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster-id",
+				},
+			}
+
 			reconciler := &PhysicalNodeReconciler{
 				VirtualClient:      fakeClient,
 				ClusterBindingName: "test-cluster",
+				ClusterBinding:     clusterBinding,
 				Log:                zap.New(zap.UseDevMode(true)),
 			}
 
@@ -2969,7 +3017,7 @@ func TestPhysicalNodeReconciler_addOrUpdateOutOfTimeWindowsTaint(t *testing.T) {
 				if !tt.expectNoUpdate {
 					// Verify the taint was added/updated correctly
 					updatedNode := &corev1.Node{}
-					err = fakeClient.Get(ctx, client.ObjectKey{Name: "vnode-test-cluster-test-node"}, updatedNode)
+					err = fakeClient.Get(ctx, client.ObjectKey{Name: "vnode-test-cluster-id-test-node"}, updatedNode)
 					require.NoError(t, err)
 
 					// Find the out-of-time-windows taint

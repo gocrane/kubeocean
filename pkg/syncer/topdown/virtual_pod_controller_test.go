@@ -23,7 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"github.com/TKEColocation/tapestry/pkg/syncer/bottomup"
 )
 
 // createTestVirtualNode creates a virtual node for testing
@@ -32,9 +31,9 @@ func createTestVirtualNode(name, clusterName, clusterID, physicalNodeName string
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 			Labels: map[string]string{
-				cloudv1beta1.LabelManagedBy:     "tapestry",
-				bottomup.LabelPhysicalClusterID: clusterID,
-				bottomup.LabelPhysicalNodeName:  physicalNodeName,
+				cloudv1beta1.LabelManagedBy:         "tapestry",
+				cloudv1beta1.LabelPhysicalClusterID: clusterID,
+				cloudv1beta1.LabelPhysicalNodeName:  physicalNodeName,
 			},
 			Annotations: map[string]string{
 				"tapestry.io/physical-cluster-name": clusterName,

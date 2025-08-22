@@ -60,7 +60,7 @@ type TapestrySyncer struct {
 
 // NewTapestrySyncer creates a new TapestrySyncer instance
 func NewTapestrySyncer(mgr manager.Manager, client client.Client, scheme *runtime.Scheme, bindingName string) (*TapestrySyncer, error) {
-	log := ctrl.Log.WithName("tapestry-syncer").WithValues("binding", fmt.Sprintf("%s", bindingName))
+	log := ctrl.Log.WithName("tapestry-syncer").WithValues("binding", bindingName)
 
 	return &TapestrySyncer{
 		Client:             client,

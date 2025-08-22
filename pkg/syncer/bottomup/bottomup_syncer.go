@@ -3,7 +3,6 @@ package bottomup
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -14,21 +13,6 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	"github.com/TKEColocation/tapestry/pkg/utils"
-)
-
-const (
-	// Virtual node name prefix
-	VirtualNodePrefix = "vnode"
-
-	// Labels for virtual nodes
-	LabelClusterBinding    = "tapestry.io/cluster-binding"
-	LabelPhysicalClusterID = "tapestry.io/physical-cluster-id"
-	LabelPhysicalNodeName  = "tapestry.io/physical-node-name"
-	LabelManagedBy         = "tapestry.io/managed-by"
-
-	// Sync intervals
-	DefaultNodeSyncInterval   = 300 * time.Second
-	DefaultPolicySyncInterval = 300 * time.Second
 )
 
 // BottomUpSyncer handles synchronization from physical cluster to virtual cluster
@@ -145,6 +129,20 @@ func (bus *BottomUpSyncer) setupControllers() error {
 		return fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
 
+	// Setup Physical CSINode Controller
+	csiNodeReconciler := &PhysicalCSINodeReconciler{
+		PhysicalClient:     bus.physicalManager.GetClient(),
+		VirtualClient:      bus.virtualManager.GetClient(),
+		Scheme:             bus.Scheme,
+		ClusterBindingName: bus.ClusterBinding.Name,
+		ClusterBinding:     bus.ClusterBinding,
+		Log:                bus.Log.WithName("physical-csinode-controller"),
+	}
+
+	if err := csiNodeReconciler.SetupWithManager(bus.physicalManager, bus.virtualManager); err != nil {
+		return fmt.Errorf("failed to setup physical CSINode controller: %w", err)
+	}
+
 	// Setup Physical Node Controller
 	nodeReconciler := &PhysicalNodeReconciler{
 		PhysicalClient:     bus.physicalManager.GetClient(),
@@ -194,6 +192,7 @@ func (bus *BottomUpSyncer) setupControllers() error {
 	}
 
 	bus.Log.Info("Controllers setup completed",
+		"csiNodeController", "enabled",
 		"nodeController", "enabled",
 		"podController", "enabled",
 		"policyController", "enabled")

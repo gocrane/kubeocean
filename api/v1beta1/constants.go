@@ -25,4 +25,9 @@ const (
 	// Taints
 	TaintPhysicalNodeUnschedulable = "tapestry.io/physical-node-unschedulable"
 	TaintOutOfTimeWindows          = "tapestry.io/out-of-time-windows"
+
+	// Node and CSINode labels
+	LabelClusterBinding    = "tapestry.io/cluster-binding"
+	LabelPhysicalClusterID = "tapestry.io/physical-cluster-id"
+	LabelPhysicalNodeName  = "tapestry.io/physical-node-name"
 )

@@ -629,8 +629,8 @@ func TestResourceLeasingPolicyReconciler_UpdatePolicyStatusWithValidation(t *tes
 					Cluster: "test-cluster",
 					TimeWindows: []cloudv1beta1.TimeWindow{
 						{
-							Start: "09:00",
-							End:   "17:00",
+							Start: time.Now().Add(1 * time.Hour).Format("15:04"),
+							End:   time.Now().Add(2 * time.Hour).Format("15:04"),
 						},
 					},
 				},

@@ -58,9 +58,9 @@ func TestVirtualPodReconciler_Integration(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-vnode",
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy:       "tapestry",
-						"tapestry.io/physical-cluster-id": "test-cluster-id",
-						"tapestry.io/physical-node-name":  "test-physical-node",
+						cloudv1beta1.LabelManagedBy:         "tapestry",
+						cloudv1beta1.LabelPhysicalClusterID: "test-cluster-id",
+						cloudv1beta1.LabelPhysicalNodeName:  "test-physical-node",
 					},
 					Annotations: map[string]string{
 						"tapestry.io/physical-cluster-name": "test-cluster",

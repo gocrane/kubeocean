@@ -441,12 +441,12 @@ func TestClusterBindingReconciler_SyncerCreation(t *testing.T) {
 	// Test getSyncerLabels
 	labels := reconciler.getSyncerLabels(clusterBinding)
 	expectedLabels := map[string]string{
-		"app.kubernetes.io/name":       "tapestry-syncer",
-		"app.kubernetes.io/instance":   "test-binding",
-		"app.kubernetes.io/component":  "syncer",
-		"app.kubernetes.io/part-of":    "tapestry",
-		"app.kubernetes.io/managed-by": "tapestry-manager",
-		"tapestry.io/cluster-binding":  "test-binding",
+		"app.kubernetes.io/name":         "tapestry-syncer",
+		"app.kubernetes.io/instance":     "test-binding",
+		"app.kubernetes.io/component":    "syncer",
+		"app.kubernetes.io/part-of":      "tapestry",
+		"app.kubernetes.io/managed-by":   "tapestry-manager",
+		cloudv1beta1.LabelClusterBinding: "test-binding",
 	}
 	assert.Equal(t, expectedLabels, labels)
 

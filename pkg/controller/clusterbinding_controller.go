@@ -562,12 +562,12 @@ func (r *ClusterBindingReconciler) getSyncerName(clusterBinding *cloudv1beta1.Cl
 // getSyncerLabels returns the labels for the Tapestry Syncer resources
 func (r *ClusterBindingReconciler) getSyncerLabels(clusterBinding *cloudv1beta1.ClusterBinding) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "tapestry-syncer",
-		"app.kubernetes.io/instance":   clusterBinding.Name,
-		"app.kubernetes.io/component":  "syncer",
-		"app.kubernetes.io/part-of":    "tapestry",
-		"app.kubernetes.io/managed-by": "tapestry-manager",
-		"tapestry.io/cluster-binding":  clusterBinding.Name,
+		"app.kubernetes.io/name":         "tapestry-syncer",
+		"app.kubernetes.io/instance":     clusterBinding.Name,
+		"app.kubernetes.io/component":    "syncer",
+		"app.kubernetes.io/part-of":      "tapestry",
+		"app.kubernetes.io/managed-by":   "tapestry-manager",
+		cloudv1beta1.LabelClusterBinding: clusterBinding.Name,
 	}
 }
 

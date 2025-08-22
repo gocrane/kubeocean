@@ -24,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"github.com/TKEColocation/tapestry/pkg/syncer/bottomup"
 )
 
 // VirtualPodReconciler reconciles Pod objects from virtual cluster
@@ -216,7 +215,7 @@ func (r *VirtualPodReconciler) shouldManageVirtualPod(ctx context.Context, virtu
 	// Check if the virtual node belongs to current cluster binding
 	// Check by physical-cluster-name annotation (if exists) or physical-cluster-id label
 	physicalClusterName := virtualNode.Annotations["tapestry.io/physical-cluster-name"]
-	physicalClusterID := virtualNode.Labels[bottomup.LabelPhysicalClusterID]
+	physicalClusterID := virtualNode.Labels[cloudv1beta1.LabelPhysicalClusterID]
 
 	currentClusterName := r.ClusterBinding.Name
 	currentClusterID := r.ClusterBinding.Spec.ClusterID
@@ -240,7 +239,7 @@ func (r *VirtualPodReconciler) shouldManageVirtualPod(ctx context.Context, virtu
 	}
 
 	// Get physical node name from virtual node label
-	physicalNodeName := virtualNode.Labels[bottomup.LabelPhysicalNodeName]
+	physicalNodeName := virtualNode.Labels[cloudv1beta1.LabelPhysicalNodeName]
 	if physicalNodeName == "" {
 		return false, "", fmt.Errorf("virtual node %s missing physical node name label", virtualNodeName)
 	}

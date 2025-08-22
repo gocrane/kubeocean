@@ -338,6 +338,7 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 			Name: "test-binding",
 		},
 		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster-id",
 			NodeSelector: &corev1.NodeSelector{
 				NodeSelectorTerms: []corev1.NodeSelectorTerm{
 					{
@@ -361,6 +362,7 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 		KubeClient:         kubeClient,
 		Scheme:             scheme,
 		ClusterBindingName: "test-binding",
+		ClusterBinding:     clusterBinding,
 		Log:                testr.New(t),
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/onsi/gomega"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -2696,6 +2697,470 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				_ = k8sVirtual.Delete(ctx, clusterBinding)
 				_ = k8sVirtual.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 			}, ginkgo.SpecTimeout(120*time.Second))
+		})
+	})
+
+	var _ = Describe("Virtual CSINode Sync Test", func() {
+		ginkgo.Describe("Virtual CSINode Creation and Update Tests", func() {
+			ginkgo.It("should create virtual CSINode when physical node and CSINode exist before syncer starts", func(ctx context.Context) {
+				// Create namespace for secrets
+				ns := "tapestry-system"
+				_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+
+				// Create kubeconfig secret
+				kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: "csinode-test-kc", Namespace: ns},
+					Data:       map[string][]byte{"kubeconfig": kc},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
+
+				// Create physical node first
+				physicalNode := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "csinode-test-node",
+						Labels: map[string]string{
+							"node-role.kubernetes.io/worker": "",
+							"kubernetes.io/arch":             "amd64",
+							"kubernetes.io/os":               "linux",
+						},
+					},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+						Allocatable: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+						Capacity: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+					},
+				}
+				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+				// Create physical CSINode
+				physicalCSINode := &storagev1.CSINode{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "csinode-test-node",
+						Labels: map[string]string{
+							"csi-driver": "test-driver",
+						},
+						Annotations: map[string]string{
+							"csi-annotation": "test-value",
+						},
+					},
+					Spec: storagev1.CSINodeSpec{
+						Drivers: []storagev1.CSINodeDriver{
+							{
+								Name:   "test-driver",
+								NodeID: "test-node-id",
+								TopologyKeys: []string{
+									"topology.kubernetes.io/zone",
+									"topology.kubernetes.io/region",
+								},
+								Allocatable: &storagev1.VolumeNodeResources{
+									Count: &[]int32{10}[0],
+								},
+							},
+						},
+					},
+				}
+				gomega.Expect(k8sPhysical.Create(ctx, physicalCSINode)).To(gomega.Succeed())
+
+				ginkgo.By("Physical node and CSINode created")
+
+				// Create ClusterBinding
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{Name: "csinode-test-cluster"},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:      "csinode-test-cls",
+						SecretRef:      corev1.SecretReference{Name: "csinode-test-kc", Namespace: ns},
+						MountNamespace: "default",
+					},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, clusterBinding)).To(gomega.Succeed())
+
+				// Create and start TapestrySyncer
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				syncerCtx, syncerCancel := context.WithCancel(ctx)
+				defer syncerCancel()
+
+				go func() {
+					defer ginkgo.GinkgoRecover()
+					err := syncer.Start(syncerCtx)
+					if err != nil && syncerCtx.Err() == nil {
+						ginkgo.Fail(fmt.Sprintf("TapestrySyncer failed: %v", err))
+					}
+				}()
+
+				ginkgo.By("TapestrySyncer started")
+
+				// Wait for virtual node to be created
+				expectedVirtualNode := "vnode-csinode-test-cls-csinode-test-node"
+				gomega.Eventually(func() bool {
+					var vnode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualNode}, &vnode)
+					return err == nil
+				}, 45*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				ginkgo.By("Virtual node created successfully")
+
+				// Wait for virtual CSINode to be created
+				expectedVirtualCSINode := "vnode-csinode-test-cls-csinode-test-node"
+				gomega.Eventually(func() bool {
+					var vcsinode storagev1.CSINode
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualCSINode}, &vcsinode)
+					return err == nil
+				}, 45*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				ginkgo.By("Virtual CSINode created successfully")
+
+				// Verify virtual CSINode properties
+				var virtualCSINode storagev1.CSINode
+				gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualCSINode}, &virtualCSINode)).To(gomega.Succeed())
+
+				// Check essential labels
+				gomega.Expect(virtualCSINode.Labels).To(gomega.HaveKeyWithValue("tapestry.io/cluster-binding", "csinode-test-cluster"))
+				gomega.Expect(virtualCSINode.Labels).To(gomega.HaveKeyWithValue("tapestry.io/physical-node-name", "csinode-test-node"))
+				gomega.Expect(virtualCSINode.Labels).To(gomega.HaveKeyWithValue("tapestry.io/managed-by", "tapestry"))
+				gomega.Expect(virtualCSINode.Labels).To(gomega.HaveKeyWithValue("csi-driver", "test-driver"))
+
+				// Check annotations
+				gomega.Expect(virtualCSINode.Annotations).To(gomega.HaveKey("tapestry.io/last-sync-time"))
+				gomega.Expect(virtualCSINode.Annotations).To(gomega.HaveKeyWithValue("csi-annotation", "test-value"))
+				gomega.Expect(virtualCSINode.Annotations).To(gomega.HaveKeyWithValue("tapestry.io/physical-node-name", "csinode-test-node"))
+
+				// Check spec
+				gomega.Expect(virtualCSINode.Spec.Drivers).To(gomega.HaveLen(1))
+				gomega.Expect(virtualCSINode.Spec.Drivers[0].Name).To(gomega.Equal("test-driver"))
+				gomega.Expect(virtualCSINode.Spec.Drivers[0].NodeID).To(gomega.Equal("test-node-id"))
+				gomega.Expect(virtualCSINode.Spec.Drivers[0].TopologyKeys).To(gomega.ContainElements("topology.kubernetes.io/zone", "topology.kubernetes.io/region"))
+				gomega.Expect(*virtualCSINode.Spec.Drivers[0].Allocatable.Count).To(gomega.Equal(int32(10)))
+
+				ginkgo.By("Virtual CSINode properties verified")
+
+				// Test 2: Update physical CSINode and verify virtual CSINode syncs
+				ginkgo.By("Updating physical CSINode")
+
+				// Update physical CSINode (labels, annotations, remove original driver and add new driver)
+				err = k8sPhysical.Get(ctx, types.NamespacedName{Name: "csinode-test-node"}, physicalCSINode)
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				physicalCSINode.Labels["updated-label"] = "updated-value"
+				physicalCSINode.Annotations["updated-annotation"] = "updated-value"
+				// Remove original driver and add a new CSI driver
+				newDriver := storagev1.CSINodeDriver{
+					Name:   "new-test-driver",
+					NodeID: "new-test-node-id",
+					TopologyKeys: []string{
+						"topology.kubernetes.io/hostname",
+					},
+					Allocatable: &storagev1.VolumeNodeResources{
+						Count: &[]int32{5}[0],
+					},
+				}
+				physicalCSINode.Spec.Drivers = []storagev1.CSINodeDriver{newDriver}
+
+				gomega.Expect(k8sPhysical.Update(ctx, physicalCSINode)).To(gomega.Succeed())
+
+				// Wait for virtual CSINode to be updated
+				gomega.Eventually(func() bool {
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualCSINode}, &virtualCSINode)
+					if err != nil {
+						return false
+					}
+					return virtualCSINode.Labels["updated-label"] == "updated-value" &&
+						virtualCSINode.Annotations["updated-annotation"] == "updated-value" &&
+						len(virtualCSINode.Spec.Drivers) == 1 &&
+						virtualCSINode.Spec.Drivers[0].Name == "new-test-driver"
+				}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				ginkgo.By("Virtual CSINode updated successfully")
+
+				// Test 3: Delete physical node (but keep physical CSINode) and verify virtual node and CSINode are deleted
+				ginkgo.By("Deleting physical node (keeping physical CSINode)")
+
+				gomega.Expect(k8sPhysical.Delete(ctx, physicalNode)).To(gomega.Succeed())
+
+				// Wait for virtual CSINode to be deleted (should be deleted because virtual node is deleted)
+				gomega.Eventually(func() bool {
+					var vcsinode storagev1.CSINode
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualCSINode}, &vcsinode)
+					return apierrors.IsNotFound(err)
+				}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				// Wait for virtual node to be deleted
+				gomega.Eventually(func() bool {
+					var vnode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualNode}, &vnode)
+					return apierrors.IsNotFound(err)
+				}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				ginkgo.By("Virtual node and CSINode deleted successfully (even though physical CSINode still exists)")
+
+				// Cleanup
+				syncerCancel()
+				_ = k8sPhysical.Delete(ctx, physicalCSINode)
+				_ = k8sVirtual.Delete(ctx, clusterBinding)
+			}, ginkgo.SpecTimeout(120*time.Second))
+
+			ginkgo.It("should create virtual CSINode when physical CSINode is created after virtual node exists", func(ctx context.Context) {
+				// Create namespace for secrets
+				ns := "tapestry-system"
+				_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+
+				// Create kubeconfig secret
+				kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: "csinode-test2-kc", Namespace: ns},
+					Data:       map[string][]byte{"kubeconfig": kc},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
+
+				// Create ClusterBinding first
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{Name: "csinode-test2-cluster"},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:      "csinode-test2-cls",
+						SecretRef:      corev1.SecretReference{Name: "csinode-test2-kc", Namespace: ns},
+						MountNamespace: "default",
+					},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, clusterBinding)).To(gomega.Succeed())
+
+				// Create physical node
+				physicalNode := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "csinode-test2-node",
+						Labels: map[string]string{
+							"node-role.kubernetes.io/worker": "",
+							"kubernetes.io/arch":             "amd64",
+							"kubernetes.io/os":               "linux",
+						},
+					},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+						Allocatable: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+						Capacity: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+					},
+				}
+				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+				// Create and start TapestrySyncer
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				syncerCtx, syncerCancel := context.WithCancel(ctx)
+				defer syncerCancel()
+
+				go func() {
+					defer ginkgo.GinkgoRecover()
+					err := syncer.Start(syncerCtx)
+					if err != nil && syncerCtx.Err() == nil {
+						ginkgo.Fail(fmt.Sprintf("TapestrySyncer failed: %v", err))
+					}
+				}()
+
+				ginkgo.By("TapestrySyncer started")
+
+				// Wait for virtual node to be created
+				expectedVirtualNode := "vnode-csinode-test2-cls-csinode-test2-node"
+				gomega.Eventually(func() bool {
+					var vnode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualNode}, &vnode)
+					return err == nil
+				}, 45*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				ginkgo.By("Virtual node created successfully")
+
+				// Create physical CSINode after virtual node exists
+				physicalCSINode := &storagev1.CSINode{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "csinode-test2-node",
+						Labels: map[string]string{
+							"csi-driver": "test-driver-2",
+						},
+						Annotations: map[string]string{
+							"csi-annotation": "test-value-2",
+						},
+					},
+					Spec: storagev1.CSINodeSpec{
+						Drivers: []storagev1.CSINodeDriver{
+							{
+								Name:   "test-driver-2",
+								NodeID: "test-node-id-2",
+								TopologyKeys: []string{
+									"topology.kubernetes.io/zone",
+								},
+								Allocatable: &storagev1.VolumeNodeResources{
+									Count: &[]int32{20}[0],
+								},
+							},
+						},
+					},
+				}
+				gomega.Expect(k8sPhysical.Create(ctx, physicalCSINode)).To(gomega.Succeed())
+
+				ginkgo.By("Physical CSINode created")
+
+				// Wait for virtual CSINode to be created
+				expectedVirtualCSINode := "vnode-csinode-test2-cls-csinode-test2-node"
+				gomega.Eventually(func() bool {
+					var vcsinode storagev1.CSINode
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualCSINode}, &vcsinode)
+					return err == nil
+				}, 45*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				ginkgo.By("Virtual CSINode created successfully")
+
+				// Verify virtual CSINode properties
+				var virtualCSINode storagev1.CSINode
+				gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualCSINode}, &virtualCSINode)).To(gomega.Succeed())
+
+				// Check essential labels
+				gomega.Expect(virtualCSINode.Labels).To(gomega.HaveKeyWithValue("tapestry.io/cluster-binding", "csinode-test2-cluster"))
+				gomega.Expect(virtualCSINode.Labels).To(gomega.HaveKeyWithValue("tapestry.io/physical-node-name", "csinode-test2-node"))
+				gomega.Expect(virtualCSINode.Labels).To(gomega.HaveKeyWithValue("tapestry.io/managed-by", "tapestry"))
+				gomega.Expect(virtualCSINode.Labels).To(gomega.HaveKeyWithValue("csi-driver", "test-driver-2"))
+
+				// Check annotations
+				gomega.Expect(virtualCSINode.Annotations).To(gomega.HaveKey("tapestry.io/last-sync-time"))
+				gomega.Expect(virtualCSINode.Annotations).To(gomega.HaveKeyWithValue("csi-annotation", "test-value-2"))
+				gomega.Expect(virtualCSINode.Annotations).To(gomega.HaveKeyWithValue("tapestry.io/physical-node-name", "csinode-test2-node"))
+
+				// Check spec
+				gomega.Expect(virtualCSINode.Spec.Drivers).To(gomega.HaveLen(1))
+				gomega.Expect(virtualCSINode.Spec.Drivers[0].Name).To(gomega.Equal("test-driver-2"))
+				gomega.Expect(virtualCSINode.Spec.Drivers[0].NodeID).To(gomega.Equal("test-node-id-2"))
+				gomega.Expect(virtualCSINode.Spec.Drivers[0].TopologyKeys).To(gomega.ContainElements("topology.kubernetes.io/zone"))
+				gomega.Expect(*virtualCSINode.Spec.Drivers[0].Allocatable.Count).To(gomega.Equal(int32(20)))
+
+				ginkgo.By("Virtual CSINode properties verified")
+
+				// Test 2: Update physical CSINode and verify virtual CSINode syncs
+				ginkgo.By("Updating physical CSINode")
+
+				// Update physical CSINode (labels, annotations, and add new driver)
+				err = k8sPhysical.Get(ctx, types.NamespacedName{Name: "csinode-test2-node"}, physicalCSINode)
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				physicalCSINode.Labels["updated-label"] = "updated-value"
+				physicalCSINode.Annotations["updated-annotation"] = "updated-value"
+				// Add a new CSI driver (this is allowed)
+				newDriver := storagev1.CSINodeDriver{
+					Name:   "new-test-driver-2",
+					NodeID: "new-test-node-id-2",
+					TopologyKeys: []string{
+						"topology.kubernetes.io/region",
+					},
+					Allocatable: &storagev1.VolumeNodeResources{
+						Count: &[]int32{15}[0],
+					},
+				}
+				physicalCSINode.Spec.Drivers = append(physicalCSINode.Spec.Drivers, newDriver)
+
+				gomega.Expect(k8sPhysical.Update(ctx, physicalCSINode)).To(gomega.Succeed())
+
+				// Wait for virtual CSINode to be updated
+				gomega.Eventually(func() bool {
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualCSINode}, &virtualCSINode)
+					if err != nil {
+						return false
+					}
+					return virtualCSINode.Labels["updated-label"] == "updated-value" &&
+						virtualCSINode.Annotations["updated-annotation"] == "updated-value" &&
+						len(virtualCSINode.Spec.Drivers) == 2 &&
+						virtualCSINode.Spec.Drivers[1].Name == "new-test-driver-2"
+				}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				ginkgo.By("Virtual CSINode updated successfully")
+
+				// Test 3: Delete physical CSINode and verify virtual CSINode is deleted
+				ginkgo.By("Deleting physical CSINode")
+
+				gomega.Expect(k8sPhysical.Delete(ctx, physicalCSINode)).To(gomega.Succeed())
+
+				// Wait for virtual CSINode to be deleted
+				gomega.Eventually(func() bool {
+					var vcsinode storagev1.CSINode
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualCSINode}, &vcsinode)
+					return apierrors.IsNotFound(err)
+				}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				ginkgo.By("Virtual CSINode deleted successfully")
+
+				// Test 4: Delete physical node and verify virtual node is deleted
+				ginkgo.By("Deleting physical node")
+
+				gomega.Expect(k8sPhysical.Delete(ctx, physicalNode)).To(gomega.Succeed())
+
+				// Wait for virtual node to be deleted
+				gomega.Eventually(func() bool {
+					var vnode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualNode}, &vnode)
+					return apierrors.IsNotFound(err)
+				}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
+
+				ginkgo.By("Virtual node deleted successfully")
+
+				// Test 5: Recreate physical CSINode and verify virtual CSINode is NOT created (no virtual node)
+				ginkgo.By("Recreating physical CSINode without virtual node")
+
+				// Recreate physical CSINode (without recreating physical node)
+				physicalCSINode = &storagev1.CSINode{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "csinode-test2-node",
+						Labels: map[string]string{
+							"csi-driver": "test-driver-3",
+						},
+					},
+					Spec: storagev1.CSINodeSpec{
+						Drivers: []storagev1.CSINodeDriver{
+							{
+								Name:   "test-driver-3",
+								NodeID: "test-node-id-3",
+							},
+						},
+					},
+				}
+				gomega.Expect(k8sPhysical.Create(ctx, physicalCSINode)).To(gomega.Succeed())
+
+				// Wait 3 seconds and verify virtual CSINode is NOT created
+				time.Sleep(2 * time.Second)
+
+				var vcsinode storagev1.CSINode
+				err = k8sVirtual.Get(ctx, types.NamespacedName{Name: expectedVirtualCSINode}, &vcsinode)
+				gomega.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue(), "Virtual CSINode should not be created without virtual node")
+
+				ginkgo.By("Virtual CSINode correctly not created without virtual node")
+
+				// Cleanup
+				syncerCancel()
+				_ = k8sPhysical.Delete(ctx, physicalCSINode)
+				_ = k8sPhysical.Delete(ctx, physicalNode)
+				_ = k8sVirtual.Delete(ctx, clusterBinding)
+			}, ginkgo.SpecTimeout(180*time.Second))
 		})
 	})
 })

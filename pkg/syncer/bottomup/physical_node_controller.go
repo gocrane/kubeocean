@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -177,6 +178,9 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	}
 
 	// Create or update virtual node
+	if r.getClusterID() == "" {
+		return ctrl.Result{}, fmt.Errorf("clusterID is unknown, skipping create or update virtual node")
+	}
 	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
 	err = r.createOrUpdateVirtualNode(ctx, physicalNode, availableResources, policies)
 	if err != nil {
@@ -306,7 +310,11 @@ func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context
 
 		logger.Info("Deleting pod to evict", "pod", pod.Name, "namespace", pod.Namespace, "phase", pod.Status.Phase)
 		// Delete the pod immediately
-		deleteOptions := &client.DeleteOptions{}
+		deleteOptions := &client.DeleteOptions{
+			Preconditions: &metav1.Preconditions{
+				UID: &pod.UID,
+			},
+		}
 		if err := r.VirtualClient.Delete(ctx, &pod, deleteOptions); err != nil && !errors.IsNotFound(err) {
 			logger.Error(err, "Failed to delete pod", "pod", pod.Name, "namespace", pod.Namespace)
 			// Continue with other pods even if one fails
@@ -324,6 +332,9 @@ func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context
 func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physicalNodeName string, forceReclaim bool, gracefulReclaimPeriodSeconds int32) (ctrl.Result, error) {
 	logger := r.Log.WithValues("physicalNode", physicalNodeName)
 
+	if r.getClusterID() == "" {
+		return ctrl.Result{}, fmt.Errorf("clusterID is unknown, skipping handleNodeDeletion")
+	}
 	virtualNodeName := r.generateVirtualNodeName(physicalNodeName)
 
 	virtualNode := &corev1.Node{}
@@ -399,6 +410,7 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 		return ctrl.Result{}, err
 	}
 
+	// TODO: may to consider to list-watch pod and requeue when pod is deleted
 	if hasPods {
 		logger.Info("Virtual node still has active pods, cannot delete node")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
@@ -412,7 +424,12 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 
 	// Delete virtual node
 	logger.Info("Deleting virtual node", "virtualNode", virtualNodeName)
-	err = r.VirtualClient.Delete(ctx, virtualNode)
+	deleteOptions := &client.DeleteOptions{
+		Preconditions: &metav1.Preconditions{
+			UID: &virtualNode.UID,
+		},
+	}
+	err = r.VirtualClient.Delete(ctx, virtualNode, deleteOptions)
 	if err != nil && !errors.IsNotFound(err) {
 		logger.Error(err, "Failed to delete virtual node")
 		return ctrl.Result{}, err
@@ -1105,9 +1122,7 @@ func (r *PhysicalNodeReconciler) copyTaints(original []corev1.Taint) []corev1.Ta
 
 // generateVirtualNodeName generates a virtual node name based on physical node
 func (r *PhysicalNodeReconciler) generateVirtualNodeName(physicalNodeName string) string {
-	// Format: vnode-{cluster-id}-{node-name}
-	clusterID := r.getClusterID()
-	return fmt.Sprintf("%s-%s-%s", VirtualNodePrefix, clusterID, physicalNodeName)
+	return GenerateVirtualNodeName(r.getClusterID(), physicalNodeName)
 }
 
 // getClusterID returns a cluster identifier for the physical cluster
@@ -1118,16 +1133,7 @@ func (r *PhysicalNodeReconciler) getClusterID() string {
 		return r.ClusterBinding.Spec.ClusterID
 	}
 
-	// Fallback to ClusterBinding name for backward compatibility
-	// This should not happen in normal cases as clusterID is required
-	name := r.getClusterBindingName()
-	if name != "" {
-		r.Log.Info("ClusterBinding.Spec.ClusterID is empty, falling back to name",
-			"clusterBinding", name)
-		return name
-	}
-
-	return "unknown-cluster"
+	return ""
 }
 
 func (r *PhysicalNodeReconciler) getClusterBindingName() string {
@@ -1149,15 +1155,14 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physica
 	}
 
 	// Add Tapestry-specific labels
-	labels[LabelClusterBinding] = r.ClusterBindingName
-	labels[LabelPhysicalClusterID] = r.getClusterID()
-	labels[LabelPhysicalNodeName] = physicalNode.Name
+	labels[cloudv1beta1.LabelClusterBinding] = r.ClusterBindingName
+	labels[cloudv1beta1.LabelPhysicalClusterID] = r.getClusterID()
+	labels[cloudv1beta1.LabelPhysicalNodeName] = physicalNode.Name
 	labels[cloudv1beta1.LabelManagedBy] = "tapestry"
 	labels[LabelVirtualNodeType] = VirtualNodeTypeValue
 	labels[NodeInstanceTypeLabel] = NodeInstanceTypeExternal
 	labels[NodeInstanceTypeLabelBeta] = NodeInstanceTypeExternal
 	labels["kubernetes.io/hostname"] = nodeName
-	labels["tapestry.io/cluster-binding"] = r.ClusterBindingName
 
 	r.Log.V(1).Info("Built virtual node labels", "physicalNode", physicalNode.Name, "labelCount", len(labels))
 
@@ -1176,8 +1181,7 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 	annotations[cloudv1beta1.AnnotationLastSyncTime] = time.Now().Format(time.RFC3339)
 
 	// Add physical node metadata
-	annotations["tapestry.io/physical-cluster-name"] = r.ClusterBindingName
-	annotations[LabelPhysicalClusterID] = r.getClusterID()
+	annotations[cloudv1beta1.LabelPhysicalNodeName] = physicalNode.Name
 	annotations["tapestry.io/physical-node-uid"] = string(physicalNode.UID)
 
 	// Add policy information
@@ -1432,6 +1436,21 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 	// Generate unique controller name using cluster binding name
 	uniqueControllerName := fmt.Sprintf("node-%s", r.ClusterBindingName)
 
+	// Setup virtualManager node informer for watching virtual node changes
+	nodeInformer, err := virtualManager.GetCache().GetInformer(context.TODO(), &corev1.Node{})
+	if err != nil {
+		return fmt.Errorf("failed to get node informer: %w", err)
+	}
+
+	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			node := obj.(*corev1.Node)
+			if node != nil {
+				r.handleVirtualNodeEvent(node, "add")
+			}
+		},
+	})
+
 	return ctrl.NewControllerManagedBy(physicalManager).
 		For(&corev1.Node{}).
 		Named(uniqueControllerName).
@@ -1478,4 +1497,38 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 				}},
 		).
 		Complete(r)
+}
+
+// handleVirtualNodeEvent handles virtual node addition and deletion events
+func (r *PhysicalNodeReconciler) handleVirtualNodeEvent(node *corev1.Node, eventType string) {
+	log := r.Log.WithValues("virtualNode", node.Name, "eventType", eventType)
+
+	// Check if this is a tapestry-managed node
+	if node.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
+		log.V(1).Info("Virtual node not managed by tapestry, skipping")
+		return
+	}
+
+	// Check if this node belongs to current cluster binding
+	if node.Labels[cloudv1beta1.LabelClusterBinding] != r.ClusterBindingName {
+		log.V(1).Info("Virtual node belongs to different cluster binding, skipping",
+			"nodeClusterBinding", node.Labels[cloudv1beta1.LabelClusterBinding],
+			"currentClusterBinding", r.ClusterBindingName)
+		return
+	}
+
+	// Get physical node name from label
+	physicalNodeName := node.Labels[cloudv1beta1.LabelPhysicalNodeName]
+	if physicalNodeName == "" {
+		log.V(1).Info("Virtual node missing physical node name label, skipping")
+		return
+	}
+
+	log.Info("Virtual node event, triggering CSINode reconciliation",
+		"eventType", eventType, "physicalNode", physicalNodeName)
+
+	// Trigger reconciliation for the physical node
+	if err := r.TriggerReconciliation(physicalNodeName); err != nil {
+		log.Error(err, "Failed to trigger CSINode reconciliation")
+	}
 }
