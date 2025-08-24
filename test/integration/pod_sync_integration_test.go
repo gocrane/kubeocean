@@ -576,6 +576,341 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 		}, ginkgo.SpecTimeout(testTimeout))
 	})
+
+	ginkgo.Describe("Virtual Pod Ref Resources Tests", func() {
+		ginkgo.It("should create and manage physical resources for virtual pod with configmap, secret and pvc references", func(ctx context.Context) {
+			// Wait for virtual node to be ready before creating pods
+			waitForVirtualNodeReady(ctx, virtualNodeName)
+
+			ginkgo.By("Creating virtual ConfigMap")
+			virtualConfigMap := createTestVirtualConfigMap("test-config", testNamespace)
+			gomega.Expect(k8sVirtual.Create(ctx, virtualConfigMap)).To(gomega.Succeed())
+
+			ginkgo.By("Creating virtual Secret")
+			virtualSecret := createTestVirtualSecret("test-secret", testNamespace)
+			gomega.Expect(k8sVirtual.Create(ctx, virtualSecret)).To(gomega.Succeed())
+
+			ginkgo.By("Creating virtual ConfigMap for init container")
+			virtualConfigMapInit := createTestVirtualConfigMapInit("test-config-init", testNamespace)
+			gomega.Expect(k8sVirtual.Create(ctx, virtualConfigMapInit)).To(gomega.Succeed())
+
+			ginkgo.By("Creating virtual Secret for init container")
+			virtualSecretInit := createTestVirtualSecretInit("test-secret-init", testNamespace)
+			gomega.Expect(k8sVirtual.Create(ctx, virtualSecretInit)).To(gomega.Succeed())
+
+			ginkgo.By("Creating virtual PVC")
+			virtualPVC := createTestVirtualPVC("test-pvc", testNamespace)
+			gomega.Expect(k8sVirtual.Create(ctx, virtualPVC)).To(gomega.Succeed())
+
+			ginkgo.By("Creating a virtual pod with resource references")
+			virtualPod := createTestVirtualPodWithResources("test-pod-refs", testNamespace, virtualNodeName, "test-config", "test-secret", "test-pvc")
+			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
+
+			ginkgo.By("Waiting for physical pod to be created")
+			var physicalPod *corev1.Pod
+			gomega.Eventually(func() bool {
+				pods := &corev1.PodList{}
+				err := k8sPhysical.List(ctx, pods, client.InNamespace(testMountNamespace))
+				if err != nil {
+					return false
+				}
+
+				for i := range pods.Items {
+					pod := &pods.Items[i]
+					if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+						if pod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] == virtualPod.Namespace &&
+							pod.Annotations[cloudv1beta1.AnnotationVirtualPodName] == virtualPod.Name {
+							physicalPod = pod
+							return true
+						}
+					}
+				}
+				return false
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+			physicalPodName := physicalPod.Name
+			physicalPodNamespace := physicalPod.Namespace
+
+			ginkgo.By("Verifying physical pod properties")
+			gomega.Expect(physicalPod).NotTo(gomega.BeNil())
+			gomega.Expect(physicalPod.Spec.NodeName).To(gomega.Equal(physicalNodeName))
+			gomega.Expect(physicalPod.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+
+			// Verify bidirectional mapping annotations
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace]).To(gomega.Equal(virtualPod.Namespace))
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName]).To(gomega.Equal(virtualPod.Name))
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]).To(gomega.Equal(string(virtualPod.UID)))
+
+			// Note: Resource name mapping verification will be done after physical resources are created
+			// and we have the physical resource names available
+
+			ginkgo.By("Verifying virtual resources have correct labels, annotations and finalizers")
+			// Check virtual ConfigMap
+			updatedVirtualConfigMap := &corev1.ConfigMap{}
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config", Namespace: testNamespace}, updatedVirtualConfigMap)
+				if err != nil {
+					return false
+				}
+				return updatedVirtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualConfigMap.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
+					updatedVirtualConfigMap.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Check virtual Secret
+			updatedVirtualSecret := &corev1.Secret{}
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret", Namespace: testNamespace}, updatedVirtualSecret)
+				if err != nil {
+					return false
+				}
+				return updatedVirtualSecret.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
+					updatedVirtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Check virtual ConfigMap for init container
+			updatedVirtualConfigMapInit := &corev1.ConfigMap{}
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config-init", Namespace: testNamespace}, updatedVirtualConfigMapInit)
+				if err != nil {
+					return false
+				}
+				return updatedVirtualConfigMapInit.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualConfigMapInit.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
+					updatedVirtualConfigMapInit.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Check virtual Secret for init container
+			updatedVirtualSecretInit := &corev1.Secret{}
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret-init", Namespace: testNamespace}, updatedVirtualSecretInit)
+				if err != nil {
+					return false
+				}
+				return updatedVirtualSecretInit.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualSecretInit.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
+					updatedVirtualSecretInit.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Check virtual PVC
+			updatedVirtualPVC := &corev1.PersistentVolumeClaim{}
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pvc", Namespace: testNamespace}, updatedVirtualPVC)
+				if err != nil {
+					return false
+				}
+				return updatedVirtualPVC.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
+					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Check finalizers
+			gomega.Expect(updatedVirtualConfigMap.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+			gomega.Expect(updatedVirtualSecret.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+			gomega.Expect(updatedVirtualConfigMapInit.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+			gomega.Expect(updatedVirtualSecretInit.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+			gomega.Expect(updatedVirtualPVC.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+
+			ginkgo.By("Verifying physical resources are created with correct properties")
+			// Check physical ConfigMap
+			physicalConfigMapName := updatedVirtualConfigMap.Annotations[cloudv1beta1.AnnotationPhysicalName]
+			physicalConfigMap := &corev1.ConfigMap{}
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalConfigMapName, Namespace: testMountNamespace}, physicalConfigMap)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Expect(physicalConfigMap.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+			gomega.Expect(physicalConfigMap.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-config"))
+			gomega.Expect(physicalConfigMap.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+
+			// Check physical Secret
+			physicalSecretName := updatedVirtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalName]
+			physicalSecret := &corev1.Secret{}
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalSecretName, Namespace: testMountNamespace}, physicalSecret)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Expect(physicalSecret.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+			gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-secret"))
+			gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+
+			// Check physical PVC
+			physicalPVCName := updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName]
+			physicalPVC := &corev1.PersistentVolumeClaim{}
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVCName, Namespace: testMountNamespace}, physicalPVC)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Expect(physicalPVC.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-pvc"))
+			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+
+			// Check physical ConfigMap for init container
+			physicalConfigMapInitName := updatedVirtualConfigMapInit.Annotations[cloudv1beta1.AnnotationPhysicalName]
+			physicalConfigMapInit := &corev1.ConfigMap{}
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalConfigMapInitName, Namespace: testMountNamespace}, physicalConfigMapInit)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Expect(physicalConfigMapInit.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+			gomega.Expect(physicalConfigMapInit.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-config-init"))
+			gomega.Expect(physicalConfigMapInit.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+
+			// Check physical Secret for init container
+			physicalSecretInitName := updatedVirtualSecretInit.Annotations[cloudv1beta1.AnnotationPhysicalName]
+			physicalSecretInit := &corev1.Secret{}
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalSecretInitName, Namespace: testMountNamespace}, physicalSecretInit)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Expect(physicalSecretInit.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+			gomega.Expect(physicalSecretInit.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-secret-init"))
+			gomega.Expect(physicalSecretInit.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+
+			// Verify that all resource references in physical pod are mapped to physical resource names
+			ginkgo.By("Verifying physical pod resource name mappings")
+
+			// Get the latest physical pod to check resource mappings
+			latestPhysicalPod := &corev1.Pod{}
+			gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: physicalPodNamespace}, latestPhysicalPod)).To(gomega.Succeed())
+
+			// Check init container env references
+			gomega.Expect(latestPhysicalPod.Spec.InitContainers).To(gomega.HaveLen(1))
+			initContainer := latestPhysicalPod.Spec.InitContainers[0]
+
+			// Verify init container ConfigMap reference
+			initConfigEnv := initContainer.Env[0]
+			gomega.Expect(initConfigEnv.Name).To(gomega.Equal("INIT_CONFIG_VALUE"))
+			gomega.Expect(initConfigEnv.ValueFrom.ConfigMapKeyRef.Name).To(gomega.Equal(physicalConfigMapInitName))
+
+			// Verify init container Secret reference
+			initSecretEnv := initContainer.Env[1]
+			gomega.Expect(initSecretEnv.Name).To(gomega.Equal("INIT_SECRET_VALUE"))
+			gomega.Expect(initSecretEnv.ValueFrom.SecretKeyRef.Name).To(gomega.Equal(physicalSecretInitName))
+
+			// Check main container env references
+			gomega.Expect(latestPhysicalPod.Spec.Containers).To(gomega.HaveLen(1))
+			mainContainer := latestPhysicalPod.Spec.Containers[0]
+
+			// Verify main container ConfigMap reference
+			configEnv := mainContainer.Env[0]
+			gomega.Expect(configEnv.Name).To(gomega.Equal("CONFIG_VALUE"))
+			gomega.Expect(configEnv.ValueFrom.ConfigMapKeyRef.Name).To(gomega.Equal(physicalConfigMapName))
+
+			// Verify main container Secret reference
+			secretEnv := mainContainer.Env[1]
+			gomega.Expect(secretEnv.Name).To(gomega.Equal("SECRET_VALUE"))
+			gomega.Expect(secretEnv.ValueFrom.SecretKeyRef.Name).To(gomega.Equal(physicalSecretName))
+
+			// Check volume references
+			gomega.Expect(latestPhysicalPod.Spec.Volumes).To(gomega.HaveLen(3))
+
+			// Verify ConfigMap volume
+			configVolume := latestPhysicalPod.Spec.Volumes[0]
+			gomega.Expect(configVolume.Name).To(gomega.Equal("config-volume"))
+			gomega.Expect(configVolume.ConfigMap.Name).To(gomega.Equal(physicalConfigMapName))
+
+			// Verify Secret volume
+			secretVolume := latestPhysicalPod.Spec.Volumes[1]
+			gomega.Expect(secretVolume.Name).To(gomega.Equal("secret-volume"))
+			gomega.Expect(secretVolume.Secret.SecretName).To(gomega.Equal(physicalSecretName))
+
+			// Verify PVC volume
+			pvcVolume := latestPhysicalPod.Spec.Volumes[2]
+			gomega.Expect(pvcVolume.Name).To(gomega.Equal("pvc-volume"))
+			gomega.Expect(pvcVolume.PersistentVolumeClaim.ClaimName).To(gomega.Equal(physicalPVCName))
+
+			ginkgo.By("Updating virtual ConfigMap and Secret")
+			// Update ConfigMap
+			updatedVirtualConfigMap.Data["new-key"] = "new-value"
+			gomega.Expect(k8sVirtual.Update(ctx, updatedVirtualConfigMap)).To(gomega.Succeed())
+
+			// Update Secret
+			updatedVirtualSecret.Data["new-secret-key"] = []byte("new-secret-value")
+			gomega.Expect(k8sVirtual.Update(ctx, updatedVirtualSecret)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical ConfigMap and Secret are updated")
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalConfigMapName, Namespace: testMountNamespace}, physicalConfigMap)
+				if err != nil {
+					return false
+				}
+				return physicalConfigMap.Data["new-key"] == "new-value"
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalSecretName, Namespace: testMountNamespace}, physicalSecret)
+				if err != nil {
+					return false
+				}
+				return string(physicalSecret.Data["new-secret-key"]) == "new-secret-value"
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Deleting virtual pod")
+			gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical pod has DeletionTimestamp")
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPod.Name, Namespace: physicalPod.Namespace}, physicalPod)
+				if err != nil {
+					return false
+				}
+				return physicalPod.DeletionTimestamp != nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// 测试环境无法真的回收 physical pod，这里直接删除
+			ginkgo.By("Deleting physical pod with GracePeriodSeconds=0")
+			zero := int64(0)
+			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{
+					Name: physicalPodName, Namespace: physicalPodNamespace,
+				}, physicalPod)
+				// 验证 physical pod 是否真的被删除
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying virtual pod is deleted")
+			gomega.Eventually(func() bool {
+				deletedVirtualPod := &corev1.Pod{}
+				err := k8sVirtual.Get(ctx, types.NamespacedName{
+					Name: virtualPod.Name, Namespace: virtualPod.Namespace,
+				}, deletedVirtualPod)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Deleting virtual ConfigMap and Secret")
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualConfigMap)).To(gomega.Succeed())
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualSecret)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical ConfigMap and Secret are deleted")
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalConfigMapName, Namespace: testMountNamespace}, physicalConfigMap)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalSecretName, Namespace: testMountNamespace}, physicalSecret)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying virtual ConfigMap and Secret are deleted")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config", Namespace: testNamespace}, updatedVirtualConfigMap)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret", Namespace: testNamespace}, updatedVirtualSecret)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+		})
+	})
 })
 
 // Helper functions
@@ -735,5 +1070,205 @@ func cleanupPodSyncTestResources(ctx context.Context, clusterBindingName string)
 		if node.Labels["node-role.kubernetes.io/worker"] == "" {
 			_ = k8sPhysical.Delete(ctx, &node)
 		}
+	}
+}
+
+func createTestVirtualConfigMap(name, namespace string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app": "test-app",
+			},
+		},
+		Data: map[string]string{
+			"config-key": "config-value",
+			"app.conf":   "server_port=8080",
+		},
+	}
+}
+
+func createTestVirtualSecret(name, namespace string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app": "test-app",
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+			"password": []byte("secret123"),
+		},
+	}
+}
+
+func createTestVirtualConfigMapInit(name, namespace string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+			},
+		},
+		Data: map[string]string{
+			"init-config-key": "init-config-value",
+		},
+	}
+}
+
+func createTestVirtualSecretInit(name, namespace string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"init-secret-key": []byte("init-secret-value"),
+		},
+	}
+}
+
+func createTestVirtualPVC(name, namespace string) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app": "test-app",
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
+		},
+	}
+}
+
+func createTestVirtualPodWithResources(name, namespace, nodeName, configMapName, secretName, pvcName string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app": "test-app",
+			},
+			Annotations: map[string]string{
+				"test-annotation": "test-value",
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName: nodeName,
+			InitContainers: []corev1.Container{
+				{
+					Name:    "init-container",
+					Image:   "busybox:alpine",
+					Command: []string{"sh", "-c", "echo 'Init container completed'"},
+					Env: []corev1.EnvVar{
+						{
+							Name: "INIT_CONFIG_VALUE",
+							ValueFrom: &corev1.EnvVarSource{
+								ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "test-config-init",
+									},
+									Key: "init-config-key",
+								},
+							},
+						},
+						{
+							Name: "INIT_SECRET_VALUE",
+							ValueFrom: &corev1.EnvVarSource{
+								SecretKeyRef: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "test-secret-init",
+									},
+									Key: "init-secret-key",
+								},
+							},
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("100m"),
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+				},
+				Env: []corev1.EnvVar{
+					{
+						Name: "CONFIG_VALUE",
+						ValueFrom: &corev1.EnvVarSource{
+							ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: configMapName,
+								},
+								Key: "config-key",
+							},
+						},
+					},
+					{
+						Name: "SECRET_VALUE",
+						ValueFrom: &corev1.EnvVarSource{
+							SecretKeyRef: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: secretName,
+								},
+								Key: "username",
+							},
+						},
+					},
+				},
+			}},
+			Volumes: []corev1.Volume{
+				{
+					Name: "config-volume",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: configMapName,
+							},
+						},
+					},
+				},
+				{
+					Name: "secret-volume",
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: secretName,
+						},
+					},
+				},
+				{
+					Name: "pvc-volume",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: pvcName,
+						},
+					},
+				},
+			},
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{
+					Name: secretName,
+				},
+			},
+		},
 	}
 }

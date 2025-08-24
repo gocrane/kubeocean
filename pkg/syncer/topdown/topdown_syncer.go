@@ -29,7 +29,9 @@ type TopDownSyncer struct {
 	physicalConfig *rest.Config
 
 	// Controllers
-	virtualPodController *VirtualPodReconciler
+	virtualPodController       *VirtualPodReconciler
+	virtualConfigMapController *VirtualConfigMapReconciler
+	virtualSecretController    *VirtualSecretReconciler
 }
 
 // NewTopDownSyncer creates a new TopDownSyncer instance
@@ -92,6 +94,37 @@ func (tds *TopDownSyncer) setupControllers() error {
 		return fmt.Errorf("failed to setup virtual pod controller: %w", err)
 	}
 
-	tds.Log.Info("Controllers setup completed", "virtualPodController", "enabled")
+	// Setup Virtual ConfigMap Controller
+	tds.virtualConfigMapController = &VirtualConfigMapReconciler{
+		VirtualClient:     tds.virtualManager.GetClient(),
+		PhysicalClient:    tds.physicalManager.GetClient(),
+		PhysicalK8sClient: physicalK8sClient,
+		Scheme:            tds.Scheme,
+		ClusterBinding:    tds.ClusterBinding,
+		Log:               tds.Log.WithName("virtual-configmap-controller"),
+	}
+
+	if err := tds.virtualConfigMapController.SetupWithManager(tds.virtualManager, tds.physicalManager); err != nil {
+		return fmt.Errorf("failed to setup virtual configmap controller: %w", err)
+	}
+
+	// Setup Virtual Secret Controller
+	tds.virtualSecretController = &VirtualSecretReconciler{
+		VirtualClient:     tds.virtualManager.GetClient(),
+		PhysicalClient:    tds.physicalManager.GetClient(),
+		PhysicalK8sClient: physicalK8sClient,
+		Scheme:            tds.Scheme,
+		ClusterBinding:    tds.ClusterBinding,
+		Log:               tds.Log.WithName("virtual-secret-controller"),
+	}
+
+	if err := tds.virtualSecretController.SetupWithManager(tds.virtualManager, tds.physicalManager); err != nil {
+		return fmt.Errorf("failed to setup virtual secret controller: %w", err)
+	}
+
+	tds.Log.Info("Controllers setup completed",
+		"virtualPodController", "enabled",
+		"virtualConfigMapController", "enabled",
+		"virtualSecretController", "enabled")
 	return nil
 }

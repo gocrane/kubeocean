@@ -19,8 +19,9 @@ const (
 	AnnotationExpectedMetadata = "tapestry.io/expected-metadata"
 
 	// Finalizers
-	VirtualPodFinalizer = "tapestry.io/virtual-pod"
-	PolicyFinalizerName = "policy.tapestry.io/finalizer"
+	VirtualPodFinalizer     = "tapestry.io/virtual-pod"
+	PolicyFinalizerName     = "policy.tapestry.io/finalizer"
+	SyncedResourceFinalizer = "tapestry.io/synced-resource"
 
 	// Taints
 	TaintPhysicalNodeUnschedulable = "tapestry.io/physical-node-unschedulable"
@@ -30,4 +31,13 @@ const (
 	LabelClusterBinding    = "tapestry.io/cluster-binding"
 	LabelPhysicalClusterID = "tapestry.io/physical-cluster-id"
 	LabelPhysicalNodeName  = "tapestry.io/physical-node-name"
+
+	// Resource mapping labels
+	LabelPhysicalName = "tapestry.io/physical-name"
+
+	// Resource mapping annotations
+	AnnotationPhysicalName      = "tapestry.io/physical-name"
+	AnnotationPhysicalNamespace = "tapestry.io/physical-namespace"
+	AnnotationVirtualName       = "tapestry.io/virtual-name"
+	AnnotationVirtualNamespace  = "tapestry.io/virtual-namespace"
 )

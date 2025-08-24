@@ -3,9 +3,7 @@ package topdown
 import (
 	"context"
 	"crypto/md5"
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -20,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -361,7 +360,20 @@ func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod
 	physicalNamespace := virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace]
 	physicalName := virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodName]
 
-	// Build physical pod spec
+	// 1. Sync dependent resources (ConfigMaps, Secrets, PVCs)
+	resourceMapping, err := r.syncDependentResources(ctx, virtualPod)
+	if err != nil {
+		logger.Error(err, "Failed to sync dependent resources")
+		return ctrl.Result{}, err
+	}
+
+	// 2. Build physical pod spec
+	podSpec, err := r.buildPhysicalPodSpec(virtualPod, physicalNodeName, resourceMapping)
+	if err != nil {
+		logger.Error(err, "Failed to build physical pod spec")
+		return ctrl.Result{}, err
+	}
+
 	physicalPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        physicalName,
@@ -369,11 +381,11 @@ func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod
 			Labels:      r.buildPhysicalPodLabels(virtualPod),
 			Annotations: r.buildPhysicalPodAnnotations(virtualPod),
 		},
-		Spec: r.buildPhysicalPodSpec(virtualPod, physicalNodeName),
+		Spec: podSpec,
 	}
 
-	// Create physical pod
-	err := r.PhysicalClient.Create(ctx, physicalPod)
+	// 3. Create physical pod
+	err = r.PhysicalClient.Create(ctx, physicalPod)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			logger.Info("Physical pod already exists, updating virtual pod with UID")
@@ -474,33 +486,100 @@ func (r *VirtualPodReconciler) buildPhysicalPodAnnotations(virtualPod *corev1.Po
 	return annotations
 }
 
-// buildPhysicalPodSpec builds spec for physical pod based on virtual pod
-func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, physicalNodeName string) corev1.PodSpec {
+// buildPhysicalPodSpec builds spec for physical pod based on virtual pod with resource name mapping
+func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, physicalNodeName string, resourceMapping *ResourceMapping) (corev1.PodSpec, error) {
 	// Deep copy the spec to avoid modifying the original
 	spec := *virtualPod.Spec.DeepCopy()
 
 	// Set the physical node name for scheduling
 	spec.NodeName = physicalNodeName
 
-	// TODO: Add any other necessary transformations for physical cluster
+	// Replace resource names in volumes
+	for i := range spec.Volumes {
+		volume := &spec.Volumes[i]
 
-	return spec
-}
-
-// generateRandomString generates a random string of specified length
-func (r *VirtualPodReconciler) generateRandomString(length int) (string, error) {
-	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	result := make([]byte, length)
-
-	for i := range result {
-		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		if err != nil {
-			return "", err
+		// Replace ConfigMap names
+		if volume.ConfigMap != nil {
+			if physicalName, exists := resourceMapping.ConfigMaps[volume.ConfigMap.Name]; exists {
+				volume.ConfigMap.Name = physicalName
+			} else {
+				return spec, fmt.Errorf("configMap mapping not found for virtual ConfigMap: %s", volume.ConfigMap.Name)
+			}
 		}
-		result[i] = charset[num.Int64()]
+
+		// Replace Secret names
+		if volume.Secret != nil {
+			if physicalName, exists := resourceMapping.Secrets[volume.Secret.SecretName]; exists {
+				volume.Secret.SecretName = physicalName
+			} else {
+				return spec, fmt.Errorf("secret mapping not found for virtual Secret: %s", volume.Secret.SecretName)
+			}
+		}
+
+		// Replace PVC names
+		if volume.PersistentVolumeClaim != nil {
+			if physicalName, exists := resourceMapping.PVCs[volume.PersistentVolumeClaim.ClaimName]; exists {
+				volume.PersistentVolumeClaim.ClaimName = physicalName
+			} else {
+				return spec, fmt.Errorf("PVC mapping not found for virtual PVC: %s", volume.PersistentVolumeClaim.ClaimName)
+			}
+		}
 	}
 
-	return string(result), nil
+	// Replace resource names in containers
+	for i := range spec.Containers {
+		container := &spec.Containers[i]
+		if err := r.replaceContainerResourceNames(container, resourceMapping); err != nil {
+			return spec, err
+		}
+	}
+
+	// Replace resource names in init containers
+	for i := range spec.InitContainers {
+		container := &spec.InitContainers[i]
+		if err := r.replaceContainerResourceNames(container, resourceMapping); err != nil {
+			return spec, err
+		}
+	}
+
+	// Replace image pull secret names
+	for i := range spec.ImagePullSecrets {
+		imagePullSecret := &spec.ImagePullSecrets[i]
+		if physicalName, exists := resourceMapping.Secrets[imagePullSecret.Name]; exists {
+			imagePullSecret.Name = physicalName
+		} else {
+			return spec, fmt.Errorf("secret mapping not found for image pull secret: %s", imagePullSecret.Name)
+		}
+	}
+
+	return spec, nil
+}
+
+// replaceContainerResourceNames replaces resource names in container environment variables
+func (r *VirtualPodReconciler) replaceContainerResourceNames(container *corev1.Container, resourceMapping *ResourceMapping) error {
+	for j := range container.Env {
+		envVar := &container.Env[j]
+		if envVar.ValueFrom != nil {
+			// Replace ConfigMap names
+			if envVar.ValueFrom.ConfigMapKeyRef != nil {
+				if physicalName, exists := resourceMapping.ConfigMaps[envVar.ValueFrom.ConfigMapKeyRef.Name]; exists {
+					envVar.ValueFrom.ConfigMapKeyRef.Name = physicalName
+				} else {
+					return fmt.Errorf("configMap mapping not found for virtual ConfigMap: %s", envVar.ValueFrom.ConfigMapKeyRef.Name)
+				}
+			}
+
+			// Replace Secret names
+			if envVar.ValueFrom.SecretKeyRef != nil {
+				if physicalName, exists := resourceMapping.Secrets[envVar.ValueFrom.SecretKeyRef.Name]; exists {
+					envVar.ValueFrom.SecretKeyRef.Name = physicalName
+				} else {
+					return fmt.Errorf("secret mapping not found for virtual Secret: %s", envVar.ValueFrom.SecretKeyRef.Name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager
@@ -637,22 +716,28 @@ func isDaemonSetPod(pod *corev1.Pod) bool {
 	return false
 }
 
-// generatePhysicalPodName generates physical pod name using MD5 hash
-// Format: podName(前31字符)-md5(podNamespace+"/"+podName)
-func (r *VirtualPodReconciler) generatePhysicalPodName(podName, podNamespace string) string {
-	// Truncate pod name to first 31 characters
-	truncatedName := podName
-	if len(podName) > 31 {
-		truncatedName = podName[:31]
+// generatePhysicalName generates physical name using MD5 hash
+// Format: name(前31字符)-md5(namespace+"/"+name)
+func (r *VirtualPodReconciler) generatePhysicalName(name, namespace string) string {
+	// Truncate name to first 31 characters
+	truncatedName := name
+	if len(name) > 31 {
+		truncatedName = name[:31]
 	}
 
-	// Generate MD5 hash of "podNamespace/podName"
-	input := fmt.Sprintf("%s/%s", podNamespace, podName)
+	// Generate MD5 hash of "namespace/name"
+	input := fmt.Sprintf("%s/%s", namespace, name)
 	hash := md5.Sum([]byte(input))
 	hashString := fmt.Sprintf("%x", hash)
 
 	// Return format: truncatedName-hashString
 	return fmt.Sprintf("%s-%s", truncatedName, hashString)
+}
+
+// generatePhysicalPodName generates physical pod name using MD5 hash
+// Format: podName(前31字符)-md5(podNamespace+"/"+podName)
+func (r *VirtualPodReconciler) generatePhysicalPodName(podName, podNamespace string) string {
+	return r.generatePhysicalName(podName, podNamespace)
 }
 
 // isPhysicalPodOwnedByVirtualPod checks if physical pod belongs to the given virtual pod
@@ -732,4 +817,330 @@ func (r *VirtualPodReconciler) getPhysicalPodWithFallback(ctx context.Context, n
 	// Return original cached client error if it's not NotFound
 	logger.Error(err, "Failed to get physical pod via cached client")
 	return nil, err
+}
+
+// syncDependentResources syncs ConfigMaps, Secrets, and PVCs that the virtual pod depends on and returns the resource mapping
+func (r *VirtualPodReconciler) syncDependentResources(ctx context.Context, virtualPod *corev1.Pod) (*ResourceMapping, error) {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	// 1. Sync ConfigMaps
+	configMapMappings, err := r.syncConfigMaps(ctx, virtualPod)
+	if err != nil {
+		logger.Error(err, "Failed to sync ConfigMaps")
+		return nil, err
+	}
+
+	// 2. Sync Secrets
+	secretMappings, err := r.syncSecrets(ctx, virtualPod)
+	if err != nil {
+		logger.Error(err, "Failed to sync Secrets")
+		return nil, err
+	}
+
+	// 3. Sync PVCs
+	pvcMappings, err := r.syncPVCs(ctx, virtualPod)
+	if err != nil {
+		logger.Error(err, "Failed to sync PVCs")
+		return nil, err
+	}
+
+	// Build resource mapping
+	resourceMapping := &ResourceMapping{
+		ConfigMaps: configMapMappings,
+		Secrets:    secretMappings,
+		PVCs:       pvcMappings,
+	}
+
+	return resourceMapping, nil
+}
+
+// syncConfigMaps syncs ConfigMaps referenced by the virtual pod and returns the mapping
+func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *corev1.Pod) (map[string]string, error) {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	// Collect all ConfigMap references from pod spec
+	configMapRefs := make(map[string]bool)
+
+	// From volumes
+	for _, volume := range virtualPod.Spec.Volumes {
+		if volume.ConfigMap != nil {
+			configMapRefs[volume.ConfigMap.Name] = true
+		}
+	}
+
+	// From env vars
+	for _, container := range virtualPod.Spec.Containers {
+		for _, envVar := range container.Env {
+			if envVar.ValueFrom != nil && envVar.ValueFrom.ConfigMapKeyRef != nil {
+				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = true
+			}
+		}
+	}
+
+	// From init containers
+	for _, container := range virtualPod.Spec.InitContainers {
+		for _, envVar := range container.Env {
+			if envVar.ValueFrom != nil && envVar.ValueFrom.ConfigMapKeyRef != nil {
+				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = true
+			}
+		}
+	}
+
+	// Sync each ConfigMap and collect mappings
+	configMapMappings := make(map[string]string)
+	for configMapName := range configMapRefs {
+		physicalName, err := r.syncConfigMap(ctx, virtualPod.Namespace, configMapName)
+		if err != nil {
+			logger.Error(err, "Failed to sync ConfigMap", "configMapName", configMapName)
+			return nil, err
+		}
+		configMapMappings[configMapName] = physicalName
+	}
+
+	return configMapMappings, nil
+}
+
+// syncSecrets syncs Secrets referenced by the virtual pod and returns the mapping
+func (r *VirtualPodReconciler) syncSecrets(ctx context.Context, virtualPod *corev1.Pod) (map[string]string, error) {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	// Collect all Secret references from pod spec
+	secretRefs := make(map[string]bool)
+
+	// From volumes
+	for _, volume := range virtualPod.Spec.Volumes {
+		if volume.Secret != nil {
+			secretRefs[volume.Secret.SecretName] = true
+		}
+	}
+
+	// From env vars
+	for _, container := range virtualPod.Spec.Containers {
+		for _, envVar := range container.Env {
+			if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
+				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = true
+			}
+		}
+	}
+
+	// From init containers
+	for _, container := range virtualPod.Spec.InitContainers {
+		for _, envVar := range container.Env {
+			if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
+				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = true
+			}
+		}
+	}
+
+	// From image pull secrets
+	for _, imagePullSecret := range virtualPod.Spec.ImagePullSecrets {
+		secretRefs[imagePullSecret.Name] = true
+	}
+
+	// Sync each Secret and collect mappings
+	secretMappings := make(map[string]string)
+	for secretName := range secretRefs {
+		physicalName, err := r.syncSecret(ctx, virtualPod.Namespace, secretName)
+		if err != nil {
+			logger.Error(err, "Failed to sync Secret", "secretName", secretName)
+			return nil, err
+		}
+		secretMappings[secretName] = physicalName
+	}
+
+	return secretMappings, nil
+}
+
+// syncPVCs syncs PVCs referenced by the virtual pod and returns the mapping
+func (r *VirtualPodReconciler) syncPVCs(ctx context.Context, virtualPod *corev1.Pod) (map[string]string, error) {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	// Collect all PVC references from pod spec
+	pvcRefs := make(map[string]bool)
+
+	// From volumes
+	for _, volume := range virtualPod.Spec.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			pvcRefs[volume.PersistentVolumeClaim.ClaimName] = true
+		}
+	}
+
+	// Sync each PVC and collect mappings
+	pvcMappings := make(map[string]string)
+	for pvcName := range pvcRefs {
+		physicalName, err := r.syncPVC(ctx, virtualPod.Namespace, pvcName)
+		if err != nil {
+			logger.Error(err, "Failed to sync PVC", "pvcName", pvcName)
+			return nil, err
+		}
+		pvcMappings[pvcName] = physicalName
+	}
+
+	return pvcMappings, nil
+}
+
+// ResourceType represents the type of Kubernetes resource
+type ResourceType string
+
+const (
+	ResourceTypeConfigMap ResourceType = "ConfigMap"
+	ResourceTypeSecret    ResourceType = "Secret"
+	ResourceTypePVC       ResourceType = "PVC"
+)
+
+// ResourceMapping represents the mapping from virtual resource names to physical resource names
+type ResourceMapping struct {
+	ConfigMaps map[string]string // virtual name -> physical name
+	Secrets    map[string]string // virtual name -> physical name
+	PVCs       map[string]string // virtual name -> physical name
+}
+
+// syncResource syncs a single resource (ConfigMap, Secret, or PVC) and returns the physical resource name
+func (r *VirtualPodReconciler) syncResource(ctx context.Context, resourceType ResourceType, virtualNamespace, resourceName string, emptyObj client.Object) (string, error) {
+	logger := r.Log.WithValues(string(resourceType), fmt.Sprintf("%s/%s", virtualNamespace, resourceName))
+
+	// 1. Get virtual resource
+	err := r.VirtualClient.Get(ctx, types.NamespacedName{Namespace: virtualNamespace, Name: resourceName}, emptyObj)
+	if err != nil {
+		logger.Error(err, fmt.Sprintf("Failed to get virtual %s %s/%s", resourceType, virtualNamespace, resourceName))
+		return "", err
+	}
+	virtualObj := emptyObj
+
+	// 2. Generate physical name
+	physicalName := r.generatePhysicalResourceName(resourceName, virtualNamespace)
+
+	// 3. Check if physical resource exists and validate ownership
+	physicalExists, physicalObj, err := r.checkPhysicalResourceExists(ctx, resourceType, physicalName, emptyObj)
+	if err != nil {
+		return "", err
+	}
+
+	if physicalExists {
+		// Check if physical resource is owned by current virtual resource
+		existingVirtualName := physicalObj.GetAnnotations()[cloudv1beta1.AnnotationVirtualName]
+		existingVirtualNamespace := physicalObj.GetAnnotations()[cloudv1beta1.AnnotationVirtualNamespace]
+		if existingVirtualName != resourceName || existingVirtualNamespace != virtualNamespace {
+			logger.Error(nil, fmt.Sprintf("Physical %s exists but owned by different virtual %s", resourceType, resourceType),
+				"physicalResource", fmt.Sprintf("%s/%s", r.ClusterBinding.Spec.MountNamespace, physicalName),
+				"currentVirtualName", fmt.Sprintf("%s/%s", virtualNamespace, resourceName),
+				"existingVirtualName", fmt.Sprintf("%s/%s", existingVirtualNamespace, existingVirtualName))
+			return "", fmt.Errorf("physical %s %s/%s is owned by different virtual %s %s/%s, expected %s/%s",
+				resourceType, r.ClusterBinding.Spec.MountNamespace, physicalName, resourceType, existingVirtualNamespace, existingVirtualName, virtualNamespace, resourceName)
+		}
+	}
+
+	// 4. Update virtual resource annotations if needed
+	if err := r.updateVirtualResourceLabelsAndAnnotations(ctx, virtualObj, physicalName); err != nil {
+		return "", err
+	}
+
+	// 5. Create physical resource if it doesn't exist
+	if !physicalExists {
+		if err := r.createPhysicalResource(ctx, resourceType, virtualObj, physicalName); err != nil {
+			return "", err
+		}
+	}
+
+	return physicalName, nil
+}
+
+// syncConfigMap syncs a single ConfigMap and returns the physical resource name
+func (r *VirtualPodReconciler) syncConfigMap(ctx context.Context, virtualNamespace, configMapName string) (string, error) {
+	return r.syncResource(ctx, ResourceTypeConfigMap, virtualNamespace, configMapName, &corev1.ConfigMap{})
+}
+
+// syncSecret syncs a single Secret and returns the physical resource name
+func (r *VirtualPodReconciler) syncSecret(ctx context.Context, virtualNamespace, secretName string) (string, error) {
+	return r.syncResource(ctx, ResourceTypeSecret, virtualNamespace, secretName, &corev1.Secret{})
+}
+
+// syncPVC syncs a single PVC and returns the physical resource name
+func (r *VirtualPodReconciler) syncPVC(ctx context.Context, virtualNamespace, pvcName string) (string, error) {
+	return r.syncResource(ctx, ResourceTypePVC, virtualNamespace, pvcName, &corev1.PersistentVolumeClaim{})
+}
+
+// checkPhysicalResourceExists checks if physical resource exists using both cached and direct client
+func (r *VirtualPodReconciler) checkPhysicalResourceExists(ctx context.Context, resourceType ResourceType, physicalName string, obj client.Object) (bool, client.Object, error) {
+	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
+
+	return CheckPhysicalResourceExists(ctx, resourceType, physicalName, physicalNamespace, obj,
+		r.PhysicalClient, r.PhysicalK8sClient, r.Log)
+}
+
+// createPhysicalResource creates a physical resource by type
+func (r *VirtualPodReconciler) createPhysicalResource(ctx context.Context, resourceType ResourceType, virtualObj client.Object, physicalName string) error {
+	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
+	return CreatePhysicalResource(ctx, resourceType, virtualObj, physicalName, physicalNamespace, r.PhysicalClient, r.Log)
+}
+
+// generatePhysicalResourceName generates physical resource name using MD5 hash
+// Format: resourceName(前31字符)-md5(resourceNamespace+"/"+resourceName)
+func (r *VirtualPodReconciler) generatePhysicalResourceName(resourceName, resourceNamespace string) string {
+	return r.generatePhysicalName(resourceName, resourceNamespace)
+}
+
+// updateVirtualResourceLabelsAndAnnotations updates virtual resource labels and annotations with physical name mapping
+func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx context.Context, obj client.Object, physicalName string) error {
+	logger := r.Log.WithValues("resourceKind", obj.GetObjectKind().GroupVersionKind().Kind, "resource", fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName()))
+
+	// Check if annotation already exists and matches
+	if obj.GetAnnotations() != nil && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] == physicalName &&
+		obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalNamespace] == r.ClusterBinding.Spec.MountNamespace &&
+		obj.GetLabels() != nil && obj.GetLabels()[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+		logger.V(1).Info("Physical name and namespace annotation, managed-by label already exists and matches, skipping update",
+			"physicalName", physicalName,
+			"physicalNamespace", r.ClusterBinding.Spec.MountNamespace)
+		return nil
+	}
+
+	// Check if annotation already exists but doesn't match (should not happen in normal flow)
+	if obj.GetAnnotations() != nil && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] != "" && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] != physicalName {
+		logger.V(1).Info("Physical name annotation already exists but doesn't match, skipping update",
+			"existingPhysicalName", obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName],
+			"newPhysicalName", physicalName)
+		return fmt.Errorf("physical name annotation already exists but doesn't match, physicalName: %s, newPhysicalName: %s",
+			obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName], physicalName)
+	}
+
+	// Update resource
+	updatedObj := obj.DeepCopyObject().(client.Object)
+
+	// Update labels
+	if updatedObj.GetLabels() == nil {
+		updatedObj.SetLabels(make(map[string]string))
+	}
+	updatedObj.GetLabels()[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
+
+	// Update annotations
+	if updatedObj.GetAnnotations() == nil {
+		updatedObj.SetAnnotations(make(map[string]string))
+	}
+	updatedObj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] = physicalName
+	updatedObj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalNamespace] = r.ClusterBinding.Spec.MountNamespace
+
+	// Add finalizer if not present
+	if !r.hasSyncedResourceFinalizer(updatedObj) {
+		r.addSyncedResourceFinalizer(updatedObj)
+		logger.V(1).Info("Added synced-resource finalizer")
+	}
+
+	// Update the resource
+	if err := r.VirtualClient.Update(ctx, updatedObj); err != nil {
+		logger.Error(err, "Failed to update virtual resource annotations and labels")
+		return err
+	}
+
+	logger.Info("Updated virtual resource annotations and labels", "physicalName", physicalName)
+	return nil
+}
+
+// hasSyncedResourceFinalizer checks if the resource has our finalizer
+func (r *VirtualPodReconciler) hasSyncedResourceFinalizer(obj client.Object) bool {
+	return controllerutil.ContainsFinalizer(obj, cloudv1beta1.SyncedResourceFinalizer)
+}
+
+// addSyncedResourceFinalizer adds our finalizer to the resource
+func (r *VirtualPodReconciler) addSyncedResourceFinalizer(obj client.Object) {
+	controllerutil.AddFinalizer(obj, cloudv1beta1.SyncedResourceFinalizer)
 }
