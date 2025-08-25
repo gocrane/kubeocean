@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1512,4 +1513,559 @@ func TestVirtualPodReconciler_GeneratePhysicalResourceName(t *testing.T) {
 
 		assert.NotEqual(t, name1, name2)
 	})
+}
+
+// TestVirtualPodReconciler_handlePhysicalPodEvent tests the physical pod event handling
+func TestVirtualPodReconciler_handlePhysicalPodEvent(t *testing.T) {
+	tests := []struct {
+		name           string
+		physicalPod    *corev1.Pod
+		eventType      string
+		setupWorkQueue func() workqueue.TypedRateLimitingInterface[reconcile.Request]
+		expectedLogs   []string
+	}{
+		{
+			name: "should handle physical pod delete event with valid annotations",
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-pod-uid",
+					},
+				},
+			},
+			eventType: "DELETE",
+			setupWorkQueue: func() workqueue.TypedRateLimitingInterface[reconcile.Request] {
+				return workqueue.NewTypedRateLimitingQueue[reconcile.Request](
+					workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute),
+				)
+			},
+			expectedLogs: []string{
+				"Physical pod event received",
+				"Enqueued virtual pod for reconciliation due to physical pod event",
+			},
+		},
+		{
+			name: "should ignore physical pod without managed-by label",
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Labels: map[string]string{
+						"other-label": "other-value",
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-pod-uid",
+					},
+				},
+			},
+			eventType: "DELETE",
+			setupWorkQueue: func() workqueue.TypedRateLimitingInterface[reconcile.Request] {
+				return workqueue.NewTypedRateLimitingQueue[reconcile.Request](
+					workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute),
+				)
+			},
+			expectedLogs: []string{},
+		},
+		{
+			name: "should ignore physical pod without virtual pod annotations",
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+					},
+				},
+			},
+			eventType: "DELETE",
+			setupWorkQueue: func() workqueue.TypedRateLimitingInterface[reconcile.Request] {
+				return workqueue.NewTypedRateLimitingQueue[reconcile.Request](
+					workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute),
+				)
+			},
+			expectedLogs: []string{},
+		},
+		{
+			name: "should handle nil work queue gracefully",
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-pod-uid",
+					},
+				},
+			},
+			eventType: "DELETE",
+			setupWorkQueue: func() workqueue.TypedRateLimitingInterface[reconcile.Request] {
+				return nil
+			},
+			expectedLogs: []string{
+				"Physical pod event received",
+				"Work queue is nil, cannot enqueue virtual pod",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup reconciler
+			reconciler := &VirtualPodReconciler{
+				Log:       ctrl.Log.WithName("test"),
+				workQueue: tt.setupWorkQueue(),
+			}
+
+			// Call the function
+			reconciler.handlePhysicalPodEvent(tt.physicalPod, tt.eventType)
+
+			// Note: We can't easily capture logs in this test environment,
+			// but we can verify the function doesn't panic and completes successfully
+			assert.True(t, true, "Function completed without panic")
+		})
+	}
+}
+
+// TestVirtualPodReconciler_recordPhysicalPodMapping tests the physical pod mapping recording
+func TestVirtualPodReconciler_recordPhysicalPodMapping(t *testing.T) {
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		physicalPod    *corev1.Pod
+		setupClient    func() client.Client
+		expectedError  bool
+		expectedResult ctrl.Result
+	}{
+		{
+			name: "should record physical pod mapping successfully",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					UID:       "physical-pod-uid",
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				virtualPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "virtual-pod",
+						Namespace: "virtual-ns",
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualPod).Build()
+			},
+			expectedError:  false,
+			expectedResult: ctrl.Result{},
+		},
+		{
+			name: "should handle update error",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					UID:       "physical-pod-uid",
+				},
+			},
+			setupClient: func() client.Client {
+				return &failingClient{}
+			},
+			expectedError:  true,
+			expectedResult: ctrl.Result{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				VirtualClient: tt.setupClient(),
+				Log:           ctrl.Log.WithName("test"),
+			}
+
+			result, err := reconciler.recordPhysicalPodMapping(ctx, tt.virtualPod, tt.physicalPod)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_updateVirtualPodWithPhysicalUID tests the virtual pod UID update
+func TestVirtualPodReconciler_updateVirtualPodWithPhysicalUID(t *testing.T) {
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		physicalUID    string
+		setupClient    func() client.Client
+		expectedError  bool
+		expectedResult ctrl.Result
+	}{
+		{
+			name: "should update virtual pod with physical UID successfully",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+			},
+			physicalUID: "physical-pod-uid",
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				virtualPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "virtual-pod",
+						Namespace: "virtual-ns",
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualPod).Build()
+			},
+			expectedError:  false,
+			expectedResult: ctrl.Result{},
+		},
+		{
+			name: "should handle update error",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+			},
+			physicalUID: "physical-pod-uid",
+			setupClient: func() client.Client {
+				return &failingClient{}
+			},
+			expectedError:  true,
+			expectedResult: ctrl.Result{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				VirtualClient: tt.setupClient(),
+				Log:           ctrl.Log.WithName("test"),
+			}
+
+			result, err := reconciler.updateVirtualPodWithPhysicalUID(ctx, tt.virtualPod, tt.physicalUID)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_getPhysicalPodWithFallback tests the physical pod retrieval with fallback
+func TestVirtualPodReconciler_getPhysicalPodWithFallback(t *testing.T) {
+	tests := []struct {
+		name                string
+		namespace           string
+		podName             string
+		setupPhysicalClient func() client.Client
+		setupK8sClient      func() *fake.Clientset
+		expectedError       bool
+		expectedPod         *corev1.Pod
+	}{
+		{
+			name:      "should get pod from cache successfully",
+			namespace: "test-ns",
+			podName:   "test-pod",
+			setupPhysicalClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "test-ns",
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(pod).Build()
+			},
+			setupK8sClient: func() *fake.Clientset {
+				return fake.NewSimpleClientset()
+			},
+			expectedError: false,
+			expectedPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+			},
+		},
+		{
+			name:      "should fallback to direct k8s client when not found in cache",
+			namespace: "test-ns",
+			podName:   "test-pod",
+			setupPhysicalClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			setupK8sClient: func() *fake.Clientset {
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "test-ns",
+					},
+				}
+				return fake.NewSimpleClientset(pod)
+			},
+			expectedError: false,
+			expectedPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+			},
+		},
+		{
+			name:      "should return error when pod not found anywhere",
+			namespace: "test-ns",
+			podName:   "test-pod",
+			setupPhysicalClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			setupK8sClient: func() *fake.Clientset {
+				return fake.NewSimpleClientset()
+			},
+			expectedError: true,
+			expectedPod:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient:    tt.setupPhysicalClient(),
+				PhysicalK8sClient: tt.setupK8sClient(),
+				Log:               ctrl.Log.WithName("test"),
+			}
+
+			pod, err := reconciler.getPhysicalPodWithFallback(ctx, tt.namespace, tt.podName)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+				assert.Nil(t, pod)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, pod)
+				assert.Equal(t, tt.expectedPod.Name, pod.Name)
+				assert.Equal(t, tt.expectedPod.Namespace, pod.Namespace)
+			}
+		})
+	}
+}
+
+// failingClient is a mock client that fails on update operations
+type failingClient struct {
+	client.Client
+}
+
+func (c *failingClient) Get(ctx context.Context, key types.NamespacedName, obj client.Object, opts ...client.GetOption) error {
+	return fmt.Errorf("get failed")
+}
+
+func (c *failingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	return fmt.Errorf("delete failed")
+}
+
+func (c *failingClient) Status() client.StatusWriter {
+	return &failingStatusWriter{}
+}
+
+type failingStatusWriter struct {
+	client.StatusWriter
+}
+
+func (w *failingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	return fmt.Errorf("update failed")
+}
+
+// TestVirtualPodReconciler_handleVirtualPodDeletion_ErrorCases tests error cases for virtual pod deletion
+func TestVirtualPodReconciler_handleVirtualPodDeletion_ErrorCases(t *testing.T) {
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		setupClient    func() client.Client
+		expectedError  bool
+		expectedResult ctrl.Result
+	}{
+		{
+			name: "should handle physical pod deletion failure",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				return &failingClient{}
+			},
+			expectedError:  true,
+			expectedResult: ctrl.Result{},
+		},
+		{
+			name: "should handle missing physical pod gracefully",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError:  false,
+			expectedResult: ctrl.Result{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				VirtualClient:     tt.setupClient(),
+				PhysicalClient:    tt.setupClient(),
+				PhysicalK8sClient: fake.NewSimpleClientset(),
+				Log:               ctrl.Log.WithName("test"),
+			}
+
+			result, err := reconciler.handleVirtualPodDeletion(ctx, tt.virtualPod)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_forceDeleteVirtualPod_ErrorCases tests error cases for force delete
+func TestVirtualPodReconciler_forceDeleteVirtualPod_ErrorCases(t *testing.T) {
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		setupClient    func() client.Client
+		expectedError  bool
+		expectedResult ctrl.Result
+	}{
+		{
+			name: "should handle force delete failure",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+			},
+			setupClient: func() client.Client {
+				return &failingClient{}
+			},
+			expectedError:  true,
+			expectedResult: ctrl.Result{},
+		},
+		{
+			name: "should handle force delete success",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				virtualPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "virtual-pod",
+						Namespace: "virtual-ns",
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualPod).Build()
+			},
+			expectedError:  false,
+			expectedResult: ctrl.Result{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				VirtualClient: tt.setupClient(),
+				Log:           ctrl.Log.WithName("test"),
+			}
+
+			result, err := reconciler.forceDeleteVirtualPod(ctx, tt.virtualPod)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
 }

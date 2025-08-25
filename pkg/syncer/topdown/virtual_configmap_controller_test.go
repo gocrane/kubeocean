@@ -308,6 +308,45 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 	}
 }
 
+func TestVirtualConfigMapReconciler_SetupWithManager(t *testing.T) {
+	// Setup scheme
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = cloudv1beta1.AddToScheme(scheme)
+
+	// Create virtual and physical managers
+	virtualManager, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme: scheme,
+	})
+	require.NoError(t, err)
+
+	physicalManager, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme: scheme,
+	})
+	require.NoError(t, err)
+
+	// Create reconciler
+	reconciler := &VirtualConfigMapReconciler{
+		VirtualClient:  virtualManager.GetClient(),
+		PhysicalClient: physicalManager.GetClient(),
+		Scheme:         scheme,
+		ClusterBinding: &cloudv1beta1.ClusterBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-cluster",
+			},
+			Spec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID:      "test-cluster-id",
+				MountNamespace: "physical-namespace",
+			},
+		},
+		Log: ctrl.Log.WithName("test"),
+	}
+
+	// Test SetupWithManager
+	err = reconciler.SetupWithManager(virtualManager, physicalManager)
+	assert.NoError(t, err)
+}
+
 func TestVirtualConfigMapReconciler_CheckPhysicalConfigMapExists(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
