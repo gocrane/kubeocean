@@ -144,6 +144,29 @@ func TestCheckPhysicalResourceExists(t *testing.T) {
 			expectedError:  false,
 		},
 		{
+			name:              "PV exists in cache",
+			resourceType:      ResourceTypePV,
+			physicalName:      "test-pv",
+			physicalNamespace: "",
+			setupPhysicalClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+
+				pv := &corev1.PersistentVolume{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-pv",
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(pv).Build()
+			},
+			setupK8sClient: func() *fake.Clientset {
+				return fake.NewSimpleClientset()
+			},
+			expectedExists: true,
+			expectedError:  false,
+		},
+		{
 			name:              "Unsupported resource type",
 			resourceType:      "UnsupportedType",
 			physicalName:      "test-resource",
@@ -177,6 +200,8 @@ func TestCheckPhysicalResourceExists(t *testing.T) {
 				obj = &corev1.Secret{}
 			case ResourceTypePVC:
 				obj = &corev1.PersistentVolumeClaim{}
+			case ResourceTypePV:
+				obj = &corev1.PersistentVolume{}
 			default:
 				obj = &corev1.ConfigMap{}
 			}
@@ -420,6 +445,38 @@ func TestCreatePhysicalResource(t *testing.T) {
 			expectedError: false,
 		},
 		{
+			name:         "Create PV successfully",
+			resourceType: ResourceTypePV,
+			virtualObj: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv",
+					Labels: map[string]string{
+						"storage": "fast",
+					},
+				},
+				Spec: corev1.PersistentVolumeSpec{
+					Capacity: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("10Gi"),
+					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/data",
+						},
+					},
+				},
+			},
+			physicalName:      "physical-pv",
+			physicalNamespace: "",
+			setupPhysicalClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError: false,
+		},
+		{
 			name:         "Resource already exists",
 			resourceType: ResourceTypeConfigMap,
 			virtualObj: &corev1.ConfigMap{
@@ -471,6 +528,8 @@ func TestCreatePhysicalResource(t *testing.T) {
 					obj = &corev1.Secret{}
 				case ResourceTypePVC:
 					obj = &corev1.PersistentVolumeClaim{}
+				case ResourceTypePV:
+					obj = &corev1.PersistentVolume{}
 				}
 
 				err := physicalClient.Get(ctx, types.NamespacedName{Name: tt.physicalName, Namespace: tt.physicalNamespace}, obj)
@@ -603,6 +662,48 @@ func TestBuildPhysicalResource(t *testing.T) {
 			validateResult:    nil,
 		},
 		{
+			name:         "Build PV successfully",
+			resourceType: ResourceTypePV,
+			virtualObj: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv",
+					Labels: map[string]string{
+						"storage": "fast",
+					},
+					Annotations: map[string]string{
+						"description": "test pv",
+					},
+				},
+				Spec: corev1.PersistentVolumeSpec{
+					Capacity: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("10Gi"),
+					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/data",
+						},
+					},
+				},
+			},
+			physicalName:      "physical-pv",
+			physicalNamespace: "",
+			expectedError:     false,
+			validateResult: func(t *testing.T, obj client.Object) {
+				pv, ok := obj.(*corev1.PersistentVolume)
+				require.True(t, ok)
+				assert.Equal(t, "physical-pv", pv.Name)
+				assert.Equal(t, "", pv.Namespace) // PVs are cluster-scoped
+				assert.Equal(t, "fast", pv.Labels["storage"])
+				assert.Equal(t, cloudv1beta1.LabelManagedByValue, pv.Labels[cloudv1beta1.LabelManagedBy])
+				assert.Equal(t, "test-pv", pv.Annotations[cloudv1beta1.AnnotationVirtualName])
+				assert.Equal(t, "", pv.Annotations[cloudv1beta1.AnnotationVirtualNamespace]) // PVs have empty namespace
+				assert.Equal(t, resource.MustParse("10Gi"), pv.Spec.Capacity[corev1.ResourceStorage])
+				assert.Equal(t, corev1.ReadWriteOnce, pv.Spec.AccessModes[0])
+				assert.Equal(t, "/data", pv.Spec.HostPath.Path)
+			},
+		},
+		{
 			name:         "Unsupported resource type",
 			resourceType: "UnsupportedType",
 			virtualObj: &corev1.ConfigMap{
@@ -620,7 +721,7 @@ func TestBuildPhysicalResource(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			obj, err := BuildPhysicalResource(tt.resourceType, tt.virtualObj, tt.physicalName, tt.physicalNamespace)
+			obj, err := BuildPhysicalResource(tt.resourceType, tt.virtualObj, tt.physicalName, tt.physicalNamespace, nil)
 
 			if tt.expectedError {
 				assert.Error(t, err)

@@ -10,6 +10,7 @@ rules:
   - configmaps
   - nodes
   - persistentvolumeclaims
+  - persistentvolumes
   - pods
   - secrets
   - serviceaccounts

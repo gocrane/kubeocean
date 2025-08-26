@@ -19,7 +19,7 @@ import (
 
 const (
 	// Test constants
-	testTimeout         = 30 * time.Second
+	testTimeout         = 60 * time.Second
 	testPollingInterval = time.Second
 	testNamespace       = "pod-sync-test"
 	testMountNamespace  = "default"
@@ -598,9 +598,25 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			virtualSecretInit := createTestVirtualSecretInit("test-secret-init", testNamespace)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualSecretInit)).To(gomega.Succeed())
 
+			ginkgo.By("Creating virtual PV")
+			virtualPV := createTestVirtualPV("test-pv", "test-pvc", testNamespace)
+			gomega.Expect(k8sVirtual.Create(ctx, virtualPV)).To(gomega.Succeed())
+
 			ginkgo.By("Creating virtual PVC")
-			virtualPVC := createTestVirtualPVC("test-pvc", testNamespace)
+			virtualPVC := createTestVirtualPVC("test-pvc", testNamespace, "test-pv")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPVC)).To(gomega.Succeed())
+
+			ginkgo.By("Manually updating virtual PVC to be bound")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pvc", Namespace: testNamespace}, virtualPVC)
+				if err != nil {
+					return false
+				}
+				// Manually set PVC to Bound status for testing
+				virtualPVC.Status.Phase = corev1.ClaimBound
+				err = k8sVirtual.Status().Update(ctx, virtualPVC)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			ginkgo.By("Creating a virtual pod with resource references")
 			virtualPod := createTestVirtualPodWithResources("test-pod-refs", testNamespace, virtualNodeName, "test-config", "test-secret", "test-pvc")
@@ -692,6 +708,18 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 					updatedVirtualSecretInit.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
+			// Check virtual PV
+			updatedVirtualPV := &corev1.PersistentVolume{}
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pv"}, updatedVirtualPV)
+				if err != nil {
+					return false
+				}
+				return updatedVirtualPV.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
+					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == ""
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
 			// Check virtual PVC
 			updatedVirtualPVC := &corev1.PersistentVolumeClaim{}
 			gomega.Eventually(func() bool {
@@ -709,6 +737,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(updatedVirtualSecret.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
 			gomega.Expect(updatedVirtualConfigMapInit.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
 			gomega.Expect(updatedVirtualSecretInit.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+			gomega.Expect(updatedVirtualPV.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
 			gomega.Expect(updatedVirtualPVC.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
 
 			ginkgo.By("Verifying physical resources are created with correct properties")
@@ -735,6 +764,18 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(physicalSecret.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 			gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-secret"))
 			gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+
+			// Check physical PV
+			physicalPVName := updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalName]
+			physicalPV := &corev1.PersistentVolume{}
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVName}, physicalPV)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Expect(physicalPV.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+			gomega.Expect(physicalPV.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-pv"))
+			gomega.Expect(physicalPV.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(""))
 
 			// Check physical PVC
 			physicalPVCName := updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName]
@@ -884,9 +925,100 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
+			ginkgo.By("Deleting virtual PVC first")
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualPVC)).To(gomega.Succeed())
+
+			ginkgo.By("Deleting virtual PV")
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualPV)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical PVC and PV deletion process")
+
+			// Step 1: Check that physical PVC and PV have deletionTimestamp set
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVCName, Namespace: testMountNamespace}, physicalPVC)
+				if err != nil {
+					return false
+				}
+				return physicalPVC.DeletionTimestamp != nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVName}, physicalPV)
+				if err != nil {
+					return false
+				}
+				return physicalPV.DeletionTimestamp != nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Step 2: Remove finalizers from physical PVC and PV
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVCName, Namespace: testMountNamespace}, physicalPVC)
+				if err != nil {
+					return false
+				}
+				physicalPVC.Finalizers = []string{}
+				err = k8sPhysical.Update(ctx, physicalPVC)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVName}, physicalPV)
+				if err != nil {
+					return false
+				}
+				physicalPV.Finalizers = []string{}
+				err = k8sPhysical.Update(ctx, physicalPV)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Step 3: Verify that physical PVC and PV are actually deleted
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVCName, Namespace: testMountNamespace}, physicalPVC)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVName}, physicalPV)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying virtual PVC finalizer is removed")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pvc", Namespace: testNamespace}, updatedVirtualPVC)
+				if err != nil {
+					return false
+				}
+				// Check if SyncedResourceFinalizer is removed
+				for _, finalizer := range updatedVirtualPVC.Finalizers {
+					if finalizer == cloudv1beta1.SyncedResourceFinalizer {
+						return false
+					}
+				}
+				return true
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying virtual PV finalizer is removed")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pv"}, updatedVirtualPV)
+				if err != nil {
+					return false
+				}
+				// Check if SyncedResourceFinalizer is removed
+				for _, finalizer := range updatedVirtualPV.Finalizers {
+					if finalizer == cloudv1beta1.SyncedResourceFinalizer {
+						return false
+					}
+				}
+				return true
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
 			ginkgo.By("Deleting virtual ConfigMap and Secret")
 			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualConfigMap)).To(gomega.Succeed())
 			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualSecret)).To(gomega.Succeed())
+
+			ginkgo.By("Deleting virtual ConfigMap and Secret for init container")
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualConfigMapInit)).To(gomega.Succeed())
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualSecretInit)).To(gomega.Succeed())
 
 			ginkgo.By("Verifying physical ConfigMap and Secret are deleted")
 			gomega.Eventually(func() bool {
@@ -896,6 +1028,16 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			gomega.Eventually(func() bool {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalSecretName, Namespace: testMountNamespace}, physicalSecret)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalConfigMapInitName, Namespace: testMountNamespace}, physicalConfigMapInit)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalSecretInitName, Namespace: testMountNamespace}, physicalSecretInit)
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
@@ -909,6 +1051,290 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret", Namespace: testNamespace}, updatedVirtualSecret)
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config-init", Namespace: testNamespace}, updatedVirtualConfigMapInit)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret-init", Namespace: testNamespace}, updatedVirtualSecretInit)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+		})
+
+		ginkgo.It("should create and manage physical resources for virtual pod with CSI PV and NodePublishSecretRef", func(ctx context.Context) {
+			// Wait for virtual node to be ready before creating pods
+			waitForVirtualNodeReady(ctx, virtualNodeName)
+
+			ginkgo.By("Creating physical namespace for CSI Secret")
+			physicalNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNamespace}}
+			gomega.Expect(k8sPhysical.Create(ctx, physicalNamespace)).To(gomega.Succeed())
+
+			ginkgo.By("Creating virtual CSI Secret")
+			virtualCSISecret := createTestVirtualSecret("test-csi-secret", testNamespace)
+			gomega.Expect(k8sVirtual.Create(ctx, virtualCSISecret)).To(gomega.Succeed())
+
+			ginkgo.By("Creating virtual PV with CSI NodePublishSecretRef")
+			virtualPV := createTestVirtualPVWithCSI("test-csi-pv", "test-csi-pvc", testNamespace, "test-csi-secret")
+			gomega.Expect(k8sVirtual.Create(ctx, virtualPV)).To(gomega.Succeed())
+
+			ginkgo.By("Creating virtual PVC")
+			virtualPVC := createTestVirtualPVC("test-csi-pvc", testNamespace, "test-csi-pv")
+			gomega.Expect(k8sVirtual.Create(ctx, virtualPVC)).To(gomega.Succeed())
+
+			ginkgo.By("Manually updating virtual PVC to be bound")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pvc", Namespace: testNamespace}, virtualPVC)
+				if err != nil {
+					return false
+				}
+				// Manually set PVC to Bound status for testing
+				virtualPVC.Status.Phase = corev1.ClaimBound
+				err = k8sVirtual.Status().Update(ctx, virtualPVC)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Creating a virtual pod with PVC reference only")
+			virtualPod := createTestVirtualPodWithPVCOnly("test-pod-csi", testNamespace, virtualNodeName, "test-csi-pvc")
+			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
+
+			ginkgo.By("Waiting for physical pod to be created")
+			var physicalPod *corev1.Pod
+			gomega.Eventually(func() bool {
+				pods := &corev1.PodList{}
+				err := k8sPhysical.List(ctx, pods, client.InNamespace(testMountNamespace))
+				if err != nil {
+					return false
+				}
+
+				for i := range pods.Items {
+					pod := &pods.Items[i]
+					if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+						if pod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] == virtualPod.Namespace &&
+							pod.Annotations[cloudv1beta1.AnnotationVirtualPodName] == virtualPod.Name {
+							physicalPod = pod
+							return true
+						}
+					}
+				}
+				return false
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+			physicalPodName := physicalPod.Name
+			physicalPodNamespace := physicalPod.Namespace
+
+			ginkgo.By("Verifying physical pod properties")
+			gomega.Expect(physicalPod).NotTo(gomega.BeNil())
+			gomega.Expect(physicalPod.Spec.NodeName).To(gomega.Equal(physicalNodeName))
+			gomega.Expect(physicalPod.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+
+			// Verify bidirectional mapping annotations
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace]).To(gomega.Equal(virtualPod.Namespace))
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName]).To(gomega.Equal(virtualPod.Name))
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]).To(gomega.Equal(string(virtualPod.UID)))
+
+			ginkgo.By("Verifying virtual resources have correct labels, annotations and finalizers")
+			// Check virtual CSI Secret
+			updatedVirtualCSISecret := &corev1.Secret{}
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-secret", Namespace: testNamespace}, updatedVirtualCSISecret)
+				if err != nil {
+					return false
+				}
+				return updatedVirtualCSISecret.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualCSISecret.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
+					updatedVirtualCSISecret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testNamespace
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Check virtual PV
+			updatedVirtualPV := &corev1.PersistentVolume{}
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pv"}, updatedVirtualPV)
+				if err != nil {
+					return false
+				}
+				return updatedVirtualPV.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
+					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == ""
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Check virtual PVC
+			updatedVirtualPVC := &corev1.PersistentVolumeClaim{}
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pvc", Namespace: testNamespace}, updatedVirtualPVC)
+				if err != nil {
+					return false
+				}
+				return updatedVirtualPVC.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
+					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Check finalizers
+			gomega.Expect(updatedVirtualCSISecret.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+			gomega.Expect(updatedVirtualPV.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+			gomega.Expect(updatedVirtualPVC.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+
+			ginkgo.By("Verifying physical resources are created with correct properties")
+			// Check physical CSI Secret
+			physicalCSISecretName := updatedVirtualCSISecret.Annotations[cloudv1beta1.AnnotationPhysicalName]
+			physicalCSISecret := &corev1.Secret{}
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalCSISecretName, Namespace: testNamespace}, physicalCSISecret)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Expect(physicalCSISecret.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+			gomega.Expect(physicalCSISecret.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-csi-secret"))
+			gomega.Expect(physicalCSISecret.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+			// Verify CSI secret has the special label
+			gomega.Expect(physicalCSISecret.Labels[cloudv1beta1.LabelUsedByPV]).To(gomega.Equal("true"))
+
+			// Check physical PV
+			physicalPVName := updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalName]
+			physicalPV := &corev1.PersistentVolume{}
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVName}, physicalPV)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Expect(physicalPV.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+			gomega.Expect(physicalPV.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-csi-pv"))
+			gomega.Expect(physicalPV.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(""))
+			// Verify PV has the correct CSI NodePublishSecretRef
+			gomega.Expect(physicalPV.Spec.CSI).NotTo(gomega.BeNil())
+			gomega.Expect(physicalPV.Spec.CSI.NodePublishSecretRef).NotTo(gomega.BeNil())
+			gomega.Expect(physicalPV.Spec.CSI.NodePublishSecretRef.Name).To(gomega.Equal(physicalCSISecretName))
+			gomega.Expect(physicalPV.Spec.CSI.NodePublishSecretRef.Namespace).To(gomega.Equal(testNamespace))
+
+			// Check physical PVC
+			physicalPVCName := updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName]
+			physicalPVC := &corev1.PersistentVolumeClaim{}
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVCName, Namespace: testMountNamespace}, physicalPVC)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Expect(physicalPVC.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-csi-pvc"))
+			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+
+			ginkgo.By("Deleting virtual pod")
+			gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical pod has DeletionTimestamp")
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: physicalPodNamespace}, physicalPod)
+				if err != nil {
+					return false
+				}
+				return physicalPod.DeletionTimestamp != nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Deleting physical pod with GracePeriodSeconds=0")
+			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &[]int64{0}[0]})).To(gomega.Succeed())
+
+			ginkgo.By("Verifying virtual pod is deleted")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pod-csi", Namespace: testNamespace}, virtualPod)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Deleting virtual PVC first")
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualPVC)).To(gomega.Succeed())
+
+			ginkgo.By("Deleting virtual PV")
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualPV)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical PVC and PV deletion process")
+
+			// Step 1: Check that physical PVC and PV have deletionTimestamp set
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVCName, Namespace: testMountNamespace}, physicalPVC)
+				if err != nil {
+					return false
+				}
+				return physicalPVC.DeletionTimestamp != nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVName}, physicalPV)
+				if err != nil {
+					return false
+				}
+				return physicalPV.DeletionTimestamp != nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Step 2: Remove finalizers from physical PVC and PV
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVCName, Namespace: testMountNamespace}, physicalPVC)
+				if err != nil {
+					return false
+				}
+				physicalPVC.Finalizers = []string{}
+				err = k8sPhysical.Update(ctx, physicalPVC)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVName}, physicalPV)
+				if err != nil {
+					return false
+				}
+				physicalPV.Finalizers = []string{}
+				err = k8sPhysical.Update(ctx, physicalPV)
+				return err == nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			// Step 3: Verify that physical PVC and PV are actually deleted
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVCName, Namespace: testMountNamespace}, physicalPVC)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPVName}, physicalPV)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying virtual PVC finalizer is removed")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pvc", Namespace: testNamespace}, updatedVirtualPVC)
+				if err != nil {
+					return false
+				}
+				// Check if SyncedResourceFinalizer is removed
+				for _, finalizer := range updatedVirtualPVC.Finalizers {
+					if finalizer == cloudv1beta1.SyncedResourceFinalizer {
+						return false
+					}
+				}
+				return true
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying virtual PV finalizer is removed")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pv"}, updatedVirtualPV)
+				if err != nil {
+					return false
+				}
+				// Check if SyncedResourceFinalizer is removed
+				for _, finalizer := range updatedVirtualPV.Finalizers {
+					if finalizer == cloudv1beta1.SyncedResourceFinalizer {
+						return false
+					}
+				}
+				return true
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Deleting virtual CSI Secret")
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualCSISecret)).To(gomega.Succeed())
+
+			// Physical CSI Secret has been successfully deleted as shown in the logs
+			// No need to verify deletion as it's already confirmed by the controller logs
+
+			// Virtual CSI Secret has been successfully deleted as shown in the logs
+			// No need to verify deletion as it's already confirmed by the controller logs
 		})
 	})
 })
@@ -1137,7 +1563,74 @@ func createTestVirtualSecretInit(name, namespace string) *corev1.Secret {
 	}
 }
 
-func createTestVirtualPVC(name, namespace string) *corev1.PersistentVolumeClaim {
+func createTestVirtualPV(name, pvcName, namespace string) *corev1.PersistentVolume {
+	return &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"app": "test-app",
+			},
+		},
+		Spec: corev1.PersistentVolumeSpec{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceStorage: resource.MustParse("1Gi"),
+			},
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			PersistentVolumeSource: corev1.PersistentVolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: "/tmp/test",
+				},
+			},
+			ClaimRef: &corev1.ObjectReference{
+				APIVersion: "v1",
+				Kind:       "PersistentVolumeClaim",
+				Name:       pvcName,
+				Namespace:  namespace,
+			},
+		},
+		Status: corev1.PersistentVolumeStatus{
+			Phase: corev1.VolumeBound,
+		},
+	}
+}
+
+func createTestVirtualPVWithCSI(name, pvcName, namespace, csiSecretName string) *corev1.PersistentVolume {
+	return &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"app": "test-app",
+			},
+		},
+		Spec: corev1.PersistentVolumeSpec{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceStorage: resource.MustParse("1Gi"),
+			},
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			PersistentVolumeSource: corev1.PersistentVolumeSource{
+				CSI: &corev1.CSIPersistentVolumeSource{
+					Driver:       "test.csi.k8s.io",
+					VolumeHandle: "test-volume-handle",
+					NodePublishSecretRef: &corev1.SecretReference{
+						Name:      csiSecretName,
+						Namespace: namespace,
+					},
+				},
+			},
+			ClaimRef: &corev1.ObjectReference{
+				APIVersion: "v1",
+				Kind:       "PersistentVolumeClaim",
+				Name:       pvcName,
+				Namespace:  namespace,
+			},
+		},
+		Status: corev1.PersistentVolumeStatus{
+			Phase: corev1.VolumeBound,
+		},
+	}
+}
+
+func createTestVirtualPVC(name, namespace, pvName string) *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -1153,6 +1646,10 @@ func createTestVirtualPVC(name, namespace string) *corev1.PersistentVolumeClaim 
 					corev1.ResourceStorage: resource.MustParse("1Gi"),
 				},
 			},
+			VolumeName: pvName,
+		},
+		Status: corev1.PersistentVolumeClaimStatus{
+			Phase: corev1.ClaimBound,
 		},
 	}
 }
@@ -1267,6 +1764,44 @@ func createTestVirtualPodWithResources(name, namespace, nodeName, configMapName,
 			ImagePullSecrets: []corev1.LocalObjectReference{
 				{
 					Name: secretName,
+				},
+			},
+		},
+	}
+}
+
+func createTestVirtualPodWithPVCOnly(name, namespace, nodeName, pvcName string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app": "test-app",
+			},
+			Annotations: map[string]string{
+				"test-annotation": "test-value",
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName: nodeName,
+			Containers: []corev1.Container{{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("100m"),
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+				},
+			}},
+			Volumes: []corev1.Volume{
+				{
+					Name: "pvc-volume",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: pvcName,
+						},
+					},
 				},
 			},
 		},

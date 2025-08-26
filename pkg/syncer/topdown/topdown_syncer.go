@@ -32,6 +32,8 @@ type TopDownSyncer struct {
 	virtualPodController       *VirtualPodReconciler
 	virtualConfigMapController *VirtualConfigMapReconciler
 	virtualSecretController    *VirtualSecretReconciler
+	virtualPVCController       *VirtualPVCReconciler
+	virtualPVController        *VirtualPVReconciler
 }
 
 // NewTopDownSyncer creates a new TopDownSyncer instance
@@ -122,9 +124,39 @@ func (tds *TopDownSyncer) setupControllers() error {
 		return fmt.Errorf("failed to setup virtual secret controller: %w", err)
 	}
 
+	// Setup Virtual PVC Controller
+	tds.virtualPVCController = &VirtualPVCReconciler{
+		VirtualClient:     tds.virtualManager.GetClient(),
+		PhysicalClient:    tds.physicalManager.GetClient(),
+		PhysicalK8sClient: physicalK8sClient,
+		Scheme:            tds.Scheme,
+		ClusterBinding:    tds.ClusterBinding,
+		Log:               tds.Log.WithName("virtual-pvc-controller"),
+	}
+
+	if err := tds.virtualPVCController.SetupWithManager(tds.virtualManager, tds.physicalManager); err != nil {
+		return fmt.Errorf("failed to setup virtual pvc controller: %w", err)
+	}
+
+	// Setup Virtual PV Controller
+	tds.virtualPVController = &VirtualPVReconciler{
+		VirtualClient:     tds.virtualManager.GetClient(),
+		PhysicalClient:    tds.physicalManager.GetClient(),
+		PhysicalK8sClient: physicalK8sClient,
+		Scheme:            tds.Scheme,
+		ClusterBinding:    tds.ClusterBinding,
+		Log:               tds.Log.WithName("virtual-pv-controller"),
+	}
+
+	if err := tds.virtualPVController.SetupWithManager(tds.virtualManager, tds.physicalManager); err != nil {
+		return fmt.Errorf("failed to setup virtual pv controller: %w", err)
+	}
+
 	tds.Log.Info("Controllers setup completed",
 		"virtualPodController", "enabled",
 		"virtualConfigMapController", "enabled",
-		"virtualSecretController", "enabled")
+		"virtualSecretController", "enabled",
+		"virtualPVCController", "enabled",
+		"virtualPVController", "enabled")
 	return nil
 }

@@ -69,6 +69,7 @@ func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 		virtualConfigMap  *corev1.ConfigMap
 		virtualSecret     *corev1.Secret
 		virtualPVC        *corev1.PersistentVolumeClaim
+		virtualPV         *corev1.PersistentVolume
 		virtualPullSecret *corev1.Secret
 		physicalPod       *corev1.Pod
 		expectedResult    ctrl.Result
@@ -211,6 +212,10 @@ func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 							corev1.ResourceStorage: resource.MustParse("1Gi"),
 						},
 					},
+					VolumeName: "test-pv", // Required for bound PVC
+				},
+				Status: corev1.PersistentVolumeClaimStatus{
+					Phase: corev1.ClaimBound, // Required for sync
 				},
 			},
 			// Add pull-secret for image pull secrets
@@ -222,6 +227,23 @@ func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 				Type: corev1.SecretTypeDockerConfigJson,
 				Data: map[string][]byte{
 					".dockerconfigjson": []byte(`{"auths":{}}`),
+				},
+			},
+			// Add associated PV for PVC sync
+			virtualPV: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv",
+				},
+				Spec: corev1.PersistentVolumeSpec{
+					Capacity: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/data",
+						},
+					},
 				},
 			},
 			physicalPod: &corev1.Pod{
@@ -453,6 +475,9 @@ func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 			}
 			if tt.virtualPullSecret != nil {
 				virtualObjs = append(virtualObjs, tt.virtualPullSecret)
+			}
+			if tt.virtualPV != nil {
+				virtualObjs = append(virtualObjs, tt.virtualPV)
 			}
 			virtualClient := fakeclient.NewClientBuilder().
 				WithScheme(scheme).
@@ -1166,7 +1191,7 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 	t.Run("should sync PVC successfully", func(t *testing.T) {
 		ctx := context.Background()
 
-		// Create virtual PVC
+		// Create virtual PVC that is bound with volumeName
 		virtualPVC := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-pvc",
@@ -1180,6 +1205,28 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 				Resources: corev1.VolumeResourceRequirements{
 					Requests: corev1.ResourceList{
 						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+				VolumeName: "test-pv", // Required for bound PVC
+			},
+			Status: corev1.PersistentVolumeClaimStatus{
+				Phase: corev1.ClaimBound, // Required for sync
+			},
+		}
+
+		// Create the associated PV
+		associatedPV := &corev1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-pv",
+			},
+			Spec: corev1.PersistentVolumeSpec{
+				Capacity: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				PersistentVolumeSource: corev1.PersistentVolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/data",
 					},
 				},
 			},
@@ -1214,7 +1261,7 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 			},
 		}
 
-		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualPod, virtualPVC).Build()
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualPod, virtualPVC, associatedPV).Build()
 		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 		physicalK8sClient := fake.NewSimpleClientset()
 
@@ -1246,6 +1293,187 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, corev1.ReadWriteOnce, physicalPVC.Spec.AccessModes[0])
 		assert.Equal(t, cloudv1beta1.LabelManagedByValue, physicalPVC.Labels[cloudv1beta1.LabelManagedBy])
+
+		// Note: Since the test PVC is bound with volumeName, both PV and PVC should be synced
+		// Verify that the physical PVC has the correct physical PV name
+		expectedPhysicalPVName := "test-pv-14c15d9b072115b6e7aae77aa7f1732d"
+		assert.Equal(t, expectedPhysicalPVName, physicalPVC.Spec.VolumeName, "Physical PVC should have the correct physical PV name")
+	})
+
+	t.Run("should sync PV when PVC is bound with volumeName", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Create a bound PVC with volumeName
+		boundPVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "bound-pvc",
+				Namespace: "virtual-ns",
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+				VolumeName: "test-pv", // This triggers PV sync
+			},
+			Status: corev1.PersistentVolumeClaimStatus{
+				Phase: corev1.ClaimBound,
+			},
+		}
+
+		// Create the associated PV
+		associatedPV := &corev1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-pv",
+			},
+			Spec: corev1.PersistentVolumeSpec{
+				Capacity: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				PersistentVolumeSource: corev1.PersistentVolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/data",
+					},
+				},
+			},
+		}
+
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(boundPVC, associatedPV).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalK8sClient := fake.NewSimpleClientset()
+
+		reconciler := &VirtualPodReconciler{
+			VirtualClient:     virtualClient,
+			PhysicalClient:    physicalClient,
+			PhysicalK8sClient: physicalK8sClient,
+			ClusterBinding:    clusterBinding,
+			Scheme:            scheme,
+			Log:               zap.New(),
+		}
+
+		// Test syncPVC - should also sync the associated PV
+		physicalName, err := reconciler.syncPVC(ctx, "virtual-ns", "bound-pvc")
+		assert.NoError(t, err)
+		assert.NotEmpty(t, physicalName)
+
+		// Verify virtual PVC annotations were updated
+		updatedPVC := &corev1.PersistentVolumeClaim{}
+		err = virtualClient.Get(ctx, types.NamespacedName{Namespace: "virtual-ns", Name: "bound-pvc"}, updatedPVC)
+		assert.NoError(t, err)
+		assert.Equal(t, cloudv1beta1.LabelManagedByValue, updatedPVC.Labels[cloudv1beta1.LabelManagedBy])
+		assert.NotEmpty(t, updatedPVC.Annotations[cloudv1beta1.AnnotationPhysicalName])
+
+		// Verify physical PVC was created
+		physicalPVC := &corev1.PersistentVolumeClaim{}
+		physicalNameFromAnnotation := updatedPVC.Annotations[cloudv1beta1.AnnotationPhysicalName]
+		err = physicalClient.Get(ctx, types.NamespacedName{Namespace: "physical-ns", Name: physicalNameFromAnnotation}, physicalPVC)
+		assert.NoError(t, err)
+		assert.Equal(t, corev1.ReadWriteOnce, physicalPVC.Spec.AccessModes[0])
+		assert.Equal(t, cloudv1beta1.LabelManagedByValue, physicalPVC.Labels[cloudv1beta1.LabelManagedBy])
+
+		// Verify virtual PV annotations were updated
+		updatedPV := &corev1.PersistentVolume{}
+		err = virtualClient.Get(ctx, types.NamespacedName{Name: "test-pv"}, updatedPV)
+		assert.NoError(t, err)
+		assert.Equal(t, cloudv1beta1.LabelManagedByValue, updatedPV.Labels[cloudv1beta1.LabelManagedBy])
+		assert.NotEmpty(t, updatedPV.Annotations[cloudv1beta1.AnnotationPhysicalName])
+		assert.Equal(t, "", updatedPV.Annotations[cloudv1beta1.AnnotationPhysicalNamespace]) // PVs are cluster-scoped
+
+		// Verify physical PV was created
+		physicalPV := &corev1.PersistentVolume{}
+		physicalPVNameFromAnnotation := updatedPV.Annotations[cloudv1beta1.AnnotationPhysicalName]
+		err = physicalClient.Get(ctx, types.NamespacedName{Name: physicalPVNameFromAnnotation}, physicalPV)
+		assert.NoError(t, err)
+		assert.Equal(t, cloudv1beta1.LabelManagedByValue, physicalPV.Labels[cloudv1beta1.LabelManagedBy])
+		assert.Equal(t, resource.MustParse("1Gi"), physicalPV.Spec.Capacity[corev1.ResourceStorage])
+		assert.Equal(t, corev1.ReadWriteOnce, physicalPV.Spec.AccessModes[0])
+		assert.Equal(t, "/data", physicalPV.Spec.HostPath.Path)
+	})
+
+	t.Run("should return error when PVC is not bound", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Create an unbound PVC
+		unboundPVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unbound-pvc",
+				Namespace: "virtual-ns",
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+			},
+			Status: corev1.PersistentVolumeClaimStatus{
+				Phase: corev1.ClaimPending, // Not bound
+			},
+		}
+
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(unboundPVC).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalK8sClient := fake.NewSimpleClientset()
+
+		reconciler := &VirtualPodReconciler{
+			VirtualClient:     virtualClient,
+			PhysicalClient:    physicalClient,
+			PhysicalK8sClient: physicalK8sClient,
+			ClusterBinding:    clusterBinding,
+			Scheme:            scheme,
+			Log:               zap.New(),
+		}
+
+		// Test syncPVC - should return error since PVC is not bound
+		_, err := reconciler.syncPVC(ctx, "virtual-ns", "unbound-pvc")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "is not bound, current phase: Pending")
+	})
+
+	t.Run("should return error when PVC is bound but has no volumeName", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Create a bound PVC without volumeName
+		boundPVCNoVolume := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "bound-pvc-no-volume",
+				Namespace: "virtual-ns",
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+				// No VolumeName specified
+			},
+			Status: corev1.PersistentVolumeClaimStatus{
+				Phase: corev1.ClaimBound, // Bound but no volumeName
+			},
+		}
+
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(boundPVCNoVolume).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalK8sClient := fake.NewSimpleClientset()
+
+		reconciler := &VirtualPodReconciler{
+			VirtualClient:     virtualClient,
+			PhysicalClient:    physicalClient,
+			PhysicalK8sClient: physicalK8sClient,
+			ClusterBinding:    clusterBinding,
+			Scheme:            scheme,
+			Log:               zap.New(),
+		}
+
+		// Test syncPVC - should return error since PVC has no volumeName
+		_, err := reconciler.syncPVC(ctx, "virtual-ns", "bound-pvc-no-volume")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "is bound but has no volumeName")
 	})
 
 	t.Run("should handle missing virtual resources gracefully", func(t *testing.T) {
@@ -1439,6 +1667,428 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "configMap mapping not found for virtual ConfigMap: missing-config")
 	})
+}
+
+// TestVirtualPodReconciler_syncPV tests the syncPV function
+func TestVirtualPodReconciler_syncPV(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name          string
+		pvName        string
+		virtualPV     *corev1.PersistentVolume
+		virtualSecret *corev1.Secret
+		setupClient   func() client.Client
+		expectedError bool
+		validateFunc  func(t *testing.T, physicalClient client.Client)
+	}{
+		{
+			name:   "should sync PV without CSI secret successfully",
+			pvName: "test-pv",
+			virtualPV: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv",
+					Labels: map[string]string{
+						"test-label": "test-value",
+					},
+				},
+				Spec: corev1.PersistentVolumeSpec{
+					Capacity: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{
+						corev1.ReadWriteOnce,
+					},
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/tmp/test",
+						},
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError: false,
+			validateFunc: func(t *testing.T, physicalClient client.Client) {
+				var physicalPV corev1.PersistentVolume
+				err := physicalClient.Get(context.Background(), types.NamespacedName{Name: "test-pv-14c15d9b072115b6e7aae77aa7f1732d"}, &physicalPV)
+				assert.NoError(t, err)
+				assert.Equal(t, "test-pv-14c15d9b072115b6e7aae77aa7f1732d", physicalPV.Name)
+				assert.Equal(t, "test-value", physicalPV.Labels["test-label"])
+				assert.Equal(t, cloudv1beta1.LabelManagedByValue, physicalPV.Labels[cloudv1beta1.LabelManagedBy])
+			},
+		},
+		{
+			name:   "should sync PV with CSI secret successfully",
+			pvName: "test-pv-csi",
+			virtualPV: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv-csi",
+				},
+				Spec: corev1.PersistentVolumeSpec{
+					Capacity: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{
+						corev1.ReadWriteOnce,
+					},
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						CSI: &corev1.CSIPersistentVolumeSource{
+							Driver: "test-driver",
+							NodePublishSecretRef: &corev1.SecretReference{
+								Name:      "test-secret",
+								Namespace: "test-namespace",
+							},
+						},
+					},
+				},
+			},
+			virtualSecret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "test-namespace",
+				},
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{
+					"key1": []byte("value1"),
+				},
+			},
+			setupClient: func() client.Client {
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError: false,
+			validateFunc: func(t *testing.T, physicalClient client.Client) {
+				// Check that the secret was synced with PV label
+				// Calculate expected secret name
+				expectedSecretHash := fmt.Sprintf("%x", md5.Sum([]byte("test-namespace/test-secret")))
+				expectedSecretName := "test-secret-" + expectedSecretHash
+
+				var physicalSecret corev1.Secret
+				err := physicalClient.Get(context.Background(), types.NamespacedName{
+					Name:      expectedSecretName,
+					Namespace: "test-namespace",
+				}, &physicalSecret)
+				assert.NoError(t, err)
+				assert.Equal(t, "true", physicalSecret.Labels[cloudv1beta1.LabelUsedByPV])
+
+				// Check that the PV was synced with updated secret reference
+				// Calculate expected PV name
+				expectedPVHash := fmt.Sprintf("%x", md5.Sum([]byte("/test-pv-csi")))
+				expectedPVName := "test-pv-csi-" + expectedPVHash
+
+				var physicalPV corev1.PersistentVolume
+				err = physicalClient.Get(context.Background(), types.NamespacedName{
+					Name: expectedPVName,
+				}, &physicalPV)
+				assert.NoError(t, err)
+				assert.Equal(t, expectedSecretName,
+					physicalPV.Spec.CSI.NodePublishSecretRef.Name)
+			},
+		},
+		{
+			name:   "should handle missing virtual PV",
+			pvName: "non-existent-pv",
+			setupClient: func() client.Client {
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError: true,
+		},
+		{
+			name:   "should handle CSI secret sync failure",
+			pvName: "test-pv-csi-fail",
+			virtualPV: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv-csi-fail",
+				},
+				Spec: corev1.PersistentVolumeSpec{
+					Capacity: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{
+						corev1.ReadWriteOnce,
+					},
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						CSI: &corev1.CSIPersistentVolumeSource{
+							Driver: "test-driver",
+							NodePublishSecretRef: &corev1.SecretReference{
+								Name:      "non-existent-secret",
+								Namespace: "test-namespace",
+							},
+						},
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// Setup virtual client with test objects
+			virtualObjects := []client.Object{}
+			if tt.virtualPV != nil {
+				virtualObjects = append(virtualObjects, tt.virtualPV)
+			}
+			if tt.virtualSecret != nil {
+				virtualObjects = append(virtualObjects, tt.virtualSecret)
+			}
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualObjects...).Build()
+
+			// Setup physical client
+			physicalClient := tt.setupClient()
+
+			reconciler := &VirtualPodReconciler{
+				VirtualClient:     virtualClient,
+				PhysicalClient:    physicalClient,
+				PhysicalK8sClient: fake.NewSimpleClientset(),
+				ClusterBinding:    clusterBinding,
+				Log:               ctrl.Log.WithName("test"),
+			}
+
+			physicalName, err := reconciler.syncPV(ctx, tt.pvName)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.NotEmpty(t, physicalName)
+
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, physicalClient)
+				}
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_syncResource tests the syncResource function with different resource types
+func TestVirtualPodReconciler_syncResource(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name            string
+		resourceType    ResourceType
+		virtualObj      client.Object
+		syncResourceOpt *SyncResourceOpt
+		setupClient     func() client.Client
+		expectedError   bool
+		validateFunc    func(t *testing.T, physicalClient client.Client, physicalName string)
+	}{
+		{
+			name:         "should sync ConfigMap with nil options",
+			resourceType: ResourceTypeConfigMap,
+			virtualObj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-config",
+					Namespace: "test-namespace",
+				},
+				Data: map[string]string{
+					"key1": "value1",
+				},
+			},
+			syncResourceOpt: nil,
+			setupClient: func() client.Client {
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError: false,
+			validateFunc: func(t *testing.T, physicalClient client.Client, physicalName string) {
+				var physicalConfigMap corev1.ConfigMap
+				err := physicalClient.Get(context.Background(), types.NamespacedName{
+					Name:      physicalName,
+					Namespace: "test-cluster",
+				}, &physicalConfigMap)
+				assert.NoError(t, err)
+				assert.Equal(t, "value1", physicalConfigMap.Data["key1"])
+				assert.Equal(t, cloudv1beta1.LabelManagedByValue, physicalConfigMap.Labels[cloudv1beta1.LabelManagedBy])
+			},
+		},
+		{
+			name:         "should sync Secret with PV reference label",
+			resourceType: ResourceTypeSecret,
+			virtualObj: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "test-namespace",
+				},
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{
+					"key1": []byte("value1"),
+				},
+			},
+			syncResourceOpt: &SyncResourceOpt{
+				IsPVRefSecret: true,
+			},
+			setupClient: func() client.Client {
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError: false,
+			validateFunc: func(t *testing.T, physicalClient client.Client, physicalName string) {
+				// Calculate expected secret name using the same logic as generatePhysicalName
+				input := fmt.Sprintf("%s/%s", "test-namespace", "test-secret")
+				hash := md5.Sum([]byte(input))
+				hashString := fmt.Sprintf("%x", hash)
+				expectedSecretName := fmt.Sprintf("test-secret-%s", hashString)
+
+				t.Logf("Expected secret name: %s", expectedSecretName)
+				t.Logf("Returned physical name: %s", physicalName)
+
+				var physicalSecret corev1.Secret
+				err := physicalClient.Get(context.Background(), types.NamespacedName{
+					Name:      expectedSecretName,
+					Namespace: "test-cluster", // Secret is created in the mount namespace
+				}, &physicalSecret)
+				assert.NoError(t, err)
+				assert.Equal(t, "true", physicalSecret.Labels[cloudv1beta1.LabelUsedByPV])
+				assert.Equal(t, cloudv1beta1.LabelManagedByValue, physicalSecret.Labels[cloudv1beta1.LabelManagedBy])
+				assert.Equal(t, "value1", string(physicalSecret.Data["key1"]))
+			},
+		},
+		{
+			name:         "should sync PVC with PV name",
+			resourceType: ResourceTypePVC,
+			virtualObj: &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pvc",
+					Namespace: "test-namespace",
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{
+						corev1.ReadWriteOnce,
+					},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			},
+			syncResourceOpt: &SyncResourceOpt{
+				PhysicalPVName: "test-pv-name",
+			},
+			setupClient: func() client.Client {
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError: false,
+			validateFunc: func(t *testing.T, physicalClient client.Client, physicalName string) {
+				var physicalPVC corev1.PersistentVolumeClaim
+				err := physicalClient.Get(context.Background(), types.NamespacedName{
+					Name:      physicalName,
+					Namespace: "test-cluster",
+				}, &physicalPVC)
+				assert.NoError(t, err)
+				assert.Equal(t, "test-pv-name", physicalPVC.Spec.VolumeName)
+				assert.Equal(t, cloudv1beta1.LabelManagedByValue, physicalPVC.Labels[cloudv1beta1.LabelManagedBy])
+			},
+		},
+		{
+			name:         "should sync PV with CSI secret reference",
+			resourceType: ResourceTypePV,
+			virtualObj: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv",
+				},
+				Spec: corev1.PersistentVolumeSpec{
+					Capacity: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{
+						corev1.ReadWriteOnce,
+					},
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						CSI: &corev1.CSIPersistentVolumeSource{
+							Driver: "test-driver",
+							NodePublishSecretRef: &corev1.SecretReference{
+								Name:      "original-secret",
+								Namespace: "test-namespace",
+							},
+						},
+					},
+				},
+			},
+			syncResourceOpt: &SyncResourceOpt{
+				PhysicalPVRefSecretName: "physical-secret-name",
+			},
+			setupClient: func() client.Client {
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectedError: false,
+			validateFunc: func(t *testing.T, physicalClient client.Client, physicalName string) {
+				var physicalPV corev1.PersistentVolume
+				err := physicalClient.Get(context.Background(), types.NamespacedName{
+					Name: physicalName,
+				}, &physicalPV)
+				assert.NoError(t, err)
+				assert.Equal(t, "physical-secret-name", physicalPV.Spec.CSI.NodePublishSecretRef.Name)
+				assert.Equal(t, corev1.PersistentVolumeReclaimRetain, physicalPV.Spec.PersistentVolumeReclaimPolicy)
+				assert.Nil(t, physicalPV.Spec.ClaimRef)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// Setup virtual client with test object
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(tt.virtualObj).Build()
+
+			// Setup physical client
+			physicalClient := tt.setupClient()
+
+			reconciler := &VirtualPodReconciler{
+				VirtualClient:     virtualClient,
+				PhysicalClient:    physicalClient,
+				PhysicalK8sClient: fake.NewSimpleClientset(),
+				ClusterBinding:    clusterBinding,
+				Log:               ctrl.Log.WithName("test"),
+			}
+
+			physicalName, err := reconciler.syncResource(ctx, tt.resourceType,
+				tt.virtualObj.GetNamespace(), tt.virtualObj.GetName(),
+				"test-cluster", tt.virtualObj, tt.syncResourceOpt)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.NotEmpty(t, physicalName)
+
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, physicalClient, physicalName)
+				}
+			}
+		})
+	}
 }
 
 // TestVirtualPodReconciler_GeneratePhysicalResourceName tests the physical resource name generation

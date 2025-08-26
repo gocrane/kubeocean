@@ -80,10 +80,10 @@ func (r *VirtualPVCReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.handleVirtualPVCDeletion(ctx, virtualPVC, physicalName, physicalPVCExists, physicalPVC)
 	}
 
-	// 6. If physical PVC doesn't exist, create it
+	// 6. If physical PVC doesn't exist, do nothing (PVCs are not created by Tapestry)
 	if !physicalPVCExists {
-		logger.Info("Physical PVC doesn't exist, creating it")
-		return r.createPhysicalPVC(ctx, virtualPVC, physicalName)
+		logger.V(1).Info("Physical PVC doesn't exist, but PVCs are not created by Tapestry, doing nothing")
+		return ctrl.Result{}, nil
 	}
 
 	// 7. Physical PVC exists, no update needed (PVC spec is immutable)
@@ -147,18 +147,6 @@ func (r *VirtualPVCReconciler) checkPhysicalPVCExists(ctx context.Context, physi
 	}
 
 	return true, pvc, nil
-}
-
-// createPhysicalPVC creates physical PVC
-func (r *VirtualPVCReconciler) createPhysicalPVC(ctx context.Context, virtualPVC *corev1.PersistentVolumeClaim, physicalName string) (ctrl.Result, error) {
-	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
-
-	err := CreatePhysicalResource(ctx, ResourceTypePVC, virtualPVC, physicalName, physicalNamespace, r.PhysicalClient, r.Log)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager

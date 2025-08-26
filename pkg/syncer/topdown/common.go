@@ -16,6 +16,13 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 )
 
+// SyncResourceOpt contains options for resource synchronization
+type SyncResourceOpt struct {
+	PhysicalPVName          string
+	IsPVRefSecret           bool
+	PhysicalPVRefSecretName string
+}
+
 // CheckPhysicalResourceExists checks if physical resource exists using both cached and direct client
 // This is a common function that can be used by different reconcilers
 func CheckPhysicalResourceExists(ctx context.Context, resourceType ResourceType, physicalName, physicalNamespace string, obj client.Object,
@@ -44,6 +51,8 @@ func CheckPhysicalResourceExists(ctx context.Context, resourceType ResourceType,
 			directObj, directErr = physicalK8sClient.CoreV1().Secrets(physicalNamespace).Get(ctx, physicalName, metav1.GetOptions{})
 		case ResourceTypePVC:
 			directObj, directErr = physicalK8sClient.CoreV1().PersistentVolumeClaims(physicalNamespace).Get(ctx, physicalName, metav1.GetOptions{})
+		case ResourceTypePV:
+			directObj, directErr = physicalK8sClient.CoreV1().PersistentVolumes().Get(ctx, physicalName, metav1.GetOptions{})
 		default:
 			return false, nil, fmt.Errorf("unsupported resource type: %s", resourceType)
 		}
@@ -98,6 +107,7 @@ func BuildPhysicalResourceAnnotations(virtualObj client.Object) map[string]strin
 	}
 
 	// Add virtual resource mapping annotations
+	// For PVs, namespace might be empty (cluster-scoped resource)
 	annotations[cloudv1beta1.AnnotationVirtualNamespace] = virtualObj.GetNamespace()
 	annotations[cloudv1beta1.AnnotationVirtualName] = virtualObj.GetName()
 
@@ -108,11 +118,16 @@ func BuildPhysicalResourceAnnotations(virtualObj client.Object) map[string]strin
 // This is a common function that can be used by different reconcilers
 func CreatePhysicalResource(ctx context.Context, resourceType ResourceType, virtualObj client.Object, physicalName, physicalNamespace string,
 	physicalClient client.Client, logger logr.Logger) error {
+	return CreatePhysicalResourceWithOpt(ctx, resourceType, virtualObj, physicalName, physicalNamespace, physicalClient, logger, nil)
+}
+
+func CreatePhysicalResourceWithOpt(ctx context.Context, resourceType ResourceType, virtualObj client.Object, physicalName, physicalNamespace string,
+	physicalClient client.Client, logger logr.Logger, syncResourceOpt *SyncResourceOpt) error {
 
 	logger = logger.WithValues(string(resourceType), fmt.Sprintf("%s/%s", virtualObj.GetNamespace(), virtualObj.GetName()))
 
 	// Build physical resource
-	physicalObj, err := BuildPhysicalResource(resourceType, virtualObj, physicalName, physicalNamespace)
+	physicalObj, err := BuildPhysicalResource(resourceType, virtualObj, physicalName, physicalNamespace, syncResourceOpt)
 	if err != nil {
 		return err
 	}
@@ -128,14 +143,16 @@ func CreatePhysicalResource(ctx context.Context, resourceType ResourceType, virt
 		return err
 	}
 
+	resourcePath := fmt.Sprintf("%s/%s", physicalNamespace, physicalName)
+
 	logger.Info(fmt.Sprintf("Successfully created physical %s", resourceType),
-		fmt.Sprintf("physical%s", resourceType), fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
+		fmt.Sprintf("physical%s", resourceType), resourcePath)
 	return nil
 }
 
 // BuildPhysicalResource builds a physical resource by type
 // This is a common function that can be used by different reconcilers
-func BuildPhysicalResource(resourceType ResourceType, virtualObj client.Object, physicalName, physicalNamespace string) (client.Object, error) {
+func BuildPhysicalResource(resourceType ResourceType, virtualObj client.Object, physicalName, physicalNamespace string, syncResourceOpt *SyncResourceOpt) (client.Object, error) {
 	switch resourceType {
 	case ResourceTypeConfigMap:
 		if configMap, ok := virtualObj.(*corev1.ConfigMap); ok {
@@ -154,11 +171,18 @@ func BuildPhysicalResource(resourceType ResourceType, virtualObj client.Object, 
 		return nil, fmt.Errorf("invalid object type for ConfigMap: %T", virtualObj)
 	case ResourceTypeSecret:
 		if secret, ok := virtualObj.(*corev1.Secret); ok {
+			labels := BuildPhysicalResourceLabels(secret)
+
+			// Add PV usage label if this secret is referenced by PV
+			if syncResourceOpt != nil && syncResourceOpt.IsPVRefSecret {
+				labels[cloudv1beta1.LabelUsedByPV] = "true"
+			}
+
 			physicalSecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        physicalName,
 					Namespace:   physicalNamespace,
-					Labels:      BuildPhysicalResourceLabels(secret),
+					Labels:      labels,
 					Annotations: BuildPhysicalResourceAnnotations(secret),
 				},
 				Type:       secret.Type,
@@ -177,11 +201,47 @@ func BuildPhysicalResource(resourceType ResourceType, virtualObj client.Object, 
 					Labels:      BuildPhysicalResourceLabels(pvc),
 					Annotations: BuildPhysicalResourceAnnotations(pvc),
 				},
-				Spec: pvc.Spec,
+				Spec:   pvc.Spec,
+				Status: pvc.Status,
 			}
+			physicalPVC.Spec.StorageClassName = nil
+			physicalPVC.Status.Phase = corev1.ClaimPending
+
+			// If physical PV name is provided in opts, update the VolumeName
+			if syncResourceOpt != nil && syncResourceOpt.PhysicalPVName != "" {
+				physicalPVC.Spec.VolumeName = syncResourceOpt.PhysicalPVName
+			}
+
 			return physicalPVC, nil
 		}
 		return nil, fmt.Errorf("invalid object type for PVC: %T", virtualObj)
+	case ResourceTypePV:
+		if pv, ok := virtualObj.(*corev1.PersistentVolume); ok {
+			physicalPV := &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        physicalName,
+					Labels:      BuildPhysicalResourceLabels(pv),
+					Annotations: BuildPhysicalResourceAnnotations(pv),
+				},
+				Spec: pv.Spec,
+				// empty status
+			}
+			// need to rebuild ref to pvc
+			physicalPV.Spec.ClaimRef = nil
+			// need to retain the volume when pv is deleted
+			physicalPV.Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimRetain
+
+			// Update CSI secret reference if provided
+			if syncResourceOpt != nil && syncResourceOpt.PhysicalPVRefSecretName != "" &&
+				physicalPV.Spec.CSI != nil && physicalPV.Spec.CSI.NodePublishSecretRef != nil {
+				physicalPV.Spec.CSI.NodePublishSecretRef.Name = syncResourceOpt.PhysicalPVRefSecretName
+				// Keep the same namespace as virtual cluster for NodePublishSecretRef
+				// The namespace should remain the same as the virtual namespace
+			}
+
+			return physicalPV, nil
+		}
+		return nil, fmt.Errorf("invalid object type for PV: %T", virtualObj)
 	default:
 		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
 	}

@@ -40,4 +40,7 @@ const (
 	AnnotationPhysicalNamespace = "tapestry.io/physical-namespace"
 	AnnotationVirtualName       = "tapestry.io/virtual-name"
 	AnnotationVirtualNamespace  = "tapestry.io/virtual-namespace"
+
+	// PV-related labels
+	LabelUsedByPV = "tapestry.io/used-by-pv"
 )

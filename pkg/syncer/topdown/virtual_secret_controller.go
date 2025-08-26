@@ -83,6 +83,10 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// 6. If physical secret doesn't exist, create it
 	if !physicalSecretExists {
+		if virtualSecret.Labels[cloudv1beta1.LabelUsedByPV] == "true" {
+			logger.Info("Physical Secret doesn't exist, but it's used by PV, skip creating it")
+			return ctrl.Result{}, nil
+		}
 		logger.Info("Physical Secret doesn't exist, creating it")
 		return r.createPhysicalSecret(ctx, virtualSecret, physicalName)
 	}
