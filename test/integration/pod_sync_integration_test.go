@@ -667,7 +667,9 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
+				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualConfigMap.Labels[expectedManagedByClusterIDLabel] == "true" &&
 					updatedVirtualConfigMap.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualConfigMap.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -679,7 +681,9 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
+				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualSecret.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualSecret.Labels[expectedManagedByClusterIDLabel] == "true" &&
 					updatedVirtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -691,7 +695,9 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
+				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualConfigMapInit.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualConfigMapInit.Labels[expectedManagedByClusterIDLabel] == "true" &&
 					updatedVirtualConfigMapInit.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualConfigMapInit.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -703,7 +709,9 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
+				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualSecretInit.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualSecretInit.Labels[expectedManagedByClusterIDLabel] == "true" &&
 					updatedVirtualSecretInit.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualSecretInit.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -715,7 +723,9 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
+				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualPV.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualPV.Labels[expectedManagedByClusterIDLabel] == "true" &&
 					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == ""
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -727,18 +737,21 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
+				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualPVC.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualPVC.Labels[expectedManagedByClusterIDLabel] == "true" &&
 					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
-			// Check finalizers
-			gomega.Expect(updatedVirtualConfigMap.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
-			gomega.Expect(updatedVirtualSecret.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
-			gomega.Expect(updatedVirtualConfigMapInit.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
-			gomega.Expect(updatedVirtualSecretInit.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
-			gomega.Expect(updatedVirtualPV.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
-			gomega.Expect(updatedVirtualPVC.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+			// Check finalizers - now using cluster-specific finalizers
+			expectedFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, clusterBindingName)
+			gomega.Expect(updatedVirtualConfigMap.Finalizers).To(gomega.ContainElement(expectedFinalizer))
+			gomega.Expect(updatedVirtualSecret.Finalizers).To(gomega.ContainElement(expectedFinalizer))
+			gomega.Expect(updatedVirtualConfigMapInit.Finalizers).To(gomega.ContainElement(expectedFinalizer))
+			gomega.Expect(updatedVirtualSecretInit.Finalizers).To(gomega.ContainElement(expectedFinalizer))
+			gomega.Expect(updatedVirtualPV.Finalizers).To(gomega.ContainElement(expectedFinalizer))
+			gomega.Expect(updatedVirtualPVC.Finalizers).To(gomega.ContainElement(expectedFinalizer))
 
 			ginkgo.By("Verifying physical resources are created with correct properties")
 			// Check physical ConfigMap
@@ -988,9 +1001,10 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
-				// Check if SyncedResourceFinalizer is removed
+				// Check if cluster-specific finalizer is removed
+				expectedFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, clusterBindingName)
 				for _, finalizer := range updatedVirtualPVC.Finalizers {
-					if finalizer == cloudv1beta1.SyncedResourceFinalizer {
+					if finalizer == expectedFinalizer {
 						return false
 					}
 				}
@@ -1003,9 +1017,10 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
-				// Check if SyncedResourceFinalizer is removed
+				// Check if cluster-specific finalizer is removed
+				expectedFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, clusterBindingName)
 				for _, finalizer := range updatedVirtualPV.Finalizers {
-					if finalizer == cloudv1beta1.SyncedResourceFinalizer {
+					if finalizer == expectedFinalizer {
 						return false
 					}
 				}
@@ -1141,7 +1156,10 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
+				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualCSISecret.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualCSISecret.Labels[expectedManagedByClusterIDLabel] == "true" &&
+					updatedVirtualCSISecret.Labels[cloudv1beta1.LabelUsedByPV] == "true" &&
 					updatedVirtualCSISecret.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualCSISecret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -1153,7 +1171,9 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
+				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualPV.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualPV.Labels[expectedManagedByClusterIDLabel] == "true" &&
 					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == ""
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -1165,15 +1185,18 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
+				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualPVC.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					updatedVirtualPVC.Labels[expectedManagedByClusterIDLabel] == "true" &&
 					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
-			// Check finalizers
-			gomega.Expect(updatedVirtualCSISecret.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
-			gomega.Expect(updatedVirtualPV.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
-			gomega.Expect(updatedVirtualPVC.Finalizers).To(gomega.ContainElement(cloudv1beta1.SyncedResourceFinalizer))
+			// Check finalizers - now using cluster-specific finalizers
+			expectedFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, clusterBindingName)
+			gomega.Expect(updatedVirtualCSISecret.Finalizers).To(gomega.ContainElement(expectedFinalizer))
+			gomega.Expect(updatedVirtualPV.Finalizers).To(gomega.ContainElement(expectedFinalizer))
+			gomega.Expect(updatedVirtualPVC.Finalizers).To(gomega.ContainElement(expectedFinalizer))
 
 			ginkgo.By("Verifying physical resources are created with correct properties")
 			// Check physical CSI Secret
@@ -1303,9 +1326,10 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
-				// Check if SyncedResourceFinalizer is removed
+				// Check if cluster-specific finalizer is removed
+				expectedFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, clusterBindingName)
 				for _, finalizer := range updatedVirtualPVC.Finalizers {
-					if finalizer == cloudv1beta1.SyncedResourceFinalizer {
+					if finalizer == expectedFinalizer {
 						return false
 					}
 				}
@@ -1318,9 +1342,10 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				if err != nil {
 					return false
 				}
-				// Check if SyncedResourceFinalizer is removed
+				// Check if cluster-specific finalizer is removed
+				expectedFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, clusterBindingName)
 				for _, finalizer := range updatedVirtualPV.Finalizers {
-					if finalizer == cloudv1beta1.SyncedResourceFinalizer {
+					if finalizer == expectedFinalizer {
 						return false
 					}
 				}
@@ -1330,11 +1355,17 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			ginkgo.By("Deleting virtual CSI Secret")
 			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualCSISecret)).To(gomega.Succeed())
 
-			// Physical CSI Secret has been successfully deleted as shown in the logs
-			// No need to verify deletion as it's already confirmed by the controller logs
+			ginkgo.By("Verifying physical CSI Secret deletion")
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalCSISecretName, Namespace: testNamespace}, physicalCSISecret)
+				return apierrors.IsNotFound(err) || (err == nil && physicalCSISecret.DeletionTimestamp != nil)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
-			// Virtual CSI Secret has been successfully deleted as shown in the logs
-			// No need to verify deletion as it's already confirmed by the controller logs
+			ginkgo.By("Verifying virtual CSI Secret finalizer is deleted")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-secret", Namespace: testNamespace}, updatedVirtualCSISecret)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 		})
 	})
 })

@@ -26,6 +26,7 @@ type VirtualPVCReconciler struct {
 	Scheme            *runtime.Scheme
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
+	clusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
@@ -49,6 +50,13 @@ func (r *VirtualPVCReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// 2. Check if PVC is managed by Tapestry
 	if virtualPVC.Labels == nil || virtualPVC.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
 		logger.V(1).Info("PVC not managed by Tapestry, skipping")
+		return ctrl.Result{}, nil
+	}
+
+	// 2.5. Check if PVC belongs to this cluster
+	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	if virtualPVC.Labels == nil || virtualPVC.Labels[managedByClusterIDLabel] != "true" {
+		logger.V(1).Info("PVC not managed by this cluster, skipping", "clusterID", r.clusterID)
 		return ctrl.Result{}, nil
 	}
 
@@ -151,6 +159,9 @@ func (r *VirtualPVCReconciler) checkPhysicalPVCExists(ctx context.Context, physi
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualPVCReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
+	// Cache cluster ID for performance
+	r.clusterID = r.ClusterBinding.Spec.ClusterID
+
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualpvc-%s", r.ClusterBinding.Name)
 
@@ -173,7 +184,9 @@ func (r *VirtualPVCReconciler) SetupWithManager(virtualManager, physicalManager 
 				return false
 			}
 
-			return true
+			// Only sync PVCs managed by this cluster
+			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+			return pvc.Labels[managedByClusterIDLabel] == "true"
 		})).
 		Complete(r)
 }
@@ -196,5 +209,5 @@ func (r *VirtualPVCReconciler) validatePhysicalPVC(virtualPVC *corev1.Persistent
 
 // removeSyncedResourceFinalizer removes the synced-resource finalizer from the virtual PVC
 func (r *VirtualPVCReconciler) removeSyncedResourceFinalizer(ctx context.Context, virtualPVC *corev1.PersistentVolumeClaim) (ctrl.Result, error) {
-	return ctrl.Result{}, RemoveSyncedResourceFinalizer(ctx, virtualPVC, r.VirtualClient, r.Log)
+	return ctrl.Result{}, RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualPVC, r.VirtualClient, r.Log, r.clusterID)
 }

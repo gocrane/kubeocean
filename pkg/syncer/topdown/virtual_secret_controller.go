@@ -27,6 +27,7 @@ type VirtualSecretReconciler struct {
 	Scheme            *runtime.Scheme
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
+	clusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -53,15 +54,27 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// 2.5. Check if secret belongs to this cluster
+	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	if virtualSecret.Labels == nil || virtualSecret.Labels[managedByClusterIDLabel] != "true" {
+		logger.V(1).Info("Secret not managed by this cluster, skipping", "clusterID", r.clusterID)
+		return ctrl.Result{}, nil
+	}
+
 	// 3. Get physical name from annotations
 	physicalName := virtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalName]
 	if physicalName == "" {
 		logger.V(1).Info("Secret has no physical name annotation, skipping")
 		return ctrl.Result{}, nil
 	}
+	physicalNamespace := virtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace]
+	if physicalNamespace == "" {
+		logger.V(1).Info("Secret has no physical namespace annotation, skipping")
+		return ctrl.Result{}, nil
+	}
 
 	// 4. Check if physical secret exists
-	physicalSecretExists, physicalSecret, err := r.checkPhysicalSecretExists(ctx, physicalName)
+	physicalSecretExists, physicalSecret, err := r.checkPhysicalSecretExists(ctx, physicalNamespace, physicalName)
 	if err != nil {
 		logger.Error(err, "Failed to check physical Secret existence")
 		return ctrl.Result{}, err
@@ -78,7 +91,7 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// 5. Check if virtual secret is being deleted
 	if virtualSecret.DeletionTimestamp != nil {
 		logger.Info("Virtual Secret is being deleted, handling deletion")
-		return r.handleVirtualSecretDeletion(ctx, virtualSecret, physicalName, physicalSecretExists, physicalSecret)
+		return r.handleVirtualSecretDeletion(ctx, virtualSecret, physicalNamespace, physicalName, physicalSecretExists, physicalSecret)
 	}
 
 	// 6. If physical secret doesn't exist, create it
@@ -97,7 +110,7 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // handleVirtualSecretDeletion handles deletion of virtual secret
-func (r *VirtualSecretReconciler) handleVirtualSecretDeletion(ctx context.Context, virtualSecret *corev1.Secret, physicalName string, physicalSecretExists bool, physicalSecret *corev1.Secret) (ctrl.Result, error) {
+func (r *VirtualSecretReconciler) handleVirtualSecretDeletion(ctx context.Context, virtualSecret *corev1.Secret, physicalNamespace string, physicalName string, physicalSecretExists bool, physicalSecret *corev1.Secret) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualSecret", fmt.Sprintf("%s/%s", virtualSecret.Namespace, virtualSecret.Name))
 
 	if !physicalSecretExists {
@@ -106,7 +119,6 @@ func (r *VirtualSecretReconciler) handleVirtualSecretDeletion(ctx context.Contex
 	}
 
 	// Delete physical secret with UID precondition
-	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
 	err := r.PhysicalClient.Delete(ctx, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      physicalName,
@@ -132,9 +144,7 @@ func (r *VirtualSecretReconciler) handleVirtualSecretDeletion(ctx context.Contex
 }
 
 // checkPhysicalSecretExists checks if physical secret exists using both cached and direct client
-func (r *VirtualSecretReconciler) checkPhysicalSecretExists(ctx context.Context, physicalName string) (bool, *corev1.Secret, error) {
-	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
-
+func (r *VirtualSecretReconciler) checkPhysicalSecretExists(ctx context.Context, physicalNamespace, physicalName string) (bool, *corev1.Secret, error) {
 	exists, obj, err := CheckPhysicalResourceExists(ctx, ResourceTypeSecret, physicalName, physicalNamespace, &corev1.Secret{},
 		r.PhysicalClient, r.PhysicalK8sClient, r.Log)
 
@@ -214,11 +224,14 @@ func (r *VirtualSecretReconciler) validatePhysicalSecret(virtualSecret *corev1.S
 
 // removeSyncedResourceFinalizer removes the synced-resource finalizer from the virtual secret
 func (r *VirtualSecretReconciler) removeSyncedResourceFinalizer(ctx context.Context, virtualSecret *corev1.Secret) (ctrl.Result, error) {
-	return ctrl.Result{}, RemoveSyncedResourceFinalizer(ctx, virtualSecret, r.VirtualClient, r.Log)
+	return ctrl.Result{}, RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualSecret, r.VirtualClient, r.Log, r.clusterID)
 }
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualSecretReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
+	// Cache cluster ID for performance
+	r.clusterID = r.ClusterBinding.Spec.ClusterID
+
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualsecret-%s", r.ClusterBinding.Name)
 
@@ -241,7 +254,9 @@ func (r *VirtualSecretReconciler) SetupWithManager(virtualManager, physicalManag
 				return false
 			}
 
-			return true
+			// Only sync secrets managed by this cluster
+			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+			return secret.Labels[managedByClusterIDLabel] == "true"
 		})).
 		Complete(r)
 }

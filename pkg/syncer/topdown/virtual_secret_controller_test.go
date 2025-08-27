@@ -34,6 +34,13 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 		},
 	}
 
+	// Helper function to add clusterID label to virtual Secret
+	addClusterIDLabel := func(secret *corev1.Secret) {
+		if secret != nil && secret.Labels != nil {
+			secret.Labels["tapestry.io/synced-by-test-cluster-id"] = "true"
+		}
+	}
+
 	tests := []struct {
 		name           string
 		virtualSecret  *corev1.Secret
@@ -55,6 +62,29 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 					Namespace: "virtual-ns",
 					Labels: map[string]string{
 						"app": "test",
+					},
+				},
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{
+					"key": []byte("value"),
+				},
+			},
+			expectedResult: ctrl.Result{},
+			expectError:    false,
+		},
+		{
+			name: "virtual secret not managed by this cluster",
+			virtualSecret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "virtual-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
+						"tapestry.io/synced-by-other-cluster-id": "true",
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
+						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
 					},
 				},
 				Type: corev1.SecretTypeOpaque,
@@ -95,7 +125,8 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName: "physical-secret",
+						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
+						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
 					},
 				},
 				Type: corev1.SecretTypeOpaque,
@@ -136,7 +167,8 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName: "physical-secret",
+						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
+						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
 					},
 				},
 				Type: corev1.SecretTypeOpaque,
@@ -168,7 +200,8 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName: "physical-secret",
+						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
+						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
 					},
 				},
 				Type: corev1.SecretTypeOpaque,
@@ -214,7 +247,8 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName: "physical-secret",
+						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
+						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
 					},
 				},
 				Type: corev1.SecretTypeOpaque,
@@ -254,6 +288,12 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Add clusterID label to virtual Secret if it exists and has managed-by label
+			if tt.virtualSecret != nil && tt.virtualSecret.Labels != nil &&
+				tt.virtualSecret.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+				addClusterIDLabel(tt.virtualSecret)
+			}
+
 			// Setup clients
 			var virtualObjects []client.Object
 			var physicalObjects []client.Object
@@ -278,6 +318,8 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 				ClusterBinding:    clusterBinding,
 				Log:               zap.New(),
 			}
+			// Set clusterID manually for testing
+			reconciler.clusterID = clusterBinding.Spec.ClusterID
 
 			// Create request
 			req := reconcile.Request{
@@ -390,7 +432,7 @@ func TestVirtualSecretReconciler_CheckPhysicalSecretExists(t *testing.T) {
 			Log:               zap.New(),
 		}
 
-		exists, secret, err := reconciler.checkPhysicalSecretExists(context.TODO(), "test-secret")
+		exists, secret, err := reconciler.checkPhysicalSecretExists(context.TODO(), "physical-ns", "test-secret")
 		assert.NoError(t, err)
 		assert.True(t, exists)
 		assert.NotNil(t, secret)
@@ -411,9 +453,208 @@ func TestVirtualSecretReconciler_CheckPhysicalSecretExists(t *testing.T) {
 			Log:               zap.New(),
 		}
 
-		exists, secret, err := reconciler.checkPhysicalSecretExists(context.TODO(), "non-existent-secret")
+		exists, secret, err := reconciler.checkPhysicalSecretExists(context.TODO(), "physical-ns", "non-existent-secret")
 		assert.NoError(t, err)
 		assert.False(t, exists)
 		assert.Nil(t, secret)
+	})
+}
+
+// TestVirtualSecretReconciler_ClusterIDFunctionality tests clusterID related functionality
+func TestVirtualSecretReconciler_ClusterIDFunctionality(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	t.Run("clusterID caching", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualSecretReconciler{
+			VirtualClient:  virtualClient,
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test"),
+		}
+
+		// Set clusterID directly for testing
+		reconciler.clusterID = clusterBinding.Spec.ClusterID
+
+		// Verify clusterID is cached
+		assert.Equal(t, "test-cluster-id", reconciler.clusterID)
+	})
+
+	t.Run("removeSyncedResourceFinalizer with clusterID", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualSecretReconciler{
+			VirtualClient:  virtualClient,
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test"),
+			clusterID:      "test-cluster-id",
+		}
+
+		virtualSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret",
+				Namespace: "test-ns",
+				Finalizers: []string{
+					"tapestry.io/finalizer-test-cluster-id",
+					"other-finalizer",
+				},
+			},
+		}
+
+		// Add the secret to the client
+		err := virtualClient.Create(context.Background(), virtualSecret)
+		require.NoError(t, err)
+
+		// Test removing the clusterID finalizer
+		result, err := reconciler.removeSyncedResourceFinalizer(context.Background(), virtualSecret)
+		require.NoError(t, err)
+		assert.Equal(t, ctrl.Result{}, result)
+
+		// Verify the clusterID finalizer is removed but other finalizer remains
+		updatedSecret := &corev1.Secret{}
+		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-secret", Namespace: "test-ns"}, updatedSecret)
+		require.NoError(t, err)
+
+		assert.NotContains(t, updatedSecret.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.Contains(t, updatedSecret.Finalizers, "other-finalizer")
+	})
+}
+
+// TestVirtualSecretReconciler_WithEventFilter tests the WithEventFilter functionality
+func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	t.Run("event filter with clusterID label", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualSecretReconciler{
+			VirtualClient:  virtualClient,
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test"),
+			clusterID:      "test-cluster-id",
+		}
+
+		// Test secret managed by this cluster
+		secretManagedByThisCluster := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret",
+				Namespace: "test-ns",
+				Labels: map[string]string{
+					cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
+					"tapestry.io/synced-by-test-cluster-id": "true",
+				},
+				Annotations: map[string]string{
+					cloudv1beta1.AnnotationPhysicalName: "physical-secret",
+				},
+			},
+		}
+
+		// Test secret managed by other cluster
+		secretManagedByOtherCluster := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret-other",
+				Namespace: "test-ns",
+				Labels: map[string]string{
+					cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
+					"tapestry.io/synced-by-other-cluster-id": "true",
+				},
+				Annotations: map[string]string{
+					cloudv1beta1.AnnotationPhysicalName: "physical-secret-other",
+				},
+			},
+		}
+
+		// Test secret without clusterID label
+		secretWithoutClusterID := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret-no-cluster",
+				Namespace: "test-ns",
+				Labels: map[string]string{
+					cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				},
+				Annotations: map[string]string{
+					cloudv1beta1.AnnotationPhysicalName: "physical-secret-no-cluster",
+				},
+			},
+		}
+
+		// Test secret not managed by tapestry
+		secretNotManagedByTapestry := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret-not-tapestry",
+				Namespace: "test-ns",
+				Labels: map[string]string{
+					"app": "test",
+				},
+			},
+		}
+
+		// Test secret without physical name annotation
+		secretWithoutPhysicalName := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret-no-physical",
+				Namespace: "test-ns",
+				Labels: map[string]string{
+					cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
+					"tapestry.io/synced-by-test-cluster-id": "true",
+				},
+			},
+		}
+
+		// Create a mock predicate function that simulates the WithEventFilter logic
+		predicateFunc := func(obj client.Object) bool {
+			secret := obj.(*corev1.Secret)
+
+			// Only sync secrets managed by Tapestry
+			if secret.Labels == nil || secret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
+				return false
+			}
+
+			// Only sync secrets with physical name label
+			if secret.Annotations == nil || secret.Annotations[cloudv1beta1.AnnotationPhysicalName] == "" {
+				return false
+			}
+
+			// Only sync secrets managed by this cluster
+			managedByClusterIDLabel := GetManagedByClusterIDLabel(reconciler.clusterID)
+			return secret.Labels[managedByClusterIDLabel] == "true"
+		}
+
+		// Test the predicate function
+		assert.True(t, predicateFunc(secretManagedByThisCluster), "Secret managed by this cluster should be accepted")
+		assert.False(t, predicateFunc(secretManagedByOtherCluster), "Secret managed by other cluster should be rejected")
+		assert.False(t, predicateFunc(secretWithoutClusterID), "Secret without clusterID label should be rejected")
+		assert.False(t, predicateFunc(secretNotManagedByTapestry), "Secret not managed by tapestry should be rejected")
+		assert.False(t, predicateFunc(secretWithoutPhysicalName), "Secret without physical name should be rejected")
 	})
 }

@@ -35,6 +35,7 @@ type VirtualPodReconciler struct {
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
 	workQueue         workqueue.TypedRateLimitingInterface[reconcile.Request]
+	clusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
@@ -592,6 +593,13 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 		return fmt.Errorf("cluster binding mount namespace is empty")
 	}
 
+	if r.ClusterBinding.Spec.ClusterID == "" {
+		return fmt.Errorf("cluster binding cluster ID is empty")
+	}
+
+	// Cache cluster ID for performance
+	r.clusterID = r.ClusterBinding.Spec.ClusterID
+
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualpod-%s", r.ClusterBinding.Name)
 
@@ -1039,7 +1047,7 @@ func (r *VirtualPodReconciler) syncResource(ctx context.Context, resourceType Re
 	}
 
 	// 4. Update virtual resource annotations if needed
-	if err := r.updateVirtualResourceLabelsAndAnnotations(ctx, virtualObj, physicalName, physicalNamespace); err != nil {
+	if err := r.updateVirtualResourceLabelsAndAnnotations(ctx, virtualObj, physicalName, physicalNamespace, syncResourceOpt); err != nil {
 		return "", err
 	}
 
@@ -1172,7 +1180,7 @@ func (r *VirtualPodReconciler) generatePhysicalResourceName(resourceName, resour
 }
 
 // updateVirtualResourceLabelsAndAnnotations updates virtual resource labels and annotations with physical name mapping
-func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx context.Context, obj client.Object, physicalName, physicalNamespace string) error {
+func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx context.Context, obj client.Object, physicalName, physicalNamespace string, syncResourceOpt *SyncResourceOpt) error {
 	// Create logger with appropriate resource path
 	resourcePath := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 	logger := r.Log.WithValues("resourceKind", obj.GetObjectKind().GroupVersionKind().Kind, "resource", resourcePath)
@@ -1205,6 +1213,14 @@ func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx con
 	}
 	updatedObj.GetLabels()[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
 
+	// Add cluster-specific managed-by label
+	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	updatedObj.GetLabels()[managedByClusterIDLabel] = "true"
+
+	if syncResourceOpt != nil && syncResourceOpt.IsPVRefSecret {
+		updatedObj.GetLabels()[cloudv1beta1.LabelUsedByPV] = "true"
+	}
+
 	// Update annotations
 	if updatedObj.GetAnnotations() == nil {
 		updatedObj.SetAnnotations(make(map[string]string))
@@ -1230,10 +1246,12 @@ func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx con
 
 // hasSyncedResourceFinalizer checks if the resource has our finalizer
 func (r *VirtualPodReconciler) hasSyncedResourceFinalizer(obj client.Object) bool {
-	return controllerutil.ContainsFinalizer(obj, cloudv1beta1.SyncedResourceFinalizer)
+	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.clusterID)
+	return controllerutil.ContainsFinalizer(obj, clusterSpecificFinalizer)
 }
 
 // addSyncedResourceFinalizer adds our finalizer to the resource
 func (r *VirtualPodReconciler) addSyncedResourceFinalizer(obj client.Object) {
-	controllerutil.AddFinalizer(obj, cloudv1beta1.SyncedResourceFinalizer)
+	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.clusterID)
+	controllerutil.AddFinalizer(obj, clusterSpecificFinalizer)
 }

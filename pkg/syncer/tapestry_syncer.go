@@ -229,7 +229,7 @@ func (ts *TapestrySyncer) readKubeconfigSecret(ctx context.Context) ([]byte, err
 		Namespace: secretRef.Namespace,
 	}
 
-	if err := ts.Get(ctx, key, &secret); err != nil {
+	if err := ts.Client.Get(ctx, key, &secret); err != nil {
 		return nil, fmt.Errorf("failed to get secret %s: %w", key, err)
 	}
 

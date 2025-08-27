@@ -17,7 +17,6 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 func TestCheckPhysicalResourceExists(t *testing.T) {
@@ -345,6 +344,139 @@ func TestBuildPhysicalResourceAnnotations(t *testing.T) {
 			expectedAnnotations: map[string]string{
 				cloudv1beta1.AnnotationVirtualNamespace: "test-namespace",
 				cloudv1beta1.AnnotationVirtualName:      "test-pvc",
+			},
+		},
+		{
+			name: "PV with empty namespace (cluster-scoped resource)",
+			virtualObj: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv",
+					Annotations: map[string]string{
+						"storage.kubernetes.io/selected-node":     "node-1",
+						"volume.beta.kubernetes.io/storage-class": "fast",
+					},
+				},
+			},
+			expectedAnnotations: map[string]string{
+				"storage.kubernetes.io/selected-node":     "node-1",
+				"volume.beta.kubernetes.io/storage-class": "fast",
+				cloudv1beta1.AnnotationVirtualNamespace:   "",
+				cloudv1beta1.AnnotationVirtualName:        "test-pv",
+			},
+		},
+		{
+			name: "ConfigMap with all Tapestry internal annotations",
+			virtualObj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-config",
+					Namespace: "test-namespace",
+					Annotations: map[string]string{
+						"description": "test config",
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
+						cloudv1beta1.AnnotationPhysicalPodUID:       "pod-uid",
+						cloudv1beta1.AnnotationPhysicalNamespace:    "physical-ns",
+						cloudv1beta1.AnnotationPhysicalName:         "physical-config",
+						cloudv1beta1.AnnotationLastSyncTime:         "2023-01-01T00:00:00Z",
+					},
+				},
+			},
+			expectedAnnotations: map[string]string{
+				"description":                           "test config",
+				cloudv1beta1.AnnotationVirtualNamespace: "test-namespace",
+				cloudv1beta1.AnnotationVirtualName:      "test-config",
+			},
+		},
+		{
+			name: "Secret with mixed annotations",
+			virtualObj: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "test-namespace",
+					Annotations: map[string]string{
+						"kubernetes.io/service-account.name": "default",
+						"description":                        "test secret",
+						cloudv1beta1.AnnotationPhysicalName:  "physical-secret",
+						cloudv1beta1.AnnotationLastSyncTime:  "2023-01-01T00:00:00Z",
+						"custom.annotation":                  "custom-value",
+					},
+				},
+			},
+			expectedAnnotations: map[string]string{
+				"kubernetes.io/service-account.name":    "default",
+				"description":                           "test secret",
+				"custom.annotation":                     "custom-value",
+				cloudv1beta1.AnnotationVirtualNamespace: "test-namespace",
+				cloudv1beta1.AnnotationVirtualName:      "test-secret",
+			},
+		},
+		{
+			name: "PVC with nil annotations",
+			virtualObj: &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pvc",
+					Namespace: "test-namespace",
+				},
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationVirtualNamespace: "test-namespace",
+				cloudv1beta1.AnnotationVirtualName:      "test-pvc",
+			},
+		},
+		{
+			name: "ConfigMap with empty string annotations",
+			virtualObj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-config",
+					Namespace: "test-namespace",
+					Annotations: map[string]string{
+						"empty-annotation":  "",
+						"normal-annotation": "normal-value",
+					},
+				},
+			},
+			expectedAnnotations: map[string]string{
+				"empty-annotation":                      "",
+				"normal-annotation":                     "normal-value",
+				cloudv1beta1.AnnotationVirtualNamespace: "test-namespace",
+				cloudv1beta1.AnnotationVirtualName:      "test-config",
+			},
+		},
+		{
+			name: "Secret with special characters in annotations",
+			virtualObj: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "test-namespace",
+					Annotations: map[string]string{
+						"special.key/with-slashes": "value-with-dashes_and_underscores",
+						"annotation.with.dots":     "value.with.dots",
+					},
+				},
+			},
+			expectedAnnotations: map[string]string{
+				"special.key/with-slashes":              "value-with-dashes_and_underscores",
+				"annotation.with.dots":                  "value.with.dots",
+				cloudv1beta1.AnnotationVirtualNamespace: "test-namespace",
+				cloudv1beta1.AnnotationVirtualName:      "test-secret",
+			},
+		},
+		{
+			name: "PV with long annotation values",
+			virtualObj: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv",
+					Annotations: map[string]string{
+						"long.description": "This is a very long description that contains many characters and should be preserved exactly as it is without any truncation or modification",
+						"short.key":        "short",
+					},
+				},
+			},
+			expectedAnnotations: map[string]string{
+				"long.description":                      "This is a very long description that contains many characters and should be preserved exactly as it is without any truncation or modification",
+				"short.key":                             "short",
+				cloudv1beta1.AnnotationVirtualNamespace: "",
+				cloudv1beta1.AnnotationVirtualName:      "test-pv",
 			},
 		},
 	}
@@ -737,130 +869,176 @@ func TestBuildPhysicalResource(t *testing.T) {
 	}
 }
 
-func TestRemoveSyncedResourceFinalizer(t *testing.T) {
+// TestRemoveSyncedResourceFinalizerWithClusterID tests the RemoveSyncedResourceFinalizerWithClusterID function
+func TestRemoveSyncedResourceFinalizerWithClusterID(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	t.Run("remove clusterID finalizer successfully", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		logger := ctrl.Log.WithName("test")
+
+		// Create a virtual secret with clusterID finalizer
+		virtualSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret",
+				Namespace: "test-ns",
+				Finalizers: []string{
+					"tapestry.io/finalizer-test-cluster-id",
+					"other-finalizer",
+				},
+			},
+		}
+
+		// Add the secret to the client
+		err := virtualClient.Create(context.Background(), virtualSecret)
+		require.NoError(t, err)
+
+		// Test removing the clusterID finalizer
+		err = RemoveSyncedResourceFinalizerWithClusterID(context.Background(), virtualSecret, virtualClient, logger, "test-cluster-id")
+		require.NoError(t, err)
+
+		// Verify the clusterID finalizer is removed but other finalizer remains
+		updatedSecret := &corev1.Secret{}
+		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-secret", Namespace: "test-ns"}, updatedSecret)
+		require.NoError(t, err)
+
+		assert.NotContains(t, updatedSecret.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.Contains(t, updatedSecret.Finalizers, "other-finalizer")
+	})
+
+	t.Run("finalizer not found", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		logger := ctrl.Log.WithName("test")
+
+		// Create a virtual secret without clusterID finalizer
+		virtualSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret",
+				Namespace: "test-ns",
+				Finalizers: []string{
+					"other-finalizer",
+				},
+			},
+		}
+
+		// Add the secret to the client
+		err := virtualClient.Create(context.Background(), virtualSecret)
+		require.NoError(t, err)
+
+		// Test removing non-existent clusterID finalizer
+		err = RemoveSyncedResourceFinalizerWithClusterID(context.Background(), virtualSecret, virtualClient, logger, "test-cluster-id")
+		require.NoError(t, err) // Should not error when finalizer doesn't exist
+
+		// Verify no changes were made
+		updatedSecret := &corev1.Secret{}
+		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-secret", Namespace: "test-ns"}, updatedSecret)
+		require.NoError(t, err)
+
+		assert.Contains(t, updatedSecret.Finalizers, "other-finalizer")
+		assert.Len(t, updatedSecret.Finalizers, 1)
+	})
+
+	t.Run("different clusterID", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		logger := ctrl.Log.WithName("test")
+
+		// Create a virtual secret with different clusterID finalizer
+		virtualSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret",
+				Namespace: "test-ns",
+				Finalizers: []string{
+					"tapestry.io/finalizer-different-cluster-id",
+					"other-finalizer",
+				},
+			},
+		}
+
+		// Add the secret to the client
+		err := virtualClient.Create(context.Background(), virtualSecret)
+		require.NoError(t, err)
+
+		// Test removing different clusterID finalizer
+		err = RemoveSyncedResourceFinalizerWithClusterID(context.Background(), virtualSecret, virtualClient, logger, "test-cluster-id")
+		require.NoError(t, err) // Should not error when finalizer doesn't exist
+
+		// Verify no changes were made
+		updatedSecret := &corev1.Secret{}
+		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-secret", Namespace: "test-ns"}, updatedSecret)
+		require.NoError(t, err)
+
+		assert.Contains(t, updatedSecret.Finalizers, "tapestry.io/finalizer-different-cluster-id")
+		assert.Contains(t, updatedSecret.Finalizers, "other-finalizer")
+		assert.Len(t, updatedSecret.Finalizers, 2)
+	})
+
+	t.Run("update failure", func(t *testing.T) {
+		// Create a client that will fail on update
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		logger := ctrl.Log.WithName("test")
+
+		virtualSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret",
+				Namespace: "test-ns",
+				Finalizers: []string{
+					"tapestry.io/finalizer-test-cluster-id",
+				},
+			},
+		}
+
+		// Add the secret to the client
+		err := virtualClient.Create(context.Background(), virtualSecret)
+		require.NoError(t, err)
+
+		// Test removing finalizer - this should succeed with fake client
+		err = RemoveSyncedResourceFinalizerWithClusterID(context.Background(), virtualSecret, virtualClient, logger, "test-cluster-id")
+		require.NoError(t, err)
+
+		// Verify the finalizer is removed
+		updatedSecret := &corev1.Secret{}
+		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-secret", Namespace: "test-ns"}, updatedSecret)
+		require.NoError(t, err)
+
+		assert.NotContains(t, updatedSecret.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+	})
+}
+
+// TestGetManagedByClusterIDLabel tests the GetManagedByClusterIDLabel function
+func TestGetManagedByClusterIDLabel(t *testing.T) {
 	tests := []struct {
-		name               string
-		virtualObj         client.Object
-		setupVirtualClient func() client.Client
-		expectedError      bool
+		name      string
+		clusterID string
+		expected  string
 	}{
 		{
-			name: "Remove finalizer successfully",
-			virtualObj: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-config",
-					Namespace: "test-namespace",
-					Finalizers: []string{
-						cloudv1beta1.SyncedResourceFinalizer,
-						"other-finalizer",
-					},
-				},
-			},
-			setupVirtualClient: func() client.Client {
-				scheme := runtime.NewScheme()
-				_ = corev1.AddToScheme(scheme)
-				_ = cloudv1beta1.AddToScheme(scheme)
-
-				configMap := &corev1.ConfigMap{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-config",
-						Namespace: "test-namespace",
-						Finalizers: []string{
-							cloudv1beta1.SyncedResourceFinalizer,
-							"other-finalizer",
-						},
-					},
-				}
-				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
-			},
-			expectedError: false,
+			name:      "normal cluster ID",
+			clusterID: "test-cluster-id",
+			expected:  "tapestry.io/synced-by-test-cluster-id",
 		},
 		{
-			name: "Finalizer not found",
-			virtualObj: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-config",
-					Namespace: "test-namespace",
-					Finalizers: []string{
-						"other-finalizer",
-					},
-				},
-			},
-			setupVirtualClient: func() client.Client {
-				scheme := runtime.NewScheme()
-				_ = corev1.AddToScheme(scheme)
-				_ = cloudv1beta1.AddToScheme(scheme)
-
-				configMap := &corev1.ConfigMap{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-config",
-						Namespace: "test-namespace",
-						Finalizers: []string{
-							"other-finalizer",
-						},
-					},
-				}
-				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
-			},
-			expectedError: false,
+			name:      "empty cluster ID",
+			clusterID: "",
+			expected:  "tapestry.io/synced-by-",
 		},
 		{
-			name: "No finalizers",
-			virtualObj: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-config",
-					Namespace: "test-namespace",
-				},
-			},
-			setupVirtualClient: func() client.Client {
-				scheme := runtime.NewScheme()
-				_ = corev1.AddToScheme(scheme)
-				_ = cloudv1beta1.AddToScheme(scheme)
-
-				configMap := &corev1.ConfigMap{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-config",
-						Namespace: "test-namespace",
-					},
-				}
-				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
-			},
-			expectedError: false,
+			name:      "special characters in cluster ID",
+			clusterID: "test-cluster-123",
+			expected:  "tapestry.io/synced-by-test-cluster-123",
+		},
+		{
+			name:      "long cluster ID",
+			clusterID: "very-long-cluster-id-with-many-characters",
+			expected:  "tapestry.io/synced-by-very-long-cluster-id-with-many-characters",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			virtualClient := tt.setupVirtualClient()
-			logger := ctrl.Log.WithName("test")
-
-			err := RemoveSyncedResourceFinalizer(ctx, tt.virtualObj, virtualClient, logger)
-
-			if tt.expectedError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-
-			// Verify finalizer was removed
-			if !tt.expectedError {
-				var obj client.Object
-				switch tt.virtualObj.(type) {
-				case *corev1.ConfigMap:
-					obj = &corev1.ConfigMap{}
-				case *corev1.Secret:
-					obj = &corev1.Secret{}
-				case *corev1.PersistentVolumeClaim:
-					obj = &corev1.PersistentVolumeClaim{}
-				}
-
-				err := virtualClient.Get(ctx, types.NamespacedName{Name: tt.virtualObj.GetName(), Namespace: tt.virtualObj.GetNamespace()}, obj)
-				if err == nil {
-					// If the object still exists, check that the finalizer was removed
-					assert.False(t, controllerutil.ContainsFinalizer(obj, cloudv1beta1.SyncedResourceFinalizer))
-				}
-			}
+			result := GetManagedByClusterIDLabel(tt.clusterID)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

@@ -43,4 +43,8 @@ const (
 
 	// PV-related labels
 	LabelUsedByPV = "tapestry.io/used-by-pv"
+
+	// Cluster-specific labels and finalizers
+	LabelManagedByClusterIDPrefix = "tapestry.io/synced-by-"
+	FinalizerClusterIDPrefix      = "tapestry.io/finalizer-"
 )

@@ -1524,11 +1524,11 @@ func (r *PhysicalNodeReconciler) handleVirtualNodeEvent(node *corev1.Node, event
 		return
 	}
 
-	log.Info("Virtual node event, triggering CSINode reconciliation",
+	log.Info("Virtual node event, triggering reconciliation",
 		"eventType", eventType, "physicalNode", physicalNodeName)
 
 	// Trigger reconciliation for the physical node
 	if err := r.TriggerReconciliation(physicalNodeName); err != nil {
-		log.Error(err, "Failed to trigger CSINode reconciliation")
+		log.Error(err, "Failed to trigger node reconciliation")
 	}
 }

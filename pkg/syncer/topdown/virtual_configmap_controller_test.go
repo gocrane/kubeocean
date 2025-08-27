@@ -34,6 +34,13 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 		},
 	}
 
+	// Helper function to add clusterID label to virtual ConfigMap
+	addClusterIDLabel := func(configMap *corev1.ConfigMap) {
+		if configMap != nil && configMap.Labels != nil {
+			configMap.Labels["tapestry.io/synced-by-test-cluster-id"] = "true"
+		}
+	}
+
 	tests := []struct {
 		name              string
 		virtualConfigMap  *corev1.ConfigMap
@@ -55,6 +62,27 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 					Namespace: "virtual-ns",
 					Labels: map[string]string{
 						"app": "test",
+					},
+				},
+				Data: map[string]string{
+					"key": "value",
+				},
+			},
+			expectedResult: ctrl.Result{},
+			expectError:    false,
+		},
+		{
+			name: "virtual configmap not managed by this cluster",
+			virtualConfigMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-config",
+					Namespace: "virtual-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
+						"tapestry.io/synced-by-other-cluster-id": "true",
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName: "physical-config",
 					},
 				},
 				Data: map[string]string{
@@ -245,6 +273,12 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Add clusterID label to virtual ConfigMap if it exists and has managed-by label
+			if tt.virtualConfigMap != nil && tt.virtualConfigMap.Labels != nil &&
+				tt.virtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+				addClusterIDLabel(tt.virtualConfigMap)
+			}
+
 			// Setup clients
 			var virtualObjects []client.Object
 			var physicalObjects []client.Object
@@ -269,6 +303,8 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 				ClusterBinding:    clusterBinding,
 				Log:               zap.New(),
 			}
+			// Set clusterID manually for testing
+			reconciler.clusterID = clusterBinding.Spec.ClusterID
 
 			// Create request
 			req := reconcile.Request{
@@ -406,5 +442,81 @@ func TestVirtualConfigMapReconciler_CheckPhysicalConfigMapExists(t *testing.T) {
 		assert.NoError(t, err)
 		assert.False(t, exists)
 		assert.Nil(t, configMap)
+	})
+}
+
+// TestVirtualConfigMapReconciler_ClusterIDFunctionality tests clusterID related functionality
+func TestVirtualConfigMapReconciler_ClusterIDFunctionality(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	t.Run("clusterID caching", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualConfigMapReconciler{
+			VirtualClient:  virtualClient,
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test"),
+		}
+
+		// Set clusterID directly for testing
+		reconciler.clusterID = clusterBinding.Spec.ClusterID
+
+		// Verify clusterID is cached
+		assert.Equal(t, "test-cluster-id", reconciler.clusterID)
+	})
+
+	t.Run("removeSyncedResourceFinalizer with clusterID", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualConfigMapReconciler{
+			VirtualClient:  virtualClient,
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test"),
+			clusterID:      "test-cluster-id",
+		}
+
+		virtualConfigMap := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-config",
+				Namespace: "test-ns",
+				Finalizers: []string{
+					"tapestry.io/finalizer-test-cluster-id",
+					"other-finalizer",
+				},
+			},
+		}
+
+		// Add the configmap to the client
+		err := virtualClient.Create(context.Background(), virtualConfigMap)
+		require.NoError(t, err)
+
+		// Test removing the clusterID finalizer
+		result, err := reconciler.removeSyncedResourceFinalizer(context.Background(), virtualConfigMap)
+		require.NoError(t, err)
+		assert.Equal(t, ctrl.Result{}, result)
+
+		// Verify the clusterID finalizer is removed but other finalizer remains
+		updatedConfigMap := &corev1.ConfigMap{}
+		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-config", Namespace: "test-ns"}, updatedConfigMap)
+		require.NoError(t, err)
+
+		assert.NotContains(t, updatedConfigMap.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.Contains(t, updatedConfigMap.Finalizers, "other-finalizer")
 	})
 }

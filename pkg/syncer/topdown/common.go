@@ -25,13 +25,14 @@ type SyncResourceOpt struct {
 
 // CheckPhysicalResourceExists checks if physical resource exists using both cached and direct client
 // This is a common function that can be used by different reconcilers
-func CheckPhysicalResourceExists(ctx context.Context, resourceType ResourceType, physicalName, physicalNamespace string, obj client.Object,
+func CheckPhysicalResourceExists(ctx context.Context, resourceType ResourceType, physicalName, physicalNamespace string, srcobj client.Object,
 	physicalClient client.Client, physicalK8sClient kubernetes.Interface, logger logr.Logger) (bool, client.Object, error) {
 
 	logger = logger.WithValues(fmt.Sprintf("physical%s", resourceType), physicalName)
 
 	resourceKey := types.NamespacedName{Namespace: physicalNamespace, Name: physicalName}
 
+	obj := srcobj.DeepCopyObject().(client.Object)
 	err := physicalClient.Get(ctx, resourceKey, obj)
 	if err == nil {
 		return true, obj, nil
@@ -91,6 +92,18 @@ func BuildPhysicalResourceLabels(virtualObj client.Object) map[string]string {
 	return labels
 }
 
+// BuildPhysicalResourceLabelsWithClusterID builds labels for physical resources with cluster-specific labels
+// This is a common function that can be used by different reconcilers
+func BuildPhysicalResourceLabelsWithClusterID(virtualObj client.Object, clusterID string) map[string]string {
+	labels := BuildPhysicalResourceLabels(virtualObj)
+
+	// Add cluster-specific managed-by label
+	managedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterID)
+	labels[managedByClusterIDLabel] = "true"
+
+	return labels
+}
+
 // BuildPhysicalResourceAnnotations builds annotations for physical resources
 // This is a common function that can be used by different reconcilers
 func BuildPhysicalResourceAnnotations(virtualObj client.Object) map[string]string {
@@ -101,6 +114,8 @@ func BuildPhysicalResourceAnnotations(virtualObj client.Object) map[string]strin
 		if k != cloudv1beta1.AnnotationPhysicalPodNamespace &&
 			k != cloudv1beta1.AnnotationPhysicalPodName &&
 			k != cloudv1beta1.AnnotationPhysicalPodUID &&
+			k != cloudv1beta1.AnnotationPhysicalNamespace &&
+			k != cloudv1beta1.AnnotationPhysicalName &&
 			k != cloudv1beta1.AnnotationLastSyncTime {
 			annotations[k] = v
 		}
@@ -247,27 +262,33 @@ func BuildPhysicalResource(resourceType ResourceType, virtualObj client.Object, 
 	}
 }
 
-// RemoveSyncedResourceFinalizer removes the synced-resource finalizer from a virtual resource
-// This is a common function that can be used by different reconcilers
-func RemoveSyncedResourceFinalizer(ctx context.Context, virtualObj client.Object, virtualClient client.Client, logger logr.Logger) error {
-	logger = logger.WithValues("resourceKind", virtualObj.GetObjectKind().GroupVersionKind().Kind, "resource", fmt.Sprintf("%s/%s", virtualObj.GetNamespace(), virtualObj.GetName()))
+// RemoveSyncedResourceFinalizerWithClusterID removes the cluster-specific synced resource finalizer from an object
+func RemoveSyncedResourceFinalizerWithClusterID(ctx context.Context, obj client.Object, virtualClient client.Client, logger logr.Logger, clusterID string) error {
+	logger = logger.WithValues("resourceKind", obj.GetObjectKind().GroupVersionKind().Kind, "resource", fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName()))
+
+	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, clusterID)
 
 	// Check if finalizer exists
-	if !controllerutil.ContainsFinalizer(virtualObj, cloudv1beta1.SyncedResourceFinalizer) {
-		logger.V(1).Info("Finalizer not found, nothing to remove")
+	if !controllerutil.ContainsFinalizer(obj, clusterSpecificFinalizer) {
+		logger.V(1).Info("Cluster-specific finalizer not found, nothing to remove", "clusterID", clusterID)
 		return nil
 	}
 
 	// Remove finalizer
-	updatedObj := virtualObj.DeepCopyObject().(client.Object)
-	controllerutil.RemoveFinalizer(updatedObj, cloudv1beta1.SyncedResourceFinalizer)
+	updatedObj := obj.DeepCopyObject().(client.Object)
+	controllerutil.RemoveFinalizer(updatedObj, clusterSpecificFinalizer)
 
 	// Update the resource
 	if err := virtualClient.Update(ctx, updatedObj); err != nil {
-		logger.Error(err, "Failed to remove finalizer from virtual resource")
+		logger.Error(err, "Failed to remove cluster-specific finalizer from virtual resource", "clusterID", clusterID)
 		return err
 	}
 
-	logger.Info("Successfully removed finalizer from virtual resource")
+	logger.Info("Successfully removed cluster-specific finalizer from virtual resource", "clusterID", clusterID)
 	return nil
+}
+
+// GetManagedByClusterIDLabel returns the cluster-specific managed-by label key
+func GetManagedByClusterIDLabel(clusterID string) string {
+	return fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterID)
 }

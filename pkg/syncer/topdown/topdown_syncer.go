@@ -82,6 +82,16 @@ func (tds *TopDownSyncer) setupControllers() error {
 		return fmt.Errorf("failed to create direct k8s client for physical cluster: %w", err)
 	}
 
+	if tds.ClusterBinding == nil {
+		return fmt.Errorf("cluster binding is nil")
+	}
+	if tds.ClusterBinding.Spec.ClusterID == "" {
+		return fmt.Errorf("cluster binding cluster ID is empty")
+	}
+	if tds.ClusterBinding.Spec.MountNamespace == "" {
+		return fmt.Errorf("cluster binding mount namespace is empty")
+	}
+
 	// Setup Virtual Pod Controller
 	tds.virtualPodController = &VirtualPodReconciler{
 		VirtualClient:     tds.virtualManager.GetClient(),
@@ -89,6 +99,7 @@ func (tds *TopDownSyncer) setupControllers() error {
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
+		clusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-pod-controller"),
 	}
 
@@ -103,6 +114,7 @@ func (tds *TopDownSyncer) setupControllers() error {
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
+		clusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-configmap-controller"),
 	}
 
@@ -117,6 +129,7 @@ func (tds *TopDownSyncer) setupControllers() error {
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
+		clusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-secret-controller"),
 	}
 
@@ -131,6 +144,7 @@ func (tds *TopDownSyncer) setupControllers() error {
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
+		clusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-pvc-controller"),
 	}
 
@@ -145,6 +159,7 @@ func (tds *TopDownSyncer) setupControllers() error {
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
+		clusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-pv-controller"),
 	}
 

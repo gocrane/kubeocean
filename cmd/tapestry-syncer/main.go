@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -70,7 +72,30 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	// Get clusterBinding to determine clusterID for label filtering
+	config := ctrl.GetConfigOrDie()
+	k8sClient, err := client.New(config, client.Options{Scheme: scheme})
+	if err != nil {
+		setupLog.Error(err, "unable to create client")
+		os.Exit(1)
+	}
+
+	// Get clusterBinding to determine clusterID
+	clusterBinding := &cloudv1beta1.ClusterBinding{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{Name: clusterBindingName}, clusterBinding)
+	if err != nil {
+		setupLog.Error(err, "unable to get clusterBinding", "name", clusterBindingName)
+		os.Exit(1)
+	}
+
+	clusterID := clusterBinding.Spec.ClusterID
+	if clusterID == "" {
+		setupLog.Error(fmt.Errorf("clusterID is empty"), "missing required parameter")
+		os.Exit(1)
+	}
+	//managedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterID)
+
+	mgr, err := ctrl.NewManager(config, ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
 			BindAddress: metricsAddr,
@@ -86,6 +111,31 @@ func main() {
 						cloudv1beta1.LabelClusterBinding: clusterBindingName,
 					}),
 				},
+				// TODO: Uncomment this when we have a way to get the kubeconfig from the secret
+				/*&corev1.Secret{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						managedByClusterIDLabel:     "true",
+					}),
+				},
+				&corev1.ConfigMap{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						managedByClusterIDLabel:     "true",
+					}),
+				},
+				&corev1.PersistentVolumeClaim{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						managedByClusterIDLabel:     "true",
+					}),
+				},
+				&corev1.PersistentVolume{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						managedByClusterIDLabel:     "true",
+					}),
+				},*/
 			},
 		},
 	})

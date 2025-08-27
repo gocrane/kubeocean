@@ -26,6 +26,7 @@ type VirtualPVReconciler struct {
 	Scheme            *runtime.Scheme
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
+	clusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=core,resources=persistentvolumes,verbs=get;list;watch;create;update;patch;delete
@@ -49,6 +50,13 @@ func (r *VirtualPVReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// 2. Check if PV is managed by Tapestry
 	if virtualPV.Labels == nil || virtualPV.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
 		logger.V(1).Info("PV not managed by Tapestry, skipping")
+		return ctrl.Result{}, nil
+	}
+
+	// 2.5. Check if PV belongs to this cluster
+	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	if virtualPV.Labels == nil || virtualPV.Labels[managedByClusterIDLabel] != "true" {
+		logger.V(1).Info("PV not managed by this cluster, skipping", "clusterID", r.clusterID)
 		return ctrl.Result{}, nil
 	}
 
@@ -147,6 +155,9 @@ func (r *VirtualPVReconciler) checkPhysicalPVExists(ctx context.Context, physica
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualPVReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
+	// Cache cluster ID for performance
+	r.clusterID = r.ClusterBinding.Spec.ClusterID
+
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualpv-%s", r.ClusterBinding.Name)
 
@@ -169,7 +180,9 @@ func (r *VirtualPVReconciler) SetupWithManager(virtualManager, physicalManager c
 				return false
 			}
 
-			return true
+			// Only sync PVs managed by this cluster
+			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+			return pv.Labels[managedByClusterIDLabel] == "true"
 		})).
 		Complete(r)
 }
@@ -192,5 +205,5 @@ func (r *VirtualPVReconciler) validatePhysicalPV(virtualPV *corev1.PersistentVol
 
 // removeSyncedResourceFinalizer removes the synced-resource finalizer from the virtual PV
 func (r *VirtualPVReconciler) removeSyncedResourceFinalizer(ctx context.Context, virtualPV *corev1.PersistentVolume) (ctrl.Result, error) {
-	return ctrl.Result{}, RemoveSyncedResourceFinalizer(ctx, virtualPV, r.VirtualClient, r.Log)
+	return ctrl.Result{}, RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualPV, r.VirtualClient, r.Log, r.clusterID)
 }

@@ -27,6 +27,7 @@ type VirtualConfigMapReconciler struct {
 	Scheme            *runtime.Scheme
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
+	clusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
@@ -50,6 +51,13 @@ func (r *VirtualConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// 2. Check if configmap is managed by Tapestry
 	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
 		logger.V(1).Info("ConfigMap not managed by Tapestry, skipping")
+		return ctrl.Result{}, nil
+	}
+
+	// 2.5. Check if configmap belongs to this cluster
+	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[managedByClusterIDLabel] != "true" {
+		logger.V(1).Info("ConfigMap not managed by this cluster, skipping", "clusterID", r.clusterID)
 		return ctrl.Result{}, nil
 	}
 
@@ -208,11 +216,14 @@ func (r *VirtualConfigMapReconciler) validatePhysicalConfigMap(virtualConfigMap 
 
 // removeSyncedResourceFinalizer removes the synced-resource finalizer from the virtual configmap
 func (r *VirtualConfigMapReconciler) removeSyncedResourceFinalizer(ctx context.Context, virtualConfigMap *corev1.ConfigMap) (ctrl.Result, error) {
-	return ctrl.Result{}, RemoveSyncedResourceFinalizer(ctx, virtualConfigMap, r.VirtualClient, r.Log)
+	return ctrl.Result{}, RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualConfigMap, r.VirtualClient, r.Log, r.clusterID)
 }
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualConfigMapReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
+	// Cache cluster ID for performance
+	r.clusterID = r.ClusterBinding.Spec.ClusterID
+
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualconfigmap-%s", r.ClusterBinding.Name)
 
@@ -235,7 +246,9 @@ func (r *VirtualConfigMapReconciler) SetupWithManager(virtualManager, physicalMa
 				return false
 			}
 
-			return true
+			// Only sync configmaps managed by this cluster
+			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+			return configMap.Labels[managedByClusterIDLabel] == "true"
 		})).
 		Complete(r)
 }

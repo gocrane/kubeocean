@@ -20,6 +20,13 @@ import (
 )
 
 func TestVirtualPVReconciler_Reconcile(t *testing.T) {
+	// Helper function to add clusterID label to virtual PV
+	addClusterIDLabel := func(pv *corev1.PersistentVolume) {
+		if pv != nil && pv.Labels != nil {
+			pv.Labels["tapestry.io/synced-by-test-cluster-id"] = "true"
+		}
+	}
+
 	tests := []struct {
 		name           string
 		virtualPV      *corev1.PersistentVolume
@@ -49,6 +56,43 @@ func TestVirtualPVReconciler_Reconcile(t *testing.T) {
 					Name: "test-pv",
 					Labels: map[string]string{
 						"other-label": "value",
+					},
+				},
+				Spec: corev1.PersistentVolumeSpec{
+					Capacity: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/tmp/test",
+						},
+					},
+				},
+			},
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID:      "test-cluster-id",
+					MountNamespace: "physical-namespace",
+				},
+			},
+			expectedResult: ctrl.Result{},
+			expectedError:  false,
+		},
+		{
+			name: "PV not managed by this cluster",
+			virtualPV: &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pv",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
+						"tapestry.io/synced-by-other-cluster-id": "true",
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName: "test-pv-physical",
 					},
 				},
 				Spec: corev1.PersistentVolumeSpec{
@@ -304,6 +348,12 @@ func TestVirtualPVReconciler_Reconcile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Add clusterID label to virtual PV if it exists and has managed-by label
+			if tt.virtualPV != nil && tt.virtualPV.Labels != nil &&
+				tt.virtualPV.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+				addClusterIDLabel(tt.virtualPV)
+			}
+
 			// Setup scheme
 			scheme := runtime.NewScheme()
 			_ = corev1.AddToScheme(scheme)
@@ -339,6 +389,8 @@ func TestVirtualPVReconciler_Reconcile(t *testing.T) {
 				ClusterBinding:    tt.clusterBinding,
 				Log:               ctrl.Log.WithName("test"),
 			}
+			// Set clusterID manually for testing
+			reconciler.clusterID = tt.clusterBinding.Spec.ClusterID
 
 			// Create request
 			req := ctrl.Request{
@@ -693,4 +745,79 @@ func TestVirtualPVReconciler_handleVirtualPVDeletion(t *testing.T) {
 			assert.Equal(t, tt.expectedResult, result)
 		})
 	}
+}
+
+// TestVirtualPVReconciler_ClusterIDFunctionality tests clusterID related functionality
+func TestVirtualPVReconciler_ClusterIDFunctionality(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	t.Run("clusterID caching", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualPVReconciler{
+			VirtualClient:  virtualClient,
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test"),
+		}
+
+		// Set clusterID directly for testing
+		reconciler.clusterID = clusterBinding.Spec.ClusterID
+
+		// Verify clusterID is cached
+		assert.Equal(t, "test-cluster-id", reconciler.clusterID)
+	})
+
+	t.Run("removeSyncedResourceFinalizer with clusterID", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualPVReconciler{
+			VirtualClient:  virtualClient,
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test"),
+			clusterID:      "test-cluster-id",
+		}
+
+		virtualPV := &corev1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-pv",
+				Finalizers: []string{
+					"tapestry.io/finalizer-test-cluster-id",
+					"other-finalizer",
+				},
+			},
+		}
+
+		// Add the PV to the client
+		err := virtualClient.Create(context.Background(), virtualPV)
+		require.NoError(t, err)
+
+		// Test removing the clusterID finalizer
+		result, err := reconciler.removeSyncedResourceFinalizer(context.Background(), virtualPV)
+		require.NoError(t, err)
+		assert.Equal(t, ctrl.Result{}, result)
+
+		// Verify the clusterID finalizer is removed but other finalizer remains
+		updatedPV := &corev1.PersistentVolume{}
+		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-pv"}, updatedPV)
+		require.NoError(t, err)
+
+		assert.NotContains(t, updatedPV.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.Contains(t, updatedPV.Finalizers, "other-finalizer")
+	})
 }

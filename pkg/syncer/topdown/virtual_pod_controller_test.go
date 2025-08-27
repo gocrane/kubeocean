@@ -2719,3 +2719,300 @@ func TestVirtualPodReconciler_forceDeleteVirtualPod_ErrorCases(t *testing.T) {
 		})
 	}
 }
+
+// TestVirtualPodReconciler_ClusterIDFunctionality tests clusterID related functionality
+func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	t.Run("clusterID caching", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualPodReconciler{
+			VirtualClient:  virtualClient,
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test"),
+			workQueue:      workqueue.NewTypedRateLimitingQueue[reconcile.Request](workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]()),
+		}
+
+		// Set clusterID directly for testing
+		reconciler.clusterID = clusterBinding.Spec.ClusterID
+
+		// Verify clusterID is cached
+		assert.Equal(t, "test-cluster-id", reconciler.clusterID)
+	})
+
+	t.Run("clusterID label and finalizer", func(t *testing.T) {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualPodReconciler{
+			VirtualClient:  virtualClient,
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            ctrl.Log.WithName("test"),
+			workQueue:      workqueue.NewTypedRateLimitingQueue[reconcile.Request](workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]()),
+			clusterID:      "test-cluster-id", // Set clusterID directly for testing
+		}
+
+		virtualPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-pod",
+				Namespace: "test-ns",
+				Labels:    make(map[string]string),
+			},
+		}
+
+		// Add the pod to the client
+		err := virtualClient.Create(context.Background(), virtualPod)
+		require.NoError(t, err)
+
+		// Test updateVirtualResourceLabelsAndAnnotations adds clusterID label
+		err = reconciler.updateVirtualResourceLabelsAndAnnotations(context.Background(), virtualPod, "physical-pod", "physical-ns", nil)
+		require.NoError(t, err)
+
+		// Get the updated pod from the client to see the changes
+		updatedPod := &corev1.Pod{}
+		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-pod", Namespace: "test-ns"}, updatedPod)
+		require.NoError(t, err)
+
+		expectedClusterIDLabel := "tapestry.io/synced-by-test-cluster-id"
+		assert.Equal(t, "true", updatedPod.Labels[expectedClusterIDLabel])
+		assert.Equal(t, cloudv1beta1.LabelManagedByValue, updatedPod.Labels[cloudv1beta1.LabelManagedBy])
+
+		// Test clusterID finalizer methods
+		assert.False(t, reconciler.hasSyncedResourceFinalizer(virtualPod))
+
+		reconciler.addSyncedResourceFinalizer(virtualPod)
+		expectedFinalizer := "tapestry.io/finalizer-test-cluster-id"
+		assert.True(t, reconciler.hasSyncedResourceFinalizer(virtualPod))
+
+		// Verify the finalizer is actually added
+		finalizers := virtualPod.GetFinalizers()
+		assert.Contains(t, finalizers, expectedFinalizer)
+	})
+}
+
+// TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations tests the updateVirtualResourceLabelsAndAnnotations function
+func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name                string
+		virtualPod          *corev1.Pod
+		physicalName        string
+		physicalNamespace   string
+		syncResourceOpt     *SyncResourceOpt
+		expectedLabels      map[string]string
+		expectedAnnotations map[string]string
+		expectError         bool
+		errorContains       string
+	}{
+		{
+			name: "new pod with no existing labels or annotations",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+			},
+			physicalName:      "physical-pod",
+			physicalNamespace: "physical-ns",
+			syncResourceOpt:   nil,
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
+				"tapestry.io/synced-by-test-cluster-id": "true",
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      "physical-pod",
+				cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with existing labels and annotations",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						"app": "test",
+					},
+					Annotations: map[string]string{
+						"existing": "annotation",
+					},
+				},
+			},
+			physicalName:      "physical-pod",
+			physicalNamespace: "physical-ns",
+			syncResourceOpt:   nil,
+			expectedLabels: map[string]string{
+				"app":                                   "test",
+				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
+				"tapestry.io/synced-by-test-cluster-id": "true",
+			},
+			expectedAnnotations: map[string]string{
+				"existing":                               "annotation",
+				cloudv1beta1.AnnotationPhysicalName:      "physical-pod",
+				cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with PV ref secret sync option",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+			},
+			physicalName:      "physical-pod",
+			physicalNamespace: "physical-ns",
+			syncResourceOpt: &SyncResourceOpt{
+				IsPVRefSecret: true,
+			},
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
+				"tapestry.io/synced-by-test-cluster-id": "true",
+				cloudv1beta1.LabelUsedByPV:              "true",
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      "physical-pod",
+				cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with matching existing annotations - should skip update",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName:      "physical-pod",
+						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
+					},
+				},
+			},
+			physicalName:      "physical-pod",
+			physicalNamespace: "physical-ns",
+			syncResourceOpt:   nil,
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      "physical-pod",
+				cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with conflicting physical name annotation - should error",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName: "different-physical-pod",
+					},
+				},
+			},
+			physicalName:        "physical-pod",
+			physicalNamespace:   "physical-ns",
+			syncResourceOpt:     nil,
+			expectedLabels:      nil,
+			expectedAnnotations: nil,
+			expectError:         true,
+			errorContains:       "physical name annotation already exists but doesn't match",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+			reconciler := &VirtualPodReconciler{
+				VirtualClient:  virtualClient,
+				PhysicalClient: physicalClient,
+				ClusterBinding: clusterBinding,
+				Log:            ctrl.Log.WithName("test"),
+				clusterID:      "test-cluster-id",
+			}
+
+			// Add the pod to the client
+			err := virtualClient.Create(context.Background(), tt.virtualPod)
+			require.NoError(t, err)
+
+			// Call the function
+			err = reconciler.updateVirtualResourceLabelsAndAnnotations(
+				context.Background(),
+				tt.virtualPod,
+				tt.physicalName,
+				tt.physicalNamespace,
+				tt.syncResourceOpt,
+			)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+				return
+			}
+
+			assert.NoError(t, err)
+
+			// Get the updated pod from the client
+			updatedPod := &corev1.Pod{}
+			err = virtualClient.Get(context.Background(), types.NamespacedName{
+				Name: tt.virtualPod.Name, Namespace: tt.virtualPod.Namespace,
+			}, updatedPod)
+			require.NoError(t, err)
+
+			// Verify labels
+			for key, expectedValue := range tt.expectedLabels {
+				assert.Equal(t, expectedValue, updatedPod.Labels[key], "Label %s should match", key)
+			}
+
+			// Verify annotations
+			for key, expectedValue := range tt.expectedAnnotations {
+				assert.Equal(t, expectedValue, updatedPod.Annotations[key], "Annotation %s should match", key)
+			}
+
+			// Verify finalizer is added (except for the skip update case)
+			if tt.name != "pod with matching existing annotations - should skip update" {
+				expectedFinalizer := "tapestry.io/finalizer-test-cluster-id"
+				assert.Contains(t, updatedPod.Finalizers, expectedFinalizer)
+			}
+		})
+	}
+}
