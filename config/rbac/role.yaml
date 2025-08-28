@@ -68,7 +68,6 @@ rules:
   - cloud.tencent.com
   resources:
   - clusterbindings/finalizers
-  - resourceleasingpolicies/finalizers
   verbs:
   - update
 - apiGroups:

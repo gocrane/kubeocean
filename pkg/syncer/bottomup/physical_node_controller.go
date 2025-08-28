@@ -1473,7 +1473,7 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 					if pod == nil || pod.Spec.NodeName == "" {
 						return
 					}
-					r.Log.Info("pod created", "namespace", pod.Namespace, "name", pod.Name, "node", pod.Spec.NodeName)
+					r.Log.V(1).Info("pod created", "namespace", pod.Namespace, "name", pod.Name, "node", pod.Spec.NodeName)
 					q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: pod.Spec.NodeName}})
 				},
 				UpdateFunc: func(ctx context.Context, event event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
@@ -1483,7 +1483,7 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 						return
 					}
 					if opod.Spec.NodeName != npod.Spec.NodeName {
-						r.Log.Info("pod updated", "namespace", npod.Namespace, "name", npod.Name, "node", npod.Spec.NodeName)
+						r.Log.V(1).Info("pod updated", "namespace", npod.Namespace, "name", npod.Name, "node", npod.Spec.NodeName)
 						q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: npod.Spec.NodeName}})
 					}
 				},
@@ -1492,7 +1492,7 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 					if pod == nil || pod.Spec.NodeName == "" {
 						return
 					}
-					r.Log.Info("pod deleted", "namespace", pod.Namespace, "name", pod.Name, "node", pod.Spec.NodeName)
+					r.Log.V(1).Info("pod deleted", "namespace", pod.Namespace, "name", pod.Name, "node", pod.Spec.NodeName)
 					q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: pod.Spec.NodeName}})
 				}},
 		).

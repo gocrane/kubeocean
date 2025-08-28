@@ -54,7 +54,7 @@ func main() {
 		"The name of the ClusterBinding resource this syncer is responsible for.")
 
 	opts := zap.Options{
-		Development:     true,
+		Development:     false,
 		StacktraceLevel: zapcore.DPanicLevel,
 	}
 	opts.BindFlags(flag.CommandLine)
