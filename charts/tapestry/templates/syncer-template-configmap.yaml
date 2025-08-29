@@ -1,0 +1,136 @@
+{{- if .Values.manager.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tapestry.syncerTemplate.configMapName" . }}
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "tapestry.labels" . | nindent 4 }}
+    app.kubernetes.io/name: tapestry-syncer-template
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: tapestry
+data:
+  serviceAccountName: "{{ include "tapestry.syncer.serviceAccountName" . }}"
+  clusterRoleName: "{{ include "tapestry.syncer.clusterRoleName" . }}"
+  clusterRoleBindingName: "{{ include "tapestry.syncer.clusterRoleBindingName" . }}"
+  syncerNamespace: "{{ .Values.namespace.name }}"
+  
+  deployment.yaml: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: "{{ "{{" }}.DeploymentName{{ "}}" }}"
+      namespace: "{{ "{{" }}.SyncerNamespace{{ "}}" }}"
+      labels:
+        app.kubernetes.io/name: tapestry-syncer
+        app.kubernetes.io/instance: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+        app.kubernetes.io/component: syncer
+        app.kubernetes.io/part-of: tapestry
+        app.kubernetes.io/managed-by: tapestry-manager
+        tapestry.io/cluster-binding: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+    spec:
+      replicas: {{ .Values.syncer.replicas }}
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: tapestry-syncer
+          app.kubernetes.io/instance: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+          app.kubernetes.io/component: syncer
+          k8s-app: "{{ "{{" }}.DeploymentName{{ "}}" }}"
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: tapestry-syncer
+            app.kubernetes.io/instance: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+            app.kubernetes.io/component: syncer
+            app.kubernetes.io/part-of: tapestry
+            app.kubernetes.io/managed-by: tapestry-manager
+            tapestry.io/cluster-binding: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+            k8s-app: "{{ "{{" }}.DeploymentName{{ "}}" }}"
+        spec:
+          serviceAccountName: "{{ "{{" }}.ServiceAccountName{{ "}}" }}"
+          {{- if .Values.global.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml .Values.global.imagePullSecrets | nindent 12 }}
+          {{- end }}
+          {{- if .Values.global.affinity }}
+          affinity:
+            {{- toYaml .Values.global.affinity | nindent 12 }}
+          {{- end }}
+          {{- if .Values.global.nodeSelector }}
+          nodeSelector:
+            {{- toYaml .Values.global.nodeSelector | nindent 12 }}
+          {{- end }}
+          {{- if .Values.global.tolerations }}
+          tolerations:
+            {{- toYaml .Values.global.tolerations | nindent 12 }}
+          {{- end }}
+          {{- if .Values.syncer.podSecurityContext }}
+          securityContext:
+            {{- toYaml .Values.syncer.podSecurityContext | nindent 12 }}
+          {{- end }}
+          containers:
+          - name: syncer
+            image: "{{ include "tapestry.syncer.image" . }}"
+            imagePullPolicy: {{ .Values.syncer.image.pullPolicy }}
+            args:
+            {{- if .Values.syncer.leaderElection.enabled }}
+            - --leader-elect=true
+            - --leader-election-id={{ "{{" }}.DeploymentName{{ "}}" }}
+            {{- end }}
+            {{- if .Values.syncer.metrics.enabled }}
+            - --metrics-bind-address=:{{ .Values.syncer.metrics.port }}
+            {{- end }}
+            {{- if .Values.syncer.healthProbe.enabled }}
+            - --health-probe-bind-address=:{{ .Values.syncer.healthProbe.port }}
+            {{- end }}
+            - --cluster-binding-name={{ "{{" }}.ClusterBindingName{{ "}}" }}
+            {{- if .Values.logging.level }}
+            - --zap-log-level={{ .Values.logging.level }}
+            {{- end }}
+            {{- if .Values.logging.format }}
+            - --zap-encoder={{ .Values.logging.format }}
+            {{- end }}
+            env:
+            - name: CLUSTER_BINDING_NAME
+              value: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+            ports:
+            {{- if .Values.syncer.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.syncer.metrics.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.syncer.healthProbe.enabled }}
+            - name: health
+              containerPort: {{ .Values.syncer.healthProbe.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.syncer.healthProbe.enabled }}
+            livenessProbe:
+              httpGet:
+                path: /healthz
+                port: {{ .Values.syncer.healthProbe.port }}
+              initialDelaySeconds: {{ .Values.syncer.healthProbe.livenessProbe.initialDelaySeconds }}
+              periodSeconds: {{ .Values.syncer.healthProbe.livenessProbe.periodSeconds }}
+            readinessProbe:
+              httpGet:
+                path: /readyz
+                port: {{ .Values.syncer.healthProbe.port }}
+              initialDelaySeconds: {{ .Values.syncer.healthProbe.readinessProbe.initialDelaySeconds }}
+              periodSeconds: {{ .Values.syncer.healthProbe.readinessProbe.periodSeconds }}
+            {{- end }}
+            resources:
+              {{- toYaml .Values.syncer.resources | nindent 14 }}
+            {{- if .Values.syncer.containerSecurityContext }}
+            securityContext:
+              {{- toYaml .Values.syncer.containerSecurityContext | nindent 14 }}
+            {{- end }}
+            {{- if .Values.syncer.volumeMounts }}
+            volumeMounts:
+              {{- toYaml .Values.syncer.volumeMounts | nindent 14 }}
+            {{- end }}
+          terminationGracePeriodSeconds: 10
+          {{- if .Values.syncer.volumes }}
+          volumes:
+            {{- toYaml .Values.syncer.volumes | nindent 12 }}
+          {{- end }}
+{{- end }}

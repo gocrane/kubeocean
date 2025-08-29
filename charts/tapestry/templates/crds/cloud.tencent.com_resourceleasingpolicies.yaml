@@ -4,29 +4,36 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: clusterbindings.cloud.tencent.com
+  name: resourceleasingpolicies.cloud.tencent.com
 spec:
   group: cloud.tencent.com
   names:
-    kind: ClusterBinding
-    listKind: ClusterBindingList
-    plural: clusterbindings
+    kind: ResourceLeasingPolicy
+    listKind: ResourceLeasingPolicyList
+    plural: resourceleasingpolicies
     shortNames:
-    - cb
-    singular: clusterbinding
+    - rlp
+    singular: resourceleasingpolicy
   scope: Cluster
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.cluster
+      name: Cluster
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.activeTimeWindow
+      name: Active
+      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
     name: v1beta1
     schema:
       openAPIV3Schema:
-        description: ClusterBinding is the Schema for the clusterbindings API
+        description: ResourceLeasingPolicy is the Schema for the resourceleasingpolicies
+          API
         properties:
           apiVersion:
             description: |-
@@ -46,22 +53,23 @@ spec:
           metadata:
             type: object
           spec:
-            description: ClusterBindingSpec defines the desired state of ClusterBinding
+            description: ResourceLeasingPolicySpec defines the desired state of ResourceLeasingPolicy
             properties:
-              clusterID:
-                description: |-
-                  ClusterID is a unique identifier for the cluster that will be used as part of virtual node names
-                  This field is required and immutable after creation
-                maxLength: 12
-                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+              cluster:
+                description: Cluster references the ClusterBinding this policy applies
+                  to
                 type: string
-              mountNamespace:
-                description: MountNamespace specifies the namespace to mount cluster
-                  resources
-                type: string
+              forceReclaim:
+                description: Kill compute pod force when time window is not active.
+                type: boolean
+              gracefulReclaimPeriodSeconds:
+                description: GracefulReclaimPeriodSeconds is the graceful period of
+                  reclaiming resources.
+                format: int32
+                type: integer
               nodeSelector:
-                description: NodeSelector specifies which nodes to monitor in the
-                  target cluster
+                description: NodeSelector specifies which nodes this policy applies
+                  to
                 properties:
                   nodeSelectorTerms:
                     description: Required. A list of node selector terms. The terms
@@ -148,36 +156,67 @@ spec:
                 - nodeSelectorTerms
                 type: object
                 x-kubernetes-map-type: atomic
-              secretRef:
-                description: SecretRef references the secret containing kubeconfig
-                  for the target cluster
-                properties:
-                  name:
-                    description: name is unique within a namespace to reference a
-                      secret resource.
-                    type: string
-                  namespace:
-                    description: namespace defines the space within which the secret
-                      name must be unique.
-                    type: string
-                type: object
-                x-kubernetes-map-type: atomic
-              serviceNamespaces:
-                description: ServiceNamespaces specifies the namespaces to sync services
-                  from
+              resourceLimits:
+                description: ResourceLimits specifies the maximum resources that can
+                  be leased
                 items:
-                  type: string
+                  description: ResourceLimit defines limits for specific resource
+                    types
+                  properties:
+                    percent:
+                      description: Percent is the percentage of the resource to borrow.
+                      format: int32
+                      type: integer
+                    quantity:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      description: Quantity of the resource
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    resource:
+                      description: Resource name (e.g., cpu, memory, storage)
+                      type: string
+                  required:
+                  - resource
+                  type: object
+                type: array
+              timeWindows:
+                description: TimeWindows specifies when resources can be leased
+                items:
+                  description: TimeWindow defines a time period when resources can
+                    be leased
+                  properties:
+                    days:
+                      description: Days of the week when this window applies
+                      items:
+                        type: string
+                      type: array
+                    end:
+                      description: End time in HH:MM format
+                      type: string
+                    start:
+                      description: Start time in HH:MM format
+                      type: string
+                  required:
+                  - end
+                  - start
+                  type: object
                 type: array
             required:
-            - clusterID
-            - secretRef
+            - cluster
             type: object
           status:
-            description: ClusterBindingStatus defines the observed state of ClusterBinding
+            description: ResourceLeasingPolicyStatus defines the observed state of
+              ResourceLeasingPolicy
             properties:
+              activeTimeWindow:
+                description: ActiveTimeWindow indicates if the policy is currently
+                  in an active time window
+                type: boolean
               conditions:
                 description: Conditions represent the latest available observations
-                  of the cluster binding's current state
+                  of the policy's current state
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -233,13 +272,13 @@ spec:
                   - type
                   type: object
                 type: array
-              lastSyncTime:
-                description: LastSyncTime represents the last time the cluster was
-                  successfully synced
+              lastAppliedTime:
+                description: LastAppliedTime represents the last time the policy was
+                  successfully applied
                 format: date-time
                 type: string
               phase:
-                description: Phase represents the current phase of the cluster binding
+                description: Phase represents the current phase of the policy
                 type: string
             type: object
         type: object

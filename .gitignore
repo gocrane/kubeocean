@@ -74,6 +74,7 @@ coverage.html
 *.tar
 *.tar.gz
 *.zip
+*.tgz
 
 # Python cache (if any Python scripts)
 __pycache__/

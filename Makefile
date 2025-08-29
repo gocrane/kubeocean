@@ -107,16 +107,16 @@ run-syncer: manifests generate fmt vet ## Run tapestry-syncer from your host.
 # More info: https://docs.docker.com/develop/dev-best-practices/
 .PHONY: docker-build
 docker-build: ## Build docker images for manager and syncer.
-	docker build -t ${IMG_MANAGER} -f Dockerfile.manager .
-	docker build -t ${IMG_SYNCER} -f Dockerfile.syncer .
+	docker build -t ${IMG_MANAGER} -f hack/build/Dockerfile.manager .
+	docker build -t ${IMG_SYNCER} -f hack/build/Dockerfile.syncer .
 
 .PHONY: docker-build.manager
 docker-build.manager: ## Build docker image for manager only.
-	docker build -t ${IMG_MANAGER} -f Dockerfile.manager .
+	docker build -t ${IMG_MANAGER} -f hack/build/Dockerfile.manager .
 
 .PHONY: docker-build.syncer
 docker-build.syncer: ## Build docker image for syncer only.
-	docker build -t ${IMG_SYNCER} -f Dockerfile.syncer .
+	docker build -t ${IMG_SYNCER} -f hack/build/Dockerfile.syncer .
 
 .PHONY: docker-push
 docker-push: docker-build ## Push docker images for manager and syncer.
@@ -141,8 +141,8 @@ PLATFORMS ?= linux/arm64,linux/amd64
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker images for the manager and syncer for cross-platform support.
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile.manager > Dockerfile.cross.manager
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile.syncer > Dockerfile.cross.syncer
+	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' hack/build/Dockerfile.manager > Dockerfile.cross.manager
+	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' hack/build/Dockerfile.syncer > Dockerfile.cross.syncer
 	- docker buildx create --name project-v3-builder
 	docker buildx use project-v3-builder
 	- docker buildx build --push --platform=$(PLATFORMS) --tag ${IMG_MANAGER} -f Dockerfile.cross.manager .
