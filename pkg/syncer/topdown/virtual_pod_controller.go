@@ -709,6 +709,7 @@ func isSystemPod(pod *corev1.Pod) bool {
 		"kube-system",
 		"kube-public",
 		"kube-node-lease",
+		"tapestry-system",
 	}
 
 	for _, ns := range systemNamespaces {

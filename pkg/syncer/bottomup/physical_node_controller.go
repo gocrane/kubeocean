@@ -278,6 +278,10 @@ func (r *PhysicalNodeReconciler) checkPodsOnVirtualNode(ctx context.Context, vir
 
 	// Check for pods in Pending or Running state
 	for _, pod := range podList.Items {
+		if pod.Namespace == "tapestry-system" || pod.Namespace == "kube-system" {
+			logger.V(1).Info("skip system pod on virtual node", "pod", pod.Name, "namespace", pod.Namespace, "phase", pod.Status.Phase)
+			continue
+		}
 		if pod.Spec.NodeName == virtualNodeName && (pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning) {
 			logger.Info("Found active pod on virtual node", "pod", pod.Name, "namespace", pod.Namespace, "phase", pod.Status.Phase)
 			return true, nil
@@ -497,6 +501,10 @@ func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context,
 		pod := &podList.Items[idx]
 		// Skip pods that are not running or are in terminal states
 		if pod.Status.Phase != corev1.PodRunning && pod.Status.Phase != corev1.PodPending {
+			continue
+		}
+		if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+			r.Log.V(1).Info("Skipping pod that is managed by Tapestry", "pod", pod.Namespace+"/"+pod.Name)
 			continue
 		}
 
