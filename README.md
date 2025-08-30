@@ -2,20 +2,38 @@
 
 Tapestry 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kubernetes 集群的闲置计算资源，形成统一的虚拟算力集群。
 
+![alt text](docs/images/image.png)
+
 ## 架构概述
 
 Tapestry 包含两个主要组件：
 
-- **Tapestry Manager**: 管理 ClusterBinding 和 ResourceLeasingPolicy 资源，负责创建和管理 Tapestry Syncer 实例
+- **Tapestry Manager**: 管理 ClusterBinding 资源，负责创建和管理 Tapestry Syncer 实例
 - **Tapestry Syncer**: 负责特定物理集群与虚拟集群之间的双向同步
 
 ## 环境要求
 
 - Go 1.24.3 或更高版本
 - Kubernetes 1.28+ 集群
-- kubectl 配置正确
 
 ## 快速开始
+
+### 环境准备
+
+需要至少两个集群：一个算力集群、多个业务集群，可以直接使用TKE集群。
+
+### 部署使用样例
+
+**在业务集群中：**
+
+1. 创建权限 `helm install tapestry-worker charts/tapestry-worker`
+2. 获取凭证 `bash hack/kubeconfig.sh tapestry-syncer tapestry-worker /tmp/kubeconfig.buz.1`
+
+**在算力集群中：**
+
+1. 安装tapestry组件 `helm install tapestry charts/tapestry`
+2. 设置凭证 `kubectl create secret generic -n tapestry-system worker-cluster-kubeconfig --from-file=kubeconfig=/tmp/kubeconfig.buz.1`
+3. 创建ClusterBinding和ResourceLeasingPolicy `kubectl create -f examples/`
 
 ### 构建项目
 
@@ -29,23 +47,6 @@ go build -o bin/tapestry-syncer cmd/tapestry-syncer/main.go
 
 # 构建 Docker 镜像
 make docker-build
-```
-
-### 运行组件
-
-```bash
-# 运行 Tapestry Manager
-make run-manager
-
-# 运行 Tapestry Syncer (需要指定 ClusterBinding 名称)
-make run-syncer
-```
-
-### 安装 CRDs
-
-```bash
-# 安装自定义资源定义
-make install
 ```
 
 ## 开发
@@ -69,13 +70,6 @@ make test
 ```bash
 # 格式化代码
 make fmt vet
-```
-
-## 部署
-
-```bash
-# 部署到 Kubernetes 集群
-make deploy
 ```
 
 ## 许可证
