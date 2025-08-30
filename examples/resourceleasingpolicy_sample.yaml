@@ -5,10 +5,12 @@ metadata:
   namespace: tapestry-system
 spec:
   cluster: example-cluster
+  forceReclaim: true
+  gracefulReclaimPeriodSeconds: 120
   nodeSelector:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: node-type
+      - key: role
         operator: In
         values: ["worker"]
   timeWindows:
@@ -23,6 +25,6 @@ spec:
       quantity: "4"
       percent: 80  # Take the smaller of 4 CPUs or 80% of available CPUs
     - resource: memory
-      percent: 50  # Take 50% of available memory
+      percent: 90  # Take 90% of available memory
     - resource: storage
       quantity: "100Gi"

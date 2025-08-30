@@ -4,23 +4,15 @@ metadata:
   name: example-cluster
   namespace: tapestry-system
 spec:
-  clusterID: example-cluster
-  secretRef:
-    name: example-cluster-kubeconfig
-    namespace: tapestry-system
+  clusterID: cls-example
+  mountNamespace: tapestry-worker
   nodeSelector:
-    kubernetes.io/os: linux
-  mountNamespace: example-cluster-ns
-  serviceNamespaces:
-    - default
-    - kube-system
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: example-cluster-kubeconfig
-  namespace: tapestry-system
-type: Opaque
-data:
-  # This should contain a base64-encoded kubeconfig file
-  kubeconfig: YXBpVmVyc2lvbjogdjEKa2luZDogQ29uZmlnCmNsdXN0ZXJzOgotIG5hbWU6IGV4YW1wbGUtY2x1c3RlcgogIGNsdXN0ZXI6CiAgICBzZXJ2ZXI6IGh0dHBzOi8vZXhhbXBsZS1jbHVzdGVyLWFwaS5leGFtcGxlLmNvbTo2NDQzCiAgICBjZXJ0aWZpY2F0ZS1hdXRob3JpdHktZGF0YTogLS0tLS1CRUdJTi4uLi0tLS0tRU5ECnVzZXJzOgotIG5hbWU6IGV4YW1wbGUtdXNlcgogIHVzZXI6CiAgICB0b2tlbjogZXhhbXBsZS10b2tlbgpjb250ZXh0czoKLSBuYW1lOiBleGFtcGxlLWNvbnRleHQKICBjb250ZXh0OgogICAgY2x1c3RlcjogZXhhbXBsZS1jbHVzdGVyCiAgICB1c2VyOiBleGFtcGxlLXVzZXIKY3VycmVudC1jb250ZXh0OiBleGFtcGxlLWNvbnRleHQ=
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: role
+        operator: In
+        values:
+        - worker
+  secretRef:
+    name: worker-cluster-kubeconfig
+    namespace: tapestry-system

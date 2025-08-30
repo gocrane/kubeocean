@@ -1,0 +1,71 @@
+# Default values for tapestry-worker
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Namespace configuration
+namespace:
+  # Create namespace
+  create: true
+  # Namespace name
+  name: tapestry-worker
+  # Namespace labels
+  labels:
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: tapestry
+    tapestry.io/component: worker
+
+# ServiceAccount configuration
+serviceAccount:
+  # Create service account
+  create: true
+  # Service account name
+  name: tapestry-syncer
+  # Service account annotations
+  annotations: {}
+  # Service account labels
+  labels:
+    app.kubernetes.io/component: syncer
+    app.kubernetes.io/part-of: tapestry
+    tapestry.io/component: syncer
+
+# RBAC configuration
+rbac:
+  # Create RBAC resources
+  create: true
+  # Cluster role name
+  clusterRoleName: tapestry-syncer
+  # Cluster role binding name
+  clusterRoleBindingName: tapestry-syncer
+  # Role name
+  roleName: tapestry-syncer
+  # Role binding name
+  roleBindingName: tapestry-syncer
+  # Cluster role labels
+  clusterRoleLabels:
+    app.kubernetes.io/component: syncer
+    app.kubernetes.io/part-of: tapestry
+    tapestry.io/component: syncer
+  # Cluster role binding labels
+  clusterRoleBindingLabels:
+    app.kubernetes.io/component: syncer
+    app.kubernetes.io/part-of: tapestry
+    tapestry.io/component: syncer
+  # Role labels
+  roleLabels:
+    app.kubernetes.io/component: syncer
+    app.kubernetes.io/part-of: tapestry
+    tapestry.io/component: syncer
+  # Role binding labels
+  roleBindingLabels:
+    app.kubernetes.io/component: syncer
+    app.kubernetes.io/part-of: tapestry
+    tapestry.io/component: syncer
+
+# Feature flags
+features:
+  # Enable namespace creation
+  namespace: true
+  # Enable service account creation
+  serviceAccount: true
+  # Enable RBAC creation
+  rbac: true

@@ -39,10 +39,6 @@ build/
 ehthumbs.db
 Thumbs.db
 
-# Kubernetes
-*.kubeconfig
-kubeconfig*
-
 # Logs
 *.log
 

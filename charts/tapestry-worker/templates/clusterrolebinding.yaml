@@ -1,0 +1,19 @@
+{{- if .Values.features.rbac }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "tapestry-worker.clusterRoleBindingName" . }}
+  labels:
+    {{- include "tapestry-worker.labels" . | nindent 4 }}
+    {{- with .Values.rbac.clusterRoleBindingLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "tapestry-worker.serviceAccountName" . }}
+  namespace: {{ include "tapestry-worker.namespaceName" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "tapestry-worker.clusterRoleName" . }}
+{{- end }}
