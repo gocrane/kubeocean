@@ -12,7 +12,7 @@ type ClusterBindingSpec struct {
 	// This field is required and immutable after creation
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:MaxLength=24
 	ClusterID string `json:"clusterID"`
 
 	// SecretRef references the secret containing kubeconfig for the target cluster
@@ -29,6 +29,11 @@ type ClusterBindingSpec struct {
 	// ServiceNamespaces specifies the namespaces to sync services from
 	// +optional
 	ServiceNamespaces []string `json:"serviceNamespaces,omitempty"`
+
+	// DisableNodeDefaultTaint controls whether to add the default tapestry.io/vnode taint to virtual nodes
+	// If true, the default taint will not be added; if false or not set, the default taint will be added
+	// +optional
+	DisableNodeDefaultTaint bool `json:"disableNodeDefaultTaint,omitempty"`
 }
 
 // ClusterBindingStatus defines the observed state of ClusterBinding

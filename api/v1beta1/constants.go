@@ -24,6 +24,7 @@ const (
 	SyncedResourceFinalizer = "tapestry.io/synced-resource"
 
 	// Taints
+	TaintVnodeDefaultTaint         = "tapestry.io/vnode"
 	TaintPhysicalNodeUnschedulable = "tapestry.io/physical-node-unschedulable"
 	TaintOutOfTimeWindows          = "tapestry.io/out-of-time-windows"
 

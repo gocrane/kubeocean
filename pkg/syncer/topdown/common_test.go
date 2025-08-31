@@ -1030,8 +1030,8 @@ func TestGetManagedByClusterIDLabel(t *testing.T) {
 		},
 		{
 			name:      "long cluster ID",
-			clusterID: "very-long-cluster-id-with-many-characters",
-			expected:  "tapestry.io/synced-by-very-long-cluster-id-with-many-characters",
+			clusterID: "very-long-cluster-id-24",
+			expected:  "tapestry.io/synced-by-very-long-cluster-id-24",
 		},
 	}
 

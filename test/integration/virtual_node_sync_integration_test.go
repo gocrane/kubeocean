@@ -1352,7 +1352,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 	ginkgo.Describe("Virtual Node Status Tests", func() {
 		ginkgo.It("should sync physical node status changes to virtual node", func(ctx context.Context) {
 			uniqueID := generateUniqueID()
-			clusterName := "status-test-" + uniqueID
+			clusterName := "status-" + uniqueID
 			nodeName := "node-" + uniqueID
 
 			// Create namespace for secrets
@@ -1457,10 +1457,11 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			gomega.Expect(virtualNode.Status.Conditions).To(gomega.HaveLen(2))
 			gomega.Expect(virtualNode.Labels["initial-label"]).To(gomega.Equal("initial-value"))
 			gomega.Expect(virtualNode.Annotations["initial-annotation"]).To(gomega.Equal("initial-value"))
-			// 物理节点初始带有污点 node.kubernetes.io/not-ready
-			gomega.Expect(virtualNode.Spec.Taints).To(gomega.HaveLen(2))
+			// 虚拟节点现在有3个污点：2个来自物理节点 + 1个默认污点
+			gomega.Expect(virtualNode.Spec.Taints).To(gomega.HaveLen(3))
 			gomega.Expect(virtualNode.Spec.Taints[0].Key).To(gomega.Equal("initial-taint"))
 			gomega.Expect(virtualNode.Spec.Taints[1].Key).To(gomega.Equal("node.kubernetes.io/not-ready"))
+			gomega.Expect(virtualNode.Spec.Taints[2].Key).To(gomega.Equal("tapestry.io/vnode"))
 
 			// Test 1: Update physical node status (Phase and Conditions)
 			ginkgo.By("Updating physical node status")
@@ -1548,7 +1549,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				if err != nil {
 					return false
 				}
-				if len(virtualNode.Spec.Taints) != 3 {
+				if len(virtualNode.Spec.Taints) != 4 {
 					return false
 				}
 				for _, taint := range virtualNode.Spec.Taints {
@@ -1569,7 +1570,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 		ginkgo.It("should preserve user-defined labels, annotations, and taints on virtual node", func(ctx context.Context) {
 			uniqueID := generateUniqueID()
-			clusterName := "preserve-test-" + uniqueID
+			clusterName := "pres-" + uniqueID
 			nodeName := "node-" + uniqueID
 
 			// Create namespace for secrets
@@ -1706,7 +1707,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 		ginkgo.It("should create and update virtual node lease", func(ctx context.Context) {
 			uniqueID := generateUniqueID()
-			clusterName := "lease-test-" + uniqueID
+			clusterName := "lease-" + uniqueID
 			nodeName := "node-" + uniqueID
 
 			// Create namespace for secrets
@@ -1826,7 +1827,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 		ginkgo.It("should pause lease updates when physical node is NotReady", func(ctx context.Context) {
 			uniqueID := generateUniqueID()
-			clusterName := "notready-test-" + uniqueID
+			clusterName := "notready-" + uniqueID
 			nodeName := "node-" + uniqueID
 
 			// Create namespace for secrets
@@ -2236,7 +2237,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				clusterBinding := &cloudv1beta1.ClusterBinding{
 					ObjectMeta: metav1.ObjectMeta{Name: "taint-management-test-cluster"},
 					Spec: cloudv1beta1.ClusterBindingSpec{
-						ClusterID:      "taint-management-test-cls",
+						ClusterID:      "taint-mgmt-test-cls",
 						SecretRef:      corev1.SecretReference{Name: "taint-management-test-kc", Namespace: ns},
 						MountNamespace: "default",
 					},

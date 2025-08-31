@@ -60,6 +60,12 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return r.handleNodeSelectorChange(ctx, clusterBinding)
 	}
 
+	// Check if disableNodeDefaultTaint changed
+	if r.hasDisableNodeDefaultTaintChanged(clusterBinding) {
+		logger.Info("ClusterBinding disableNodeDefaultTaint changed, triggering node re-evaluation")
+		return r.handleDisableNodeDefaultTaintChange(ctx, clusterBinding)
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -73,6 +79,18 @@ func (r *ClusterBindingReconciler) hasNodeSelectorChanged(newBinding *cloudv1bet
 	newSelector := newBinding.Spec.NodeSelector
 
 	return !reflect.DeepEqual(oldSelector, newSelector)
+}
+
+// hasDisableNodeDefaultTaintChanged checks if the disableNodeDefaultTaint has changed
+func (r *ClusterBindingReconciler) hasDisableNodeDefaultTaintChanged(newBinding *cloudv1beta1.ClusterBinding) bool {
+	if r.BottomUpSyncer.ClusterBinding == nil {
+		return true // First time loading
+	}
+
+	oldValue := r.BottomUpSyncer.ClusterBinding.Spec.DisableNodeDefaultTaint
+	newValue := newBinding.Spec.DisableNodeDefaultTaint
+
+	return oldValue != newValue
 }
 
 // handleClusterBindingDeletion handles ClusterBinding deletion
@@ -129,6 +147,38 @@ func (r *ClusterBindingReconciler) handleNodeSelectorChange(ctx context.Context,
 	// Trigger node re-evaluation in bottomUpSyncer
 	if r.BottomUpSyncer != nil && len(affectedNodes) > 0 {
 		r.Log.Info("Triggering node re-evaluation due to nodeSelector change", "affectedNodes", affectedNodes)
+		if err := r.BottomUpSyncer.RequeueNodes(affectedNodes); err != nil {
+			r.Log.Error(err, "Failed to requeue nodes")
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// handleDisableNodeDefaultTaintChange handles disableNodeDefaultTaint changes
+func (r *ClusterBindingReconciler) handleDisableNodeDefaultTaintChange(ctx context.Context, newBinding *cloudv1beta1.ClusterBinding) (ctrl.Result, error) {
+	r.Log.Info("Handling disableNodeDefaultTaint change")
+
+	// Get nodes that match the current nodeSelector
+	var affectedNodes []string
+	var err error
+	if newBinding.Spec.NodeSelector != nil && len(newBinding.Spec.NodeSelector.NodeSelectorTerms) > 0 {
+		affectedNodes, err = r.getNodesMatchingSelector(ctx, newBinding.Spec.NodeSelector)
+		if err != nil {
+			r.Log.Error(err, "Failed to get nodes matching selector")
+			return ctrl.Result{}, err
+		}
+	}
+
+	r.Log.Info("Found affected nodes for disableNodeDefaultTaint change", "count", len(affectedNodes), "nodes", affectedNodes)
+
+	// Update the cached ClusterBinding
+	r.BottomUpSyncer.ClusterBinding = newBinding
+
+	// Trigger node re-evaluation in bottomUpSyncer
+	if r.BottomUpSyncer != nil && len(affectedNodes) > 0 {
+		r.Log.Info("Triggering node re-evaluation due to disableNodeDefaultTaint change", "affectedNodes", affectedNodes)
 		if err := r.BottomUpSyncer.RequeueNodes(affectedNodes); err != nil {
 			r.Log.Error(err, "Failed to requeue nodes")
 			return ctrl.Result{}, err

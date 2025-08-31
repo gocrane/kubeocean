@@ -36,9 +36,9 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 	ginkgo.BeforeEach(func() {
 		testCtx, testCancel = context.WithCancel(context.Background())
-		clusterBindingName = fmt.Sprintf("pod-sync-cluster-%s", uniqueID)
+		clusterBindingName = fmt.Sprintf("pod-%s", uniqueID)
 		physicalNodeName = fmt.Sprintf("physical-node-%s", uniqueID)
-		virtualNodeName = fmt.Sprintf("vnode-pod-sync-cluster-%s-%s", uniqueID, physicalNodeName)
+		virtualNodeName = fmt.Sprintf("vnode-pod-%s-%s", uniqueID, physicalNodeName)
 
 		// Setup test environment
 		setupPodSyncTestEnvironment(testCtx, clusterBindingName, physicalNodeName)

@@ -182,7 +182,7 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 		return ctrl.Result{}, fmt.Errorf("clusterID is unknown, skipping create or update virtual node")
 	}
 	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
-	err = r.createOrUpdateVirtualNode(ctx, physicalNode, availableResources, policies)
+	err = r.createOrUpdateVirtualNode(ctx, physicalNode, availableResources, policies, clusterBinding.Spec.DisableNodeDefaultTaint)
 	if err != nil {
 		log.Error(err, "Failed to create or update virtual node")
 		return ctrl.Result{}, err
@@ -833,7 +833,7 @@ func (r *PhysicalNodeReconciler) getBaseResources(node *corev1.Node) corev1.Reso
 }
 
 // createOrUpdateVirtualNode creates or updates a virtual node based on physical node
-func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, physicalNode *corev1.Node, resources corev1.ResourceList, policies []cloudv1beta1.ResourceLeasingPolicy) error {
+func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, physicalNode *corev1.Node, resources corev1.ResourceList, policies []cloudv1beta1.ResourceLeasingPolicy, disableNodeDefaultTaint bool) error {
 	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
 	logger := r.Log.WithValues("virtualNode", virtualNodeName, "physicalNode", physicalNode.Name)
 
@@ -844,7 +844,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 			Annotations: r.buildVirtualNodeAnnotations(physicalNode, policies),
 		},
 		Spec: corev1.NodeSpec{
-			Taints: r.transformTaints(physicalNode.Spec.Taints),
+			Taints: r.transformTaints(physicalNode.Spec.Taints, disableNodeDefaultTaint),
 		},
 		Status: corev1.NodeStatus{
 			Capacity:    resources,
@@ -1225,11 +1225,8 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 
 // transformTaints transforms physical node taints to virtual node taints
 // Specifically converts node.kubernetes.io/unschedulable to tapestry.io/physical-node-unschedulable
-func (r *PhysicalNodeReconciler) transformTaints(physicalTaints []corev1.Taint) []corev1.Taint {
-	if len(physicalTaints) == 0 {
-		return nil
-	}
-
+// Optionally adds the default virtual node taint based on disableNodeDefaultTaint setting
+func (r *PhysicalNodeReconciler) transformTaints(physicalTaints []corev1.Taint, disableNodeDefaultTaint bool) []corev1.Taint {
 	virtualTaints := make([]corev1.Taint, 0, len(physicalTaints))
 
 	for _, taint := range physicalTaints {
@@ -1249,6 +1246,14 @@ func (r *PhysicalNodeReconciler) transformTaints(physicalTaints []corev1.Taint) 
 			// Keep other taints as-is
 			virtualTaints = append(virtualTaints, taint)
 		}
+	}
+
+	// Add the default virtual node taint only if not disabled
+	if !disableNodeDefaultTaint {
+		virtualTaints = append(virtualTaints, corev1.Taint{
+			Key:    cloudv1beta1.TaintVnodeDefaultTaint,
+			Effect: corev1.TaintEffectNoSchedule,
+		})
 	}
 
 	return virtualTaints

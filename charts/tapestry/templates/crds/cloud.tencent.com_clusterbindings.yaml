@@ -52,7 +52,7 @@ spec:
                 description: |-
                   ClusterID is a unique identifier for the cluster that will be used as part of virtual node names
                   This field is required and immutable after creation
-                maxLength: 12
+                maxLength: 24
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                 type: string
               mountNamespace:
@@ -168,6 +168,9 @@ spec:
                 items:
                   type: string
                 type: array
+              disableNodeDefaultTaint:
+                description: DisableNodeDefaultTaint controls whether to add the default tapestry.io/vnode taint to virtual nodes. If true, the default taint will not be added; if false or not set, the default taint will be added
+                type: boolean
             required:
             - clusterID
             - secretRef

@@ -1905,18 +1905,32 @@ func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
 		Log: zap.New(zap.UseDevMode(true)),
 	}
 
+	// 默认污点，每个虚拟节点都会添加
+	defaultTaint := corev1.Taint{
+		Key:    cloudv1beta1.TaintVnodeDefaultTaint,
+		Effect: corev1.TaintEffectNoSchedule,
+	}
+
 	tests := []struct {
-		name           string
-		physicalTaints []corev1.Taint
-		expectedTaints []corev1.Taint
+		name                    string
+		physicalTaints          []corev1.Taint
+		disableNodeDefaultTaint bool
+		expectedTaints          []corev1.Taint
 	}{
 		{
-			name:           "empty taints",
-			physicalTaints: nil,
-			expectedTaints: nil,
+			name:                    "empty taints with default taint enabled",
+			physicalTaints:          nil,
+			disableNodeDefaultTaint: false,
+			expectedTaints:          []corev1.Taint{defaultTaint},
 		},
 		{
-			name: "no unschedulable taint",
+			name:                    "empty taints with default taint disabled",
+			physicalTaints:          nil,
+			disableNodeDefaultTaint: true,
+			expectedTaints:          []corev1.Taint{},
+		},
+		{
+			name: "no unschedulable taint with default taint enabled",
 			physicalTaints: []corev1.Taint{
 				{
 					Key:    "example.com/test",
@@ -1924,6 +1938,26 @@ func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
 					Effect: corev1.TaintEffectNoSchedule,
 				},
 			},
+			disableNodeDefaultTaint: false,
+			expectedTaints: []corev1.Taint{
+				{
+					Key:    "example.com/test",
+					Value:  "test-value",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+				defaultTaint,
+			},
+		},
+		{
+			name: "no unschedulable taint with default taint disabled",
+			physicalTaints: []corev1.Taint{
+				{
+					Key:    "example.com/test",
+					Value:  "test-value",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+			disableNodeDefaultTaint: true,
 			expectedTaints: []corev1.Taint{
 				{
 					Key:    "example.com/test",
@@ -1933,7 +1967,7 @@ func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
 			},
 		},
 		{
-			name: "transform unschedulable taint",
+			name: "transform unschedulable taint with default taint enabled",
 			physicalTaints: []corev1.Taint{
 				{
 					Key:    "node.kubernetes.io/unschedulable",
@@ -1941,6 +1975,26 @@ func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
 					Effect: corev1.TaintEffectNoSchedule,
 				},
 			},
+			disableNodeDefaultTaint: false,
+			expectedTaints: []corev1.Taint{
+				{
+					Key:    cloudv1beta1.TaintPhysicalNodeUnschedulable,
+					Value:  "",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+				defaultTaint,
+			},
+		},
+		{
+			name: "transform unschedulable taint with default taint disabled",
+			physicalTaints: []corev1.Taint{
+				{
+					Key:    "node.kubernetes.io/unschedulable",
+					Value:  "",
+					Effect: corev1.TaintEffectNoSchedule,
+				},
+			},
+			disableNodeDefaultTaint: true,
 			expectedTaints: []corev1.Taint{
 				{
 					Key:    cloudv1beta1.TaintPhysicalNodeUnschedulable,
@@ -1950,7 +2004,7 @@ func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
 			},
 		},
 		{
-			name: "transform unschedulable taint with value",
+			name: "transform unschedulable taint with value and default taint enabled",
 			physicalTaints: []corev1.Taint{
 				{
 					Key:    "node.kubernetes.io/unschedulable",
@@ -1958,16 +2012,18 @@ func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
 					Effect: corev1.TaintEffectNoExecute,
 				},
 			},
+			disableNodeDefaultTaint: false,
 			expectedTaints: []corev1.Taint{
 				{
 					Key:    cloudv1beta1.TaintPhysicalNodeUnschedulable,
 					Value:  "maintenance",
 					Effect: corev1.TaintEffectNoExecute,
 				},
+				defaultTaint,
 			},
 		},
 		{
-			name: "filter out-of-time-windows taint",
+			name: "filter out-of-time-windows taint with default taint enabled",
 			physicalTaints: []corev1.Taint{
 				{
 					Key:    cloudv1beta1.TaintOutOfTimeWindows,
@@ -1980,16 +2036,18 @@ func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
 					Effect: corev1.TaintEffectNoSchedule,
 				},
 			},
+			disableNodeDefaultTaint: false,
 			expectedTaints: []corev1.Taint{
 				{
 					Key:    "example.com/test",
 					Value:  "test-value",
 					Effect: corev1.TaintEffectNoSchedule,
 				},
+				defaultTaint,
 			},
 		},
 		{
-			name: "mixed taints with unschedulable and out-of-time-windows",
+			name: "mixed taints with unschedulable and out-of-time-windows, default taint enabled",
 			physicalTaints: []corev1.Taint{
 				{
 					Key:    "example.com/test",
@@ -2012,6 +2070,7 @@ func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
 					Effect: corev1.TaintEffectNoExecute,
 				},
 			},
+			disableNodeDefaultTaint: false,
 			expectedTaints: []corev1.Taint{
 				{
 					Key:    "example.com/test",
@@ -2028,13 +2087,14 @@ func TestPhysicalNodeReconciler_transformTaints(t *testing.T) {
 					Value:  "",
 					Effect: corev1.TaintEffectNoExecute,
 				},
+				defaultTaint,
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := reconciler.transformTaints(tt.physicalTaints)
+			result := reconciler.transformTaints(tt.physicalTaints, tt.disableNodeDefaultTaint)
 			assert.Equal(t, tt.expectedTaints, result)
 		})
 	}
