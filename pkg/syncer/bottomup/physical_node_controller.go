@@ -145,6 +145,7 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 			for idx := 1; idx < len(policies); idx++ {
 				ignored = append(ignored, policies[idx].Name)
 			}
+			policies = policies[:1]
 			log.Info("Multiple ResourceLeasingPolicies matched. Using the earliest one and ignoring others.",
 				"selected", policies[0].Name, "ignored", strings.Join(ignored, ","))
 		} else {
@@ -158,16 +159,6 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	var availableResources corev1.ResourceList
 	if policy == nil {
 		log.V(1).Info("No matching ResourceLeasingPolicy; using all remaining resources of physical node")
-	} else {
-		// Check if within time windows and handle taint management
-		withinTimeWindows := r.isWithinTimeWindows(policy)
-
-		if !withinTimeWindows {
-			log.V(1).Info("Node outside time windows, managing out-of-time-windows taint")
-			return r.handleOutOfTimeWindowsTaint(ctx, physicalNode.Name, policy)
-		} else {
-			log.V(1).Info("Node within time windows, will removing out-of-time-windows taint if exists")
-		}
 	}
 
 	// Calculate available resources (with or without policy constraints)
@@ -190,6 +181,20 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 
 	// Start lease controller for the virtual node
 	r.startLeaseController(virtualNodeName)
+
+	// Handle out-of-time-windows pod deletion if policy exists and node is outside time windows
+	if policy != nil && !r.isWithinTimeWindows(policy) {
+		log.V(1).Info("Handling out-of-time-windows pod deletion")
+		result, err := r.handleOutOfTimeWindows(ctx, physicalNode.Name, policy)
+		if err != nil {
+			log.Error(err, "Failed to handle out-of-time-windows pod deletion")
+			return ctrl.Result{}, err
+		}
+		// If handleOutOfTimeWindows returns a requeue, use that instead of default
+		if result.RequeueAfter > 0 {
+			return result, nil
+		}
+	}
 
 	log.V(1).Info("Successfully processed physical node", "availableResources", availableResources)
 
@@ -293,6 +298,8 @@ func (r *PhysicalNodeReconciler) checkPodsOnVirtualNode(ctx context.Context, vir
 }
 
 // forceEvictPodsOnVirtualNode forcefully evicts all pods on the virtual node by deleting them
+// Pods with deletionTimestamp set will be skipped
+// If any pod deletion fails, it continues with other pods but returns an error at the end
 func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context, virtualNodeName string) error {
 	logger := r.Log.WithValues("virtualNode", virtualNodeName)
 
@@ -306,9 +313,25 @@ func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context
 		return fmt.Errorf("failed to list pods on virtual node %s: %w", virtualNodeName, err)
 	}
 
+	if len(podList.Items) == 0 {
+		logger.V(1).Info("No pods found on virtual node")
+		return nil
+	}
+
+	var deletedCount, skippedCount, failedCount int
+	var deletionErrors []error
+
 	// Delete all pods
-	for _, pod := range podList.Items {
+	for i := range podList.Items {
+		pod := &podList.Items[i]
 		if pod.Spec.NodeName != virtualNodeName {
+			continue
+		}
+
+		// 跳过 deletionTimestamp 不为nil 的 Pod
+		if pod.DeletionTimestamp != nil {
+			skippedCount++
+			logger.V(1).Info("Skipping pod with deletionTimestamp set", "pod", pod.Name, "namespace", pod.Namespace)
 			continue
 		}
 
@@ -319,12 +342,27 @@ func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context
 				UID: &pod.UID,
 			},
 		}
-		if err := r.VirtualClient.Delete(ctx, &pod, deleteOptions); err != nil && !errors.IsNotFound(err) {
+		if err := r.VirtualClient.Delete(ctx, pod, deleteOptions); err != nil {
+			if errors.IsNotFound(err) {
+				// Pod已经被删除，忽略
+				continue
+			}
+			failedCount++
+			deletionErrors = append(deletionErrors, fmt.Errorf("failed to delete pod %s/%s: %w", pod.Namespace, pod.Name, err))
 			logger.Error(err, "Failed to delete pod", "pod", pod.Name, "namespace", pod.Namespace)
 			// Continue with other pods even if one fails
-		} else {
-			logger.Info("Successfully deleted pod", "pod", pod.Name, "namespace", pod.Namespace)
+			continue
 		}
+
+		deletedCount++
+		logger.Info("Successfully deleted pod", "pod", pod.Name, "namespace", pod.Namespace)
+	}
+
+	logger.Info("Completed virtual pod deletion", "deleted", deletedCount, "skipped", skippedCount, "failed", failedCount, "total", len(podList.Items))
+
+	// Return error if any deletions failed
+	if len(deletionErrors) > 0 {
+		return fmt.Errorf("failed to delete %d pods: %v", len(deletionErrors), deletionErrors)
 	}
 
 	return nil
@@ -837,6 +875,12 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
 	logger := r.Log.WithValues("virtualNode", virtualNodeName, "physicalNode", physicalNode.Name)
 
+	// Get applicable policy for taint management
+	var policy *cloudv1beta1.ResourceLeasingPolicy
+	if len(policies) > 0 {
+		policy = &policies[0]
+	}
+
 	virtualNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        virtualNodeName,
@@ -844,7 +888,8 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 			Annotations: r.buildVirtualNodeAnnotations(physicalNode, policies),
 		},
 		Spec: corev1.NodeSpec{
-			Taints: r.transformTaints(physicalNode.Spec.Taints, disableNodeDefaultTaint),
+			// Transform taints including out-of-time-windows taint based on policy
+			Taints: r.transformTaints(logger, physicalNode.Spec.Taints, disableNodeDefaultTaint, policy),
 		},
 		Status: corev1.NodeStatus{
 			Capacity:    resources,
@@ -1071,6 +1116,18 @@ func (r *PhysicalNodeReconciler) mergeTaints(existing, new *corev1.Node, previou
 	previousExpectedMap := r.taintsToMap(previousExpected)
 	currentExpectedMap := r.taintsToMap(currentExpected)
 
+	// Preserve TimeAdded for out-of-time-windows taint so graceful period is not reset on each reconciliation
+	for i := range new.Spec.Taints {
+		if new.Spec.Taints[i].Key == cloudv1beta1.TaintOutOfTimeWindows {
+			for j := range existing.Spec.Taints {
+				if existing.Spec.Taints[j].Key == cloudv1beta1.TaintOutOfTimeWindows && existing.Spec.Taints[j].TimeAdded != nil {
+					new.Spec.Taints[i].TimeAdded = existing.Spec.Taints[j].TimeAdded
+					break
+				}
+			}
+		}
+	}
+
 	// Identify user-added taints
 	for _, taint := range existing.Spec.Taints {
 		// 如果currentExpected中存在，则不覆盖
@@ -1079,10 +1136,6 @@ func (r *PhysicalNodeReconciler) mergeTaints(existing, new *corev1.Node, previou
 		}
 		if taint.Key == TaintKeyVirtualNodeDeleting {
 			r.Log.Info("skipping deletion taint", "taint", taint, "node", new.Name)
-			continue
-		}
-		if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
-			r.Log.Info("skipping out-of-time-windows taint", "taint", taint, "node", new.Name)
 			continue
 		}
 		// 如果不在previousExpected中，则认为是用户添加的
@@ -1226,7 +1279,8 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 // transformTaints transforms physical node taints to virtual node taints
 // Specifically converts node.kubernetes.io/unschedulable to tapestry.io/physical-node-unschedulable
 // Optionally adds the default virtual node taint based on disableNodeDefaultTaint setting
-func (r *PhysicalNodeReconciler) transformTaints(physicalTaints []corev1.Taint, disableNodeDefaultTaint bool) []corev1.Taint {
+// Also adds out-of-time-windows taint based on policy if node is outside time windows
+func (r *PhysicalNodeReconciler) transformTaints(logger logr.Logger, physicalTaints []corev1.Taint, disableNodeDefaultTaint bool, policy *cloudv1beta1.ResourceLeasingPolicy) []corev1.Taint {
 	virtualTaints := make([]corev1.Taint, 0, len(physicalTaints))
 
 	for _, taint := range physicalTaints {
@@ -1256,11 +1310,32 @@ func (r *PhysicalNodeReconciler) transformTaints(physicalTaints []corev1.Taint, 
 		})
 	}
 
+	// Add out-of-time-windows taint based on policy if node is outside time windows
+	if policy != nil && !r.isWithinTimeWindows(policy) {
+		forceReclaim := policy.Spec.ForceReclaim
+		var effect corev1.TaintEffect
+		if forceReclaim {
+			effect = corev1.TaintEffectNoExecute
+		} else {
+			effect = corev1.TaintEffectNoSchedule
+		}
+
+		virtualTaints = append(virtualTaints, corev1.Taint{
+			Key:       cloudv1beta1.TaintOutOfTimeWindows,
+			Value:     "true",
+			Effect:    effect,
+			TimeAdded: &metav1.Time{Time: time.Now()},
+		})
+		logger.V(1).Info("Node outside time windows, will add out-of-time-windows taint", "effect", effect, "forceReclaim", forceReclaim)
+	} else {
+		logger.V(1).Info("Node within time windows, no out-of-time-windows taint needed")
+	}
+
 	return virtualTaints
 }
 
-// handleOutOfTimeWindowsTaint handles the out-of-time-windows taint management
-func (r *PhysicalNodeReconciler) handleOutOfTimeWindowsTaint(ctx context.Context, physicalNodeName string, policy *cloudv1beta1.ResourceLeasingPolicy) (ctrl.Result, error) {
+// handleOutOfTimeWindows handles the out-of-time-windows pod deletion logic
+func (r *PhysicalNodeReconciler) handleOutOfTimeWindows(ctx context.Context, physicalNodeName string, policy *cloudv1beta1.ResourceLeasingPolicy) (ctrl.Result, error) {
 	logger := r.Log.WithValues("physicalNode", physicalNodeName)
 	virtualNodeName := r.generateVirtualNodeName(physicalNodeName)
 
@@ -1270,8 +1345,8 @@ func (r *PhysicalNodeReconciler) handleOutOfTimeWindowsTaint(ctx context.Context
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Virtual node doesn't exist, nothing to do
-			logger.V(1).Info("Virtual node not found, nothing to taint")
-			return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
+			logger.V(1).Info("Virtual node not found, nothing to handle")
+			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get virtual node: %w", err)
 	}
@@ -1286,103 +1361,57 @@ func (r *PhysicalNodeReconciler) handleOutOfTimeWindowsTaint(ctx context.Context
 	}
 
 	gracefulPeriod := policy.Spec.GracefulReclaimPeriodSeconds
-	var taintEffect corev1.TaintEffect
+	forceReclaim := policy.Spec.ForceReclaim
 
-	resyncTime := DefaultNodeSyncInterval
-	if !policy.Spec.ForceReclaim {
-		taintEffect = corev1.TaintEffectNoSchedule
-		logger.Info("Adding out-of-time-windows taint with NoSchedule effect", "ForceReclaim", policy.Spec.ForceReclaim)
-	} else if gracefulPeriod == 0 {
-		// No graceful period or set to 0, use NoExecute immediately
-		taintEffect = corev1.TaintEffectNoExecute
-	} else {
-		// Check if we need to add the taint or upgrade its effect
-		if existingTaint == nil {
-			// Add new taint with NoSchedule effect
-			taintEffect = corev1.TaintEffectNoSchedule
-			logger.Info("Adding out-of-time-windows taint with NoSchedule effect", "gracefulPeriod", gracefulPeriod)
-			resyncTime = time.Duration(gracefulPeriod) * time.Second
-		} else {
-			// Taint exists, check if we need to upgrade to NoExecute
-			if existingTaint.Effect == corev1.TaintEffectNoExecute {
-				// Already NoExecute, nothing to change
-				logger.V(1).Info("Taint already has NoExecute effect")
-				return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
-			} // not NoExecute
-			if existingTaint.TimeAdded == nil {
-				taintEffect = corev1.TaintEffectNoExecute
-				logger.Info("Taint has no time added, upgrading to NoExecute")
-			} else {
-				taintTime := existingTaint.TimeAdded.Time
-				timeSinceTaint := time.Since(taintTime)
-				if timeSinceTaint.Seconds() >= float64(gracefulPeriod) {
-					// Graceful period has passed, upgrade to NoExecute
-					logger.Info("Graceful period passed, upgrading taint to NoExecute",
-						"timeSinceTaint", timeSinceTaint, "gracefulPeriod", gracefulPeriod)
-					taintEffect = corev1.TaintEffectNoExecute
-				} else {
-					// Still within graceful period, keep NoSchedule and requeue
-					remainingTime := time.Duration(gracefulPeriod)*time.Second - timeSinceTaint
-					logger.Info("Still within graceful period, keeping NoSchedule taint",
-						"remainingTime", remainingTime, "gracefulPeriod", gracefulPeriod)
-					return ctrl.Result{RequeueAfter: remainingTime}, nil
-				}
-			}
+	// If ForceReclaim is not set, no pod deletion needed
+	if !forceReclaim {
+		logger.V(1).Info("ForceReclaim not set, no pod deletion needed")
+		return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
+	}
+
+	// If gracefulPeriod is 0, immediately delete all pods
+	if gracefulPeriod == 0 {
+		logger.Info("Graceful period is 0, immediately deleting all virtual pods")
+		err = r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to delete virtual pods on node %s: %w", virtualNodeName, err)
 		}
+		return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
 	}
 
-	// Add or update the taint
-	err = r.addOrUpdateOutOfTimeWindowsTaint(ctx, virtualNode, taintEffect)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to add/update out-of-time-windows taint: %w", err)
+	if existingTaint == nil {
+		// return error to requeue to handle out-of-time-windows taint
+		return ctrl.Result{}, fmt.Errorf("no out-of-time-windows taint found")
 	}
 
-	return ctrl.Result{RequeueAfter: resyncTime}, nil
-}
-
-// addOrUpdateOutOfTimeWindowsTaint adds or updates the out-of-time-windows taint
-func (r *PhysicalNodeReconciler) addOrUpdateOutOfTimeWindowsTaint(ctx context.Context, virtualNode *corev1.Node, effect corev1.TaintEffect) error {
-	logger := r.Log.WithValues("virtualNode", virtualNode.Name)
-
-	// Find existing taint
-	newNode := virtualNode.DeepCopy()
-	var taintIndex = -1
-	for i, taint := range newNode.Spec.Taints {
-		if taint.Key == cloudv1beta1.TaintOutOfTimeWindows {
-			taintIndex = i
-			break
+	// Check if graceful period has passed
+	if existingTaint.TimeAdded == nil {
+		logger.Info("No taint time found, immediately deleting all virtual pods")
+		err = r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to delete virtual pods on node %s: %w", virtualNodeName, err)
 		}
+		return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
 	}
 
-	newTaint := corev1.Taint{
-		Key:       cloudv1beta1.TaintOutOfTimeWindows,
-		Value:     "true",
-		Effect:    effect,
-		TimeAdded: &metav1.Time{Time: time.Now()},
-	}
+	taintTime := existingTaint.TimeAdded.Time
+	timeSinceTaint := time.Since(taintTime)
+	gracefulDuration := time.Duration(gracefulPeriod) * time.Second
 
-	if taintIndex == -1 {
-		// Add new taint
-		newNode.Spec.Taints = append(newNode.Spec.Taints, newTaint)
-		logger.Info("Added out-of-time-windows taint", "effect", effect)
-	} else {
-		// Update existing taint
-		oldEffect := newNode.Spec.Taints[taintIndex].Effect
-		if oldEffect == effect {
-			logger.Info("Taint effect is the same, no need to update")
-			return nil
+	// If graceful period has passed, delete all pods
+	if timeSinceTaint >= gracefulDuration {
+		logger.Info("Graceful period passed, deleting all virtual pods", "taintTime", taintTime, "timeSinceTaint", timeSinceTaint, "gracefulPeriod", gracefulPeriod)
+		err = r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to delete virtual pods on node %s: %w", virtualNodeName, err)
 		}
-		newNode.Spec.Taints[taintIndex] = newTaint
-		logger.Info("Updated out-of-time-windows taint", "oldEffect", oldEffect, "newEffect", effect)
+		return ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, nil
 	}
 
-	// Update the virtual node
-	err := r.VirtualClient.Update(ctx, newNode)
-	if err != nil {
-		return fmt.Errorf("failed to update out-of-time-windows taint: %w", err)
-	}
-
-	return nil
+	// Graceful period not yet passed, requeue for remaining time
+	remainingTime := gracefulDuration - timeSinceTaint
+	logger.Info("Still within graceful period, will requeue", "remainingTime", remainingTime, "gracefulPeriod", gracefulPeriod)
+	return ctrl.Result{RequeueAfter: remainingTime}, nil
 }
 
 // nodeMatchesCombinedSelector checks if node matches the intersection of policy and ClusterBinding nodeSelectors
