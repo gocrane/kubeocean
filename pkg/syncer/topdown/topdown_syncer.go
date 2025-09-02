@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	"github.com/TKEColocation/tapestry/pkg/syncer/topdown/token"
 )
 
 // TopDownSyncer handles synchronization from virtual cluster to physical cluster
@@ -76,6 +77,13 @@ func (tds *TopDownSyncer) Start(ctx context.Context) error {
 
 // setupControllers sets up all the controllers
 func (tds *TopDownSyncer) setupControllers() error {
+	// Create direct k8s client for virtual cluster
+	virtualConfig := tds.virtualManager.GetConfig()
+	virtualK8sClient, err := kubernetes.NewForConfig(virtualConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create direct k8s client for virtual cluster: %w", err)
+	}
+
 	// Create direct k8s client for bypassing cache
 	physicalK8sClient, err := kubernetes.NewForConfig(tds.physicalConfig)
 	if err != nil {
@@ -101,6 +109,7 @@ func (tds *TopDownSyncer) setupControllers() error {
 		ClusterBinding:    tds.ClusterBinding,
 		clusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-pod-controller"),
+		TokenManager:      token.NewManager(virtualK8sClient, tds.Log.WithName("token-manager")),
 	}
 
 	if err := tds.virtualPodController.SetupWithManager(tds.virtualManager, tds.physicalManager); err != nil {

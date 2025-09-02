@@ -25,7 +25,57 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 )
+
+// int64Ptr returns a pointer to an int64 value
+func int64Ptr(v int64) *int64 {
+	return &v
+}
+
+// MockTokenManager is a mock implementation of the token.TokenManagerInterface for testing
+type MockTokenManager struct {
+	getServiceAccountToken func(namespace, name string, tr *authenticationv1.TokenRequest) (*authenticationv1.TokenRequest, error)
+}
+
+func (m *MockTokenManager) GetServiceAccountToken(namespace, name string, tr *authenticationv1.TokenRequest) (*authenticationv1.TokenRequest, error) {
+	if m.getServiceAccountToken != nil {
+		return m.getServiceAccountToken(namespace, name, tr)
+	}
+	return &authenticationv1.TokenRequest{
+		Status: authenticationv1.TokenRequestStatus{
+			Token: "test-token-content",
+		},
+	}, nil
+}
+
+// Mock methods to satisfy token.Manager interface
+func (m *MockTokenManager) DeleteServiceAccountToken(podUID types.UID) {
+	// Mock implementation - do nothing
+}
+
+func (m *MockTokenManager) cleanup() {
+	// Mock implementation - do nothing
+}
+
+func (m *MockTokenManager) get(key string) (*authenticationv1.TokenRequest, bool) {
+	// Mock implementation - return empty
+	return nil, false
+}
+
+func (m *MockTokenManager) set(key string, tr *authenticationv1.TokenRequest) {
+	// Mock implementation - do nothing
+}
+
+func (m *MockTokenManager) expired(t *authenticationv1.TokenRequest) bool {
+	// Mock implementation - return false
+	return false
+}
+
+func (m *MockTokenManager) requiresRefresh(ctx context.Context, tr *authenticationv1.TokenRequest) bool {
+	// Mock implementation - return false
+	return false
+}
 
 // createTestVirtualNode creates a virtual node for testing
 func createTestVirtualNode(name, clusterName, clusterID, physicalNodeName string) *corev1.Node {
@@ -274,7 +324,7 @@ func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 				// Verify dependent resources were created
 				// ConfigMap
 				configMap := &corev1.ConfigMap{}
-				err = physicalClient.Get(context.TODO(), types.NamespacedName{
+				_ = physicalClient.Get(context.TODO(), types.NamespacedName{
 					Name: "test-config", Namespace: "physical-ns",
 				}, configMap)
 				// ConfigMap might not be created in this test since it's not in the virtual client
@@ -978,22 +1028,7 @@ func TestVirtualPodReconciler_PodFiltering(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Simulate the filter logic used in SetupWithManager
-			shouldSync := true
-
-			// Skip system pods
-			if isSystemPod(tt.pod) {
-				shouldSync = false
-			}
-
-			// Only sync pods that are not managed by DaemonSet
-			if isDaemonSetPod(tt.pod) {
-				shouldSync = false
-			}
-
-			// Only sync pods with spec.nodeName set (scheduled pods)
-			if tt.pod.Spec.NodeName == "" {
-				shouldSync = false
-			}
+			shouldSync := !isSystemPod(tt.pod) && !isDaemonSetPod(tt.pod) && tt.pod.Spec.NodeName != ""
 
 			assert.Equal(t, tt.shouldSync, shouldSync)
 		})
@@ -2804,6 +2839,1077 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 		finalizers := virtualPod.GetFinalizers()
 		assert.Contains(t, finalizers, expectedFinalizer)
 	})
+}
+
+// TestVirtualPodReconciler_CleanupServiceAccountToken tests the cleanupServiceAccountToken function
+func TestVirtualPodReconciler_CleanupServiceAccountToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	// Create a mock TokenManager
+	mockTokenManager := &MockTokenManager{}
+
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		physicalSecret *corev1.Secret
+		expectError    bool
+		errorContains  string
+	}{
+		{
+			name: "no service account name - should skip cleanup",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "service account token secret not found - should not error",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					UID:       "test-uid-123",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test-sa",
+					Volumes: []corev1.Volume{
+						{
+							Name: "kube-api-access-xyz",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+												Audience:          "https://kubernetes.default.svc.cluster.local",
+												ExpirationSeconds: int64Ptr(3607),
+												Path:              "token",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "service account token secret exists - should delete successfully",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					UID:       "test-uid-123",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test-sa",
+					Volumes: []corev1.Volume{
+						{
+							Name: "kube-api-access-xyz",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+												Audience:          "https://kubernetes.default.svc.cluster.local",
+												ExpirationSeconds: int64Ptr(3607),
+												Path:              "token",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			physicalSecret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "", // Will be set dynamically in the test
+					Namespace: "test-cluster",
+				},
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{
+					"token": []byte("base64-encoded-token"),
+				},
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+			// Add physical secret if it exists
+			if tt.physicalSecret != nil {
+				// Generate the correct secret name using the same logic as the actual code
+				if tt.virtualPod.Spec.ServiceAccountName != "" {
+					// Use the same key generation logic as the actual code
+					key := fmt.Sprintf("%s-%s", tt.virtualPod.Name, tt.virtualPod.UID)
+
+					// Generate physical name using the same logic as generatePhysicalName
+					truncatedKey := key
+					if len(key) > 31 {
+						truncatedKey = key[:31]
+					}
+					input := fmt.Sprintf("%s/%s", tt.virtualPod.Namespace, key)
+					hash := fmt.Sprintf("%x", md5.Sum([]byte(input)))
+					physicalSecretName := fmt.Sprintf("%s-%s", truncatedKey, hash)
+
+					tt.physicalSecret.Name = physicalSecretName
+				}
+
+				err := physicalClient.Create(ctx, tt.physicalSecret)
+				require.NoError(t, err)
+			}
+
+			reconciler := &VirtualPodReconciler{
+				VirtualClient:  virtualClient,
+				PhysicalClient: physicalClient,
+				ClusterBinding: clusterBinding,
+				Log:            ctrl.Log.WithName("test"),
+				clusterID:      "test-cluster-id",
+				TokenManager:   mockTokenManager,
+			}
+
+			// Call the function
+			err := reconciler.cleanupServiceAccountToken(ctx, tt.virtualPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+				return
+			}
+
+			assert.NoError(t, err)
+
+			// If physical secret was created, verify it was deleted
+			if tt.physicalSecret != nil {
+				deletedSecret := &corev1.Secret{}
+				err := physicalClient.Get(ctx, types.NamespacedName{
+					Name:      tt.physicalSecret.Name,
+					Namespace: tt.physicalSecret.Namespace,
+				}, deletedSecret)
+				if !apierrors.IsNotFound(err) {
+					t.Logf("Expected secret to be deleted: %s/%s", tt.physicalSecret.Namespace, tt.physicalSecret.Name)
+					if err == nil {
+						t.Logf("Secret still exists: %+v", deletedSecret.ObjectMeta)
+					} else {
+						t.Logf("Unexpected error: %v", err)
+					}
+				}
+				assert.True(t, apierrors.IsNotFound(err), "Secret should be deleted")
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_SyncServiceAccountToken tests the syncServiceAccountToken function
+func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	// Create a mock TokenManager
+	mockTokenManager := &MockTokenManager{
+		getServiceAccountToken: func(namespace, name string, tr *authenticationv1.TokenRequest) (*authenticationv1.TokenRequest, error) {
+			return &authenticationv1.TokenRequest{
+				Status: authenticationv1.TokenRequestStatus{
+					Token: "test-token-content",
+				},
+			}, nil
+		},
+	}
+
+	tests := []struct {
+		name              string
+		virtualPod        *corev1.Pod
+		createIfNotExists bool
+		expectedResult    string
+		expectError       bool
+		errorContains     string
+	}{
+		{
+			name: "create new service account token secret",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					UID:       "test-uid-123",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test-sa",
+					Volumes: []corev1.Volume{
+						{
+							Name: "kube-api-access-xyz",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+												Audience:          "https://kubernetes.default.svc.cluster.local",
+												ExpirationSeconds: int64Ptr(3607),
+												Path:              "token",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			createIfNotExists: true,
+			expectedResult:    "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+			expectError:       false,
+		},
+		{
+			name: "update existing service account token secret - token different",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					UID:       "test-uid-123",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test-sa",
+					Volumes: []corev1.Volume{
+						{
+							Name: "kube-api-access-xyz",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+												Audience:          "https://kubernetes.default.svc.cluster.local",
+												ExpirationSeconds: int64Ptr(3607),
+												Path:              "token",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			createIfNotExists: false,
+			expectedResult:    "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+			expectError:       false,
+		},
+		{
+			name: "update existing service account token secret - token same",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					UID:       "test-uid-123",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test-sa",
+					Volumes: []corev1.Volume{
+						{
+							Name: "kube-api-access-xyz",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+												Audience:          "https://kubernetes.default.svc.cluster.local",
+												ExpirationSeconds: int64Ptr(3607),
+												Path:              "token",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			createIfNotExists: false,
+			expectedResult:    "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+			expectError:       false,
+		},
+		{
+			name: "secret not found and createIfNotExists false - should error",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					UID:       "test-uid-123",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test-sa",
+					Volumes: []corev1.Volume{
+						{
+							Name: "kube-api-access-xyz",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+												Audience:          "https://kubernetes.default.svc.cluster.local",
+												ExpirationSeconds: int64Ptr(3607),
+												Path:              "token",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			createIfNotExists: false,
+			expectedResult:    "",
+			expectError:       true,
+			errorContains:     "not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+			// For update tests, create an existing secret with different token
+			if !tt.createIfNotExists && tt.name == "update existing service account token secret - token different" {
+				existingSecret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+						Namespace: "test-cluster",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"token": []byte("different-token-content"),
+					},
+				}
+				err := physicalClient.Create(ctx, existingSecret)
+				require.NoError(t, err)
+			}
+
+			// For update tests with same token, create an existing secret with same token
+			if !tt.createIfNotExists && tt.name == "update existing service account token secret - token same" {
+				existingSecret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+						Namespace: "test-cluster",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"token": []byte("dGVzdC10b2tlbi1jb250ZW50"), // base64 encoded "test-token-content"
+					},
+				}
+				err := physicalClient.Create(ctx, existingSecret)
+				require.NoError(t, err)
+			}
+
+			reconciler := &VirtualPodReconciler{
+				VirtualClient:  virtualClient,
+				PhysicalClient: physicalClient,
+				ClusterBinding: clusterBinding,
+				Log:            ctrl.Log.WithName("test"),
+				clusterID:      "test-cluster-id",
+				TokenManager:   mockTokenManager,
+			}
+
+			// Call the function
+			result, err := reconciler.syncServiceAccountToken(ctx, tt.virtualPod, tt.createIfNotExists)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedResult, result)
+
+			// Verify the secret was created/updated correctly
+			secret := &corev1.Secret{}
+			err = physicalClient.Get(ctx, types.NamespacedName{
+				Name:      tt.expectedResult,
+				Namespace: "test-cluster",
+			}, secret)
+			assert.NoError(t, err)
+			assert.Equal(t, corev1.SecretTypeOpaque, secret.Type)
+			assert.Contains(t, secret.Data, "token")
+		})
+	}
+}
+
+// TestVirtualPodReconciler_SyncConfigMapsWithProjectedVolumes tests syncConfigMaps with projected volumes
+func TestVirtualPodReconciler_SyncConfigMapsWithProjectedVolumes(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name              string
+		virtualPod        *corev1.Pod
+		virtualConfigMaps []*corev1.ConfigMap
+		expectedResult    map[string]string
+		expectError       bool
+	}{
+		{
+			name: "pod with projected configmap volume",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "projected-config",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ConfigMap: &corev1.ConfigMapProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "projected-config-1",
+												},
+												Items: []corev1.KeyToPath{
+													{Key: "config1", Path: "config1"},
+												},
+											},
+										},
+										{
+											ConfigMap: &corev1.ConfigMapProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "projected-config-2",
+												},
+												Items: []corev1.KeyToPath{
+													{Key: "config2", Path: "config2"},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "projected-config-1",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"config1": "value1",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "projected-config-2",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"config2": "value2",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"projected-config-1": "projected-config-1-physical",
+				"projected-config-2": "projected-config-2-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with mixed volume types",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "regular-config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "regular-config",
+									},
+								},
+							},
+						},
+						{
+							Name: "projected-config",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ConfigMap: &corev1.ConfigMapProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "projected-config",
+												},
+												Items: []corev1.KeyToPath{
+													{Key: "config", Path: "config"},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "regular-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"regular": "value",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "projected-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"config": "value",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"regular-config":   "regular-config-physical",
+				"projected-config": "projected-config-physical",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			physicalK8sClient := fake.NewSimpleClientset()
+
+			// Create virtual ConfigMaps
+			for _, cm := range tt.virtualConfigMaps {
+				err := virtualClient.Create(ctx, cm)
+				require.NoError(t, err)
+			}
+
+			reconciler := &VirtualPodReconciler{
+				VirtualClient:     virtualClient,
+				PhysicalClient:    physicalClient,
+				PhysicalK8sClient: physicalK8sClient,
+				ClusterBinding:    clusterBinding,
+				Scheme:            scheme,
+				Log:               zap.New(),
+			}
+
+			// Call the function
+			result, err := reconciler.syncConfigMaps(ctx, tt.virtualPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, len(tt.expectedResult), len(result))
+
+			// Verify that all expected ConfigMaps were synced
+			for virtualName := range tt.expectedResult {
+				assert.Contains(t, result, virtualName)
+				// Note: In a real test, we would verify the actual physical name generation
+				// For now, we just check that a mapping exists
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_SyncSecretsWithProjectedVolumes tests syncSecrets with projected volumes
+func TestVirtualPodReconciler_SyncSecretsWithProjectedVolumes(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		virtualSecrets []*corev1.Secret
+		expectedResult map[string]string
+		expectError    bool
+	}{
+		{
+			name: "pod with projected secret volume",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "projected-secret",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											Secret: &corev1.SecretProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "projected-secret-1",
+												},
+												Items: []corev1.KeyToPath{
+													{Key: "secret1", Path: "secret1"},
+												},
+											},
+										},
+										{
+											Secret: &corev1.SecretProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "projected-secret-2",
+												},
+												Items: []corev1.KeyToPath{
+													{Key: "secret2", Path: "secret2"},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualSecrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "projected-secret-1",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"secret1": []byte("value1"),
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "projected-secret-2",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"secret2": []byte("value2"),
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"projected-secret-1": "projected-secret-1-physical",
+				"projected-secret-2": "projected-secret-2-physical",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			physicalK8sClient := fake.NewSimpleClientset()
+
+			// Create virtual Secrets
+			for _, secret := range tt.virtualSecrets {
+				err := virtualClient.Create(ctx, secret)
+				require.NoError(t, err)
+			}
+
+			reconciler := &VirtualPodReconciler{
+				VirtualClient:     virtualClient,
+				PhysicalClient:    physicalClient,
+				PhysicalK8sClient: physicalK8sClient,
+				ClusterBinding:    clusterBinding,
+				Scheme:            scheme,
+				Log:               zap.New(),
+			}
+
+			// Call the function
+			result, err := reconciler.syncSecrets(ctx, tt.virtualPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, len(tt.expectedResult), len(result))
+
+			// Verify that all expected Secrets were synced
+			for virtualName := range tt.expectedResult {
+				assert.Contains(t, result, virtualName)
+				// Note: In a real test, we would verify the actual physical name generation
+				// For now, we just check that a mapping exists
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_BuildPhysicalPodSpecWithProjectedVolumes tests buildPhysicalPodSpec with projected volumes
+func TestVirtualPodReconciler_BuildPhysicalPodSpecWithProjectedVolumes(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name            string
+		virtualPod      *corev1.Pod
+		resourceMapping *ResourceMapping
+		expectedError   bool
+		errorContains   string
+	}{
+		{
+			name: "pod with projected configmap and secret volumes",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "projected-mixed",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ConfigMap: &corev1.ConfigMapProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "projected-config",
+												},
+												Items: []corev1.KeyToPath{
+													{Key: "config", Path: "config"},
+												},
+											},
+										},
+										{
+											Secret: &corev1.SecretProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "projected-secret",
+												},
+												Items: []corev1.KeyToPath{
+													{Key: "secret", Path: "secret"},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			resourceMapping: &ResourceMapping{
+				ConfigMaps: map[string]string{
+					"projected-config": "projected-config-physical",
+				},
+				Secrets: map[string]string{
+					"projected-secret": "projected-secret-physical",
+				},
+			},
+			expectedError: false,
+		},
+		{
+			name: "pod with projected configmap but missing mapping",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "projected-config",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											ConfigMap: &corev1.ConfigMapProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "missing-config",
+												},
+												Items: []corev1.KeyToPath{
+													{Key: "config", Path: "config"},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			resourceMapping: &ResourceMapping{
+				ConfigMaps: map[string]string{},
+				Secrets:    map[string]string{},
+			},
+			expectedError: true,
+			errorContains: "configMap mapping not found for virtual ConfigMap in projected volume",
+		},
+		{
+			name: "pod with projected secret but missing mapping",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "projected-secret",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{
+										{
+											Secret: &corev1.SecretProjection{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "missing-secret",
+												},
+												Items: []corev1.KeyToPath{
+													{Key: "secret", Path: "secret"},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			resourceMapping: &ResourceMapping{
+				ConfigMaps: map[string]string{},
+				Secrets:    map[string]string{},
+			},
+			expectedError: true,
+			errorContains: "secret mapping not found for virtual Secret in projected volume",
+		},
+		{
+			name: "pod with downwardAPI volumes and environment variables",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "downward-api-volume",
+							VolumeSource: corev1.VolumeSource{
+								DownwardAPI: &corev1.DownwardAPIVolumeSource{
+									Items: []corev1.DownwardAPIVolumeFile{
+										{
+											Path: "namespace",
+											FieldRef: &corev1.ObjectFieldSelector{
+												FieldPath: "metadata.namespace",
+											},
+										},
+										{
+											Path: "name",
+											FieldRef: &corev1.ObjectFieldSelector{
+												FieldPath: "metadata.name",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "test-container",
+							Image: "test-image",
+							Env: []corev1.EnvVar{
+								{
+									Name: "POD_NAMESPACE",
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{
+											FieldPath: "metadata.namespace",
+										},
+									},
+								},
+								{
+									Name: "POD_NAME",
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{
+											FieldPath: "metadata.name",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			resourceMapping: &ResourceMapping{
+				ConfigMaps: map[string]string{},
+				Secrets:    map[string]string{},
+			},
+			expectedError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				VirtualClient:  nil, // Not needed for this test
+				PhysicalClient: nil, // Not needed for this test
+				ClusterBinding: clusterBinding,
+				Log:            ctrl.Log.WithName("test"),
+				clusterID:      "test-cluster-id",
+			}
+
+			// Call the function
+			result, err := reconciler.buildPhysicalPodSpec(tt.virtualPod, "test-node", tt.resourceMapping)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+				return
+			}
+
+			assert.NoError(t, err)
+
+			// Verify that projected volumes were processed correctly
+			for _, volume := range result.Volumes {
+				if volume.Projected != nil {
+					for _, source := range volume.Projected.Sources {
+						if source.ConfigMap != nil {
+							// The ConfigMap name should have been replaced with the physical name
+							expectedName := tt.resourceMapping.ConfigMaps["projected-config"] // Use the original virtual name
+							assert.Equal(t, expectedName, source.ConfigMap.Name, "ConfigMap name should be replaced with physical name")
+						}
+						if source.Secret != nil {
+							// The Secret name should have been replaced with the physical name
+							expectedName := tt.resourceMapping.Secrets["projected-secret"] // Use the original virtual name
+							assert.Equal(t, expectedName, source.Secret.Name, "Secret name should be replaced with physical name")
+						}
+					}
+				}
+			}
+
+			// Verify that DownwardAPI volumes were processed correctly
+			for _, volume := range result.Volumes {
+				if volume.DownwardAPI != nil {
+					for _, item := range volume.DownwardAPI.Items {
+						if item.FieldRef != nil {
+							if item.Path == "namespace" {
+								expectedFieldPath := fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace)
+								assert.Equal(t, expectedFieldPath, item.FieldRef.FieldPath, "metadata.namespace fieldPath should be replaced with annotation reference")
+							}
+							if item.Path == "name" {
+								expectedFieldPath := fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
+								assert.Equal(t, expectedFieldPath, item.FieldRef.FieldPath, "metadata.name fieldPath should be replaced with annotation reference")
+							}
+						}
+					}
+				}
+			}
+
+			// Verify that container environment variables were processed correctly
+			for _, container := range result.Containers {
+				for _, envVar := range container.Env {
+					if envVar.ValueFrom != nil && envVar.ValueFrom.FieldRef != nil {
+						if envVar.Name == "POD_NAMESPACE" {
+							expectedFieldPath := fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace)
+							assert.Equal(t, expectedFieldPath, envVar.ValueFrom.FieldRef.FieldPath, "POD_NAMESPACE fieldPath should be replaced with annotation reference")
+						}
+						if envVar.Name == "POD_NAME" {
+							expectedFieldPath := fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
+							assert.Equal(t, expectedFieldPath, envVar.ValueFrom.FieldRef.FieldPath, "POD_NAME fieldPath should be replaced with annotation reference")
+						}
+					}
+				}
+			}
+		})
+	}
 }
 
 // TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations tests the updateVirtualResourceLabelsAndAnnotations function

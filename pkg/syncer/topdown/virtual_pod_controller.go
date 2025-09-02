@@ -3,7 +3,9 @@ package topdown
 import (
 	"context"
 	"crypto/md5"
+	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -14,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,6 +26,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	"github.com/TKEColocation/tapestry/pkg/syncer/topdown/token"
+	authenticationv1 "k8s.io/api/authentication/v1"
 )
 
 // VirtualPodReconciler reconciles Pod objects from virtual cluster
@@ -36,6 +41,8 @@ type VirtualPodReconciler struct {
 	Log               logr.Logger
 	workQueue         workqueue.TypedRateLimitingInterface[reconcile.Request]
 	clusterID         string // Cached cluster ID for performance
+	EventRecorder     record.EventRecorder
+	TokenManager      token.TokenManagerInterface
 }
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
@@ -105,7 +112,25 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.updateVirtualPodWithPhysicalUID(ctx, virtualPod, actualPhysicalUID)
 	}
 
-	// Physical pod exists and UID is already set, no action needed (handled by bottom-up syncer)
+	// Physical pod exists and UID is already set, check if service account token needs updating
+	if virtualPod.Spec.ServiceAccountName != "" {
+		// Check and update service account token, don't create if not exists
+		_, err = r.syncServiceAccountToken(ctx, virtualPod, false)
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				logger.Error(err, "Failed to check and update service account token")
+				return ctrl.Result{}, err
+			}
+			logger.Error(err, "Service account token not found, skip requeue")
+			// Don't requeue on error, just log it
+			return ctrl.Result{}, nil
+		}
+
+		// Set requeue after 10 minutes for token refresh
+		return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
+	}
+
+	// No service account, no action needed
 	logger.V(1).Info("Physical pod exists, no action needed",
 		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
 	return ctrl.Result{}, nil
@@ -114,6 +139,14 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // handleVirtualPodDeletion handles the deletion of virtual pod
 func (r *VirtualPodReconciler) handleVirtualPodDeletion(ctx context.Context, virtualPod *corev1.Pod) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	// Clean up service account token secret if service account name exists
+	if virtualPod.Spec.ServiceAccountName != "" {
+		if err := r.cleanupServiceAccountToken(ctx, virtualPod); err != nil {
+			logger.Error(err, "Failed to cleanup service account token secret")
+			return ctrl.Result{}, err
+		}
+	}
 
 	// Get physical pod reference from annotations
 	physicalNamespace := virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace]
@@ -295,7 +328,14 @@ func (r *VirtualPodReconciler) handlePhysicalPodCreation(ctx context.Context, vi
 	// 3. If cloudv1beta1.AnnotationPhysicalPodUID is empty but other annotations exist, create physical pod
 	if physicalUID == "" && physicalName != "" && physicalNamespace != "" {
 		logger.Info("Creating physical pod", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
-		return r.createPhysicalPod(ctx, virtualPod, physicalNodeName)
+		res, err := r.createPhysicalPod(ctx, virtualPod, physicalNodeName)
+		if err != nil {
+			// Record warning event for virtual pod
+			if r.EventRecorder != nil {
+				r.EventRecorder.Eventf(virtualPod, corev1.EventTypeWarning, "FailedCreatePod", "Failed to create pod: %v", err)
+			}
+		}
+		return res, err
 	}
 
 	// Should not reach here
@@ -487,13 +527,60 @@ func (r *VirtualPodReconciler) buildPhysicalPodAnnotations(virtualPod *corev1.Po
 	return annotations
 }
 
-// buildPhysicalPodSpec builds spec for physical pod based on virtual pod with resource name mapping
+const (
+	// Field path constants for DownwardAPI
+	metadataNamespaceFieldPath = "metadata.namespace"
+	metadataNameFieldPath      = "metadata.name"
+)
+
+// replaceDownwardAPIFieldPaths replaces metadata.namespace and metadata.name fieldPath
+// with annotation references in DownwardAPI items
+func (r *VirtualPodReconciler) replaceDownwardAPIFieldPaths(items []corev1.DownwardAPIVolumeFile) {
+	for i := range items {
+		item := &items[i]
+		if item.FieldRef != nil {
+			// Replace metadata.namespace fieldPath with tapestry.io/virtual-pod-namespace annotation
+			if item.FieldRef.FieldPath == metadataNamespaceFieldPath {
+				item.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace)
+			}
+			// Replace metadata.name fieldPath with tapestry.io/virtual-pod-name annotation
+			if item.FieldRef.FieldPath == metadataNameFieldPath {
+				item.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
+			}
+		}
+	}
+}
+
+// replaceContainerDownwardAPIFieldPaths replaces metadata.namespace and metadata.name fieldPath
+// with annotation references in container environment variables
+func (r *VirtualPodReconciler) replaceContainerDownwardAPIFieldPaths(envVars []corev1.EnvVar) {
+	for i := range envVars {
+		envVar := &envVars[i]
+		if envVar.ValueFrom != nil && envVar.ValueFrom.FieldRef != nil {
+			// Replace metadata.namespace fieldPath with tapestry.io/virtual-pod-namespace annotation
+			if envVar.ValueFrom.FieldRef.FieldPath == metadataNamespaceFieldPath {
+				envVar.ValueFrom.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace)
+			}
+			// Replace metadata.name fieldPath with tapestry.io/virtual-pod-name annotation
+			if envVar.ValueFrom.FieldRef.FieldPath == metadataNameFieldPath {
+				envVar.ValueFrom.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
+			}
+		}
+	}
+}
+
 func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, physicalNodeName string, resourceMapping *ResourceMapping) (corev1.PodSpec, error) {
 	// Deep copy the spec to avoid modifying the original
 	spec := *virtualPod.Spec.DeepCopy()
 
 	// Set the physical node name for scheduling
 	spec.NodeName = physicalNodeName
+
+	// cleanup service account related fields
+	spec.ServiceAccountName = ""
+	spec.DeprecatedServiceAccount = ""
+	// cleanup affinity
+	spec.Affinity = nil
 
 	// Replace resource names in volumes
 	for i := range spec.Volumes {
@@ -524,6 +611,69 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 			} else {
 				return spec, fmt.Errorf("PVC mapping not found for virtual PVC: %s", volume.PersistentVolumeClaim.ClaimName)
 			}
+		}
+
+		// Handle kube-api-access projected volumes for service account tokens
+		if strings.HasPrefix(volume.Name, "kube-api-access-") && virtualPod.Spec.ServiceAccountName != "" {
+			if resourceMapping.ServiceAccountTokenName == "" {
+				return spec, fmt.Errorf("service account token mapping not found for virtual ServiceAccount: %s", virtualPod.Spec.ServiceAccountName)
+			}
+			if volume.Projected != nil {
+				for j := range volume.Projected.Sources {
+					source := &volume.Projected.Sources[j]
+					if source.ServiceAccountToken != nil {
+						// Replace the service account token source with our mapped secret
+						source.ServiceAccountToken = nil
+						source.Secret = &corev1.SecretProjection{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: resourceMapping.ServiceAccountTokenName,
+							},
+							Items: []corev1.KeyToPath{
+								{
+									Key:  "token",
+									Path: "token",
+								},
+							},
+						}
+						break
+					}
+				}
+			}
+		}
+
+		// Handle projected volumes for ConfigMaps and Secrets
+		if volume.Projected != nil {
+			for j := range volume.Projected.Sources {
+				source := &volume.Projected.Sources[j]
+
+				// Replace ConfigMap names in projected sources
+				if source.ConfigMap != nil {
+					if physicalName, exists := resourceMapping.ConfigMaps[source.ConfigMap.Name]; exists {
+						source.ConfigMap.Name = physicalName
+					} else {
+						return spec, fmt.Errorf("configMap mapping not found for virtual ConfigMap in projected volume: %s", source.ConfigMap.Name)
+					}
+				}
+
+				// Replace Secret names in projected sources
+				if source.Secret != nil {
+					if physicalName, exists := resourceMapping.Secrets[source.Secret.Name]; exists {
+						source.Secret.Name = physicalName
+					} else {
+						return spec, fmt.Errorf("secret mapping not found for virtual Secret in projected volume: %s", source.Secret.Name)
+					}
+				}
+
+				// Handle DownwardAPI projections in projected volumes
+				if source.DownwardAPI != nil {
+					r.replaceDownwardAPIFieldPaths(source.DownwardAPI.Items)
+				}
+			}
+		}
+
+		// Handle DownwardAPI volumes - replace metadata.namespace and metadata.name fieldPath
+		if volume.DownwardAPI != nil {
+			r.replaceDownwardAPIFieldPaths(volume.DownwardAPI.Items)
 		}
 	}
 
@@ -580,6 +730,10 @@ func (r *VirtualPodReconciler) replaceContainerResourceNames(container *corev1.C
 			}
 		}
 	}
+
+	// Handle DownwardAPI fieldRef in environment variables
+	r.replaceContainerDownwardAPIFieldPaths(container.Env)
+
 	return nil
 }
 
@@ -599,6 +753,9 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 
 	// Cache cluster ID for performance
 	r.clusterID = r.ClusterBinding.Spec.ClusterID
+
+	// Set up EventRecorder
+	r.EventRecorder = virtualManager.GetEventRecorderFor(fmt.Sprintf("tapestry-syncer-%s", r.ClusterBinding.Name))
 
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualpod-%s", r.ClusterBinding.Name)
@@ -860,11 +1017,22 @@ func (r *VirtualPodReconciler) syncDependentResources(ctx context.Context, virtu
 		return nil, err
 	}
 
+	// 4. Sync ServiceAccountToken if ServiceAccountName is not empty
+	var serviceAccountTokenName string
+	if virtualPod.Spec.ServiceAccountName != "" {
+		serviceAccountTokenName, err = r.syncServiceAccountToken(ctx, virtualPod, true) // Create if not exists during pod creation
+		if err != nil {
+			logger.Error(err, "Failed to sync ServiceAccountToken")
+			return nil, err
+		}
+	}
+
 	// Build resource mapping
 	resourceMapping := &ResourceMapping{
-		ConfigMaps: configMapMappings,
-		Secrets:    secretMappings,
-		PVCs:       pvcMappings,
+		ConfigMaps:              configMapMappings,
+		Secrets:                 secretMappings,
+		PVCs:                    pvcMappings,
+		ServiceAccountTokenName: serviceAccountTokenName,
 	}
 
 	return resourceMapping, nil
@@ -881,6 +1049,14 @@ func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *c
 	for _, volume := range virtualPod.Spec.Volumes {
 		if volume.ConfigMap != nil {
 			configMapRefs[volume.ConfigMap.Name] = true
+		}
+		// From projected volumes
+		if volume.Projected != nil {
+			for _, source := range volume.Projected.Sources {
+				if source.ConfigMap != nil {
+					configMapRefs[source.ConfigMap.Name] = true
+				}
+			}
 		}
 	}
 
@@ -927,6 +1103,14 @@ func (r *VirtualPodReconciler) syncSecrets(ctx context.Context, virtualPod *core
 	for _, volume := range virtualPod.Spec.Volumes {
 		if volume.Secret != nil {
 			secretRefs[volume.Secret.SecretName] = true
+		}
+		// From projected volumes
+		if volume.Projected != nil {
+			for _, source := range volume.Projected.Sources {
+				if source.Secret != nil {
+					secretRefs[source.Secret.Name] = true
+				}
+			}
 		}
 	}
 
@@ -1007,9 +1191,10 @@ const (
 
 // ResourceMapping represents the mapping from virtual resource names to physical resource names
 type ResourceMapping struct {
-	ConfigMaps map[string]string // virtual name -> physical name
-	Secrets    map[string]string // virtual name -> physical name
-	PVCs       map[string]string // virtual name -> physical name
+	ConfigMaps              map[string]string // virtual name -> physical name
+	Secrets                 map[string]string // virtual name -> physical name
+	PVCs                    map[string]string // virtual name -> physical name
+	ServiceAccountTokenName string            // physical secret name for service account token
 }
 
 // syncResource syncs a single resource (ConfigMap, Secret, or PVC) and returns the physical resource name
@@ -1161,6 +1346,157 @@ func (r *VirtualPodReconciler) syncPV(ctx context.Context, pvName string) (strin
 	}
 	// No CSI secret reference, sync PV normally
 	return r.syncResource(ctx, ResourceTypePV, "", pvName, "", &corev1.PersistentVolume{}, nil)
+}
+
+// cleanupServiceAccountToken cleans up the service account token secret when pod is deleted
+func (r *VirtualPodReconciler) cleanupServiceAccountToken(ctx context.Context, virtualPod *corev1.Pod) error {
+	if virtualPod.Spec.ServiceAccountName == "" {
+		return nil // No service account, nothing to clean up
+	}
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name), "serviceAccountName", virtualPod.Spec.ServiceAccountName)
+
+	// Delete the service account token from TokenManager
+	r.TokenManager.DeleteServiceAccountToken(virtualPod.UID)
+
+	key := fmt.Sprintf("%s-%s", virtualPod.Name, virtualPod.UID)
+	// Generate physical secret name using the key
+	physicalSecretName := r.generatePhysicalName(key, virtualPod.Namespace)
+	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
+
+	// Delete the secret from physical cluster
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      physicalSecretName,
+			Namespace: physicalNamespace,
+		},
+	}
+	logger.V(1).Info("Deleting service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+
+	err := r.PhysicalClient.Delete(ctx, secret)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("Service account token secret already deleted", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+			return nil
+		}
+		logger.Error(err, "Failed to delete service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+		return fmt.Errorf("failed to delete service account token secret %s/%s: %v", physicalNamespace, physicalSecretName, err)
+	}
+
+	logger.Info("Successfully deleted service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+	return nil
+}
+
+// syncServiceAccountToken syncs the service account token for the virtual pod
+// createIfNotExists: if true, create secret when not exists; if false, return error when not exists
+func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, virtualPod *corev1.Pod, createIfNotExists bool) (string, error) {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	if r.TokenManager == nil {
+		return "", fmt.Errorf("TokenManager is not initialized")
+	}
+
+	var tp *corev1.ServiceAccountTokenProjection
+	for _, volume := range virtualPod.Spec.Volumes {
+		if volume.Projected != nil {
+			for _, source := range volume.Projected.Sources {
+				if source.ServiceAccountToken != nil {
+					tp = source.ServiceAccountToken
+					break
+				}
+			}
+		}
+	}
+	if tp == nil {
+		return "", fmt.Errorf("service account token projection not found in virtual pod %s/%s", virtualPod.Namespace, virtualPod.Name)
+	}
+
+	var auds []string
+	if len(tp.Audience) != 0 {
+		auds = []string{tp.Audience}
+	}
+	// Create TokenRequest for the service account
+	tokenRequest := &authenticationv1.TokenRequest{
+		Spec: authenticationv1.TokenRequestSpec{
+			Audiences:         auds,
+			ExpirationSeconds: tp.ExpirationSeconds,
+			BoundObjectRef: &authenticationv1.BoundObjectReference{
+				APIVersion: "v1",
+				Kind:       "Pod",
+				Name:       virtualPod.Name,
+				UID:        virtualPod.UID,
+			},
+		},
+	}
+
+	// Get service account token using TokenManager
+	token, err := r.TokenManager.GetServiceAccountToken(virtualPod.Namespace, virtualPod.Spec.ServiceAccountName, tokenRequest)
+	if err != nil {
+		return "", fmt.Errorf("failed to get service account token %s: %v", virtualPod.Spec.ServiceAccountName, err)
+	}
+
+	// Generate physical secret name using the key
+	key := fmt.Sprintf("%s-%s", virtualPod.Name, virtualPod.UID)
+	physicalSecretName := r.generatePhysicalName(key, virtualPod.Namespace)
+	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
+
+	// Create or update the secret in physical cluster
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      physicalSecretName,
+			Namespace: physicalNamespace,
+			Labels: map[string]string{
+				cloudv1beta1.LabelManagedBy:         cloudv1beta1.LabelManagedByValue,
+				"tapestry.io/service-account-token": "true",
+			},
+			Annotations: map[string]string{
+				cloudv1beta1.AnnotationVirtualPodName:      virtualPod.Name,
+				cloudv1beta1.AnnotationVirtualPodNamespace: virtualPod.Namespace,
+				cloudv1beta1.AnnotationVirtualPodUID:       string(virtualPod.UID),
+				"tapestry.io/service-account":              virtualPod.Spec.ServiceAccountName,
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"token": []byte(base64.StdEncoding.EncodeToString([]byte(token.Status.Token))),
+		},
+	}
+
+	// Check if secret already exists
+	existingSecret := &corev1.Secret{}
+	err = r.PhysicalClient.Get(ctx, types.NamespacedName{Namespace: physicalNamespace, Name: physicalSecretName}, existingSecret)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("failed to check if service account token secret exists %s/%s: %v", physicalNamespace, physicalSecretName, err)
+		}
+
+		// Secret not found
+		if !createIfNotExists {
+			return "", err
+		}
+		// Create new secret
+		if err := r.PhysicalClient.Create(ctx, secret); err != nil {
+			return "", fmt.Errorf("failed to create service account token secret %s/%s: %v", physicalNamespace, physicalSecretName, err)
+		}
+		logger.Info("Created service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+	} else {
+		// Check if token needs updating
+		currentToken := string(existingSecret.Data["token"])
+		newTokenBase64 := base64.StdEncoding.EncodeToString([]byte(token.Status.Token))
+		if currentToken == newTokenBase64 {
+			// Token is the same, no update needed
+			logger.V(1).Info("Service account token is up to date, no update needed", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+		} else {
+			// Token is different, update the secret
+			newSecret := existingSecret.DeepCopy()
+			newSecret.Data["token"] = []byte(newTokenBase64)
+			if err := r.PhysicalClient.Update(ctx, newSecret); err != nil {
+				return "", fmt.Errorf("failed to update service account token secret %s/%s: %v", physicalNamespace, physicalSecretName, err)
+			}
+			logger.Info("Updated service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+		}
+	}
+
+	return physicalSecretName, nil
 }
 
 // checkPhysicalResourceExists checks if physical resource exists using both cached and direct client
