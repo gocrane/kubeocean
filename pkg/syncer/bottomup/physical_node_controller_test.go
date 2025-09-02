@@ -3211,3 +3211,185 @@ func TestPhysicalNodeReconciler_handleOutOfTimeWindowsTaint(t *testing.T) {
 		})
 	}
 }
+
+func TestPhysicalNodeReconciler_shouldProcessNode(t *testing.T) {
+	// Set up logger
+	logger := zap.New(zap.UseDevMode(true))
+	ctrl.SetLogger(logger)
+
+	tests := []struct {
+		name           string
+		node           *corev1.Node
+		expectedResult bool
+	}{
+		{
+			name:           "nil node should return false",
+			node:           nil,
+			expectedResult: false,
+		},
+		{
+			name: "normal node without special labels should return true",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "normal-node",
+					Labels: map[string]string{
+						"kubernetes.io/hostname":         "normal-node",
+						"node-role.kubernetes.io/worker": "true",
+					},
+				},
+			},
+			expectedResult: true,
+		},
+		{
+			name: "node with external instance type should return false",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "external-node",
+					Labels: map[string]string{
+						"node.kubernetes.io/instance-type": "external",
+					},
+				},
+			},
+			expectedResult: false,
+		},
+		{
+			name: "node with vnode instance type should return false",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "vnode-node",
+					Labels: map[string]string{
+						"node.kubernetes.io/instance-type": "vnode",
+					},
+				},
+			},
+			expectedResult: false,
+		},
+		{
+			name: "node with eklet instance type should return false",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "eklet-node",
+					Labels: map[string]string{
+						"node.kubernetes.io/instance-type": "eklet",
+					},
+				},
+			},
+			expectedResult: false,
+		},
+		{
+			name: "node with beta external instance type should return false",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "beta-external-node",
+					Labels: map[string]string{
+						"beta.kubernetes.io/instance-type": "external",
+					},
+				},
+			},
+			expectedResult: false,
+		},
+		{
+			name: "node with beta vnode instance type should return false",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "beta-vnode-node",
+					Labels: map[string]string{
+						"beta.kubernetes.io/instance-type": "vnode",
+					},
+				},
+			},
+			expectedResult: false,
+		},
+		{
+			name: "node with beta eklet instance type should return false",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "beta-eklet-node",
+					Labels: map[string]string{
+						"beta.kubernetes.io/instance-type": "eklet",
+					},
+				},
+			},
+			expectedResult: false,
+		},
+		{
+			name: "node with virtual-kubelet type should return false",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "virtual-kubelet-node",
+					Labels: map[string]string{
+						"type": "virtual-kubelet",
+					},
+				},
+			},
+			expectedResult: false,
+		},
+		{
+			name: "node with mixed excluded labels should return false",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "mixed-excluded-node",
+					Labels: map[string]string{
+						"node.kubernetes.io/instance-type": "external",
+						"type":                             "virtual-kubelet",
+						"kubernetes.io/hostname":           "mixed-excluded-node",
+					},
+				},
+			},
+			expectedResult: false,
+		},
+		{
+			name: "node with valid instance type should return true",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "valid-instance-node",
+					Labels: map[string]string{
+						"node.kubernetes.io/instance-type": "n1-standard-1",
+						"kubernetes.io/hostname":           "valid-instance-node",
+					},
+				},
+			},
+			expectedResult: true,
+		},
+		{
+			name: "node with valid beta instance type should return true",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "valid-beta-instance-node",
+					Labels: map[string]string{
+						"beta.kubernetes.io/instance-type": "n1-standard-2",
+						"kubernetes.io/hostname":           "valid-beta-instance-node",
+					},
+				},
+			},
+			expectedResult: true,
+		},
+		{
+			name: "node with other type label should return true",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "other-type-node",
+					Labels: map[string]string{
+						"type":                   "worker",
+						"kubernetes.io/hostname": "other-type-node",
+					},
+				},
+			},
+			expectedResult: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &PhysicalNodeReconciler{
+				Log: zap.New(zap.UseDevMode(true)),
+			}
+
+			result := reconciler.shouldProcessNode(tt.node)
+
+			if result != tt.expectedResult {
+				t.Errorf("shouldProcessNode() = %v, want %v", result, tt.expectedResult)
+			}
+		})
+	}
+}

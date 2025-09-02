@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
@@ -1516,6 +1517,15 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 	return ctrl.NewControllerManagedBy(physicalManager).
 		For(&corev1.Node{}).
 		Named(uniqueControllerName).
+		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+			node, ok := obj.(*corev1.Node)
+			if !ok {
+				// invalid node means the object may be the pod object
+				// r.Log.V(1).Info("Skipping node with invalid type, may be the pod object", "node", obj.GetName())
+				return true
+			}
+			return r.shouldProcessNode(node)
+		})).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 50,
 			RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute),
@@ -1593,4 +1603,36 @@ func (r *PhysicalNodeReconciler) handleVirtualNodeEvent(node *corev1.Node, event
 	if err := r.TriggerReconciliation(physicalNodeName); err != nil {
 		log.Error(err, "Failed to trigger node reconciliation")
 	}
+}
+
+// shouldProcessNode determines if a node should be processed based on its labels
+func (r *PhysicalNodeReconciler) shouldProcessNode(node *corev1.Node) bool {
+	if node == nil {
+		return false
+	}
+
+	// Check instance-type labels for external, vnode, and eklet
+	if instanceType, exists := node.Labels[NodeInstanceTypeLabel]; exists {
+		if instanceType == NodeInstanceTypeExternal || instanceType == NodeInstanceTypeVNode || instanceType == "eklet" {
+			r.Log.V(1).Info("Skipping node with excluded instance type",
+				"node", node.Name, "instanceType", instanceType, "label", NodeInstanceTypeLabel)
+			return false
+		}
+	}
+
+	if instanceType, exists := node.Labels[NodeInstanceTypeLabelBeta]; exists {
+		if instanceType == NodeInstanceTypeExternal || instanceType == NodeInstanceTypeVNode || instanceType == "eklet" {
+			r.Log.V(1).Info("Skipping node with excluded instance type",
+				"node", node.Name, "instanceType", instanceType, "label", NodeInstanceTypeLabelBeta)
+			return false
+		}
+	}
+
+	// Check for virtual-kubelet type
+	if nodeType, exists := node.Labels[LabelVirtualNodeType]; exists && nodeType == VirtualNodeTypeValue {
+		r.Log.V(1).Info("Skipping virtual-kubelet node", "node", node.Name, "type", nodeType)
+		return false
+	}
+
+	return true
 }
