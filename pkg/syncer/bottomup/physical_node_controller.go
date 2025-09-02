@@ -41,6 +41,7 @@ const (
 	NodeInstanceTypeLabelBeta = "beta.kubernetes.io/instance-type"
 	NodeInstanceTypeLabel     = "node.kubernetes.io/instance-type"
 	NodeInstanceTypeExternal  = "external"
+	NodeInstanceTypeVNode     = "vnode"
 
 	// Taint keys for node deletion
 	TaintKeyVirtualNodeDeleting = "tapestry.io/vnode-deleting"
@@ -1221,8 +1222,8 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physica
 	labels[cloudv1beta1.LabelPhysicalNodeName] = physicalNode.Name
 	labels[cloudv1beta1.LabelManagedBy] = "tapestry"
 	labels[LabelVirtualNodeType] = VirtualNodeTypeValue
-	labels[NodeInstanceTypeLabel] = NodeInstanceTypeExternal
-	labels[NodeInstanceTypeLabelBeta] = NodeInstanceTypeExternal
+	labels[NodeInstanceTypeLabel] = NodeInstanceTypeVNode
+	labels[NodeInstanceTypeLabelBeta] = NodeInstanceTypeVNode
 	labels["kubernetes.io/hostname"] = nodeName
 
 	r.Log.V(1).Info("Built virtual node labels", "physicalNode", physicalNode.Name, "labelCount", len(labels))
