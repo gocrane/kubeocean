@@ -2403,16 +2403,22 @@ func TestPhysicalNodeReconciler_forceEvictPodsOnVirtualNode(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 
 	tests := []struct {
-		name            string
-		pods            []corev1.Pod
-		virtualNodeName string
-		expectError     bool
+		name                         string
+		pods                         []corev1.Pod
+		virtualNodeName              string
+		skipTimeOutTaintsTolerations bool
+		expectError                  bool
+		expectedDeletedCount         int
+		expectedSkippedCount         int
 	}{
 		{
-			name:            "no pods to evict",
-			pods:            []corev1.Pod{},
-			virtualNodeName: "test-vnode",
-			expectError:     false,
+			name:                         "no pods to evict",
+			pods:                         []corev1.Pod{},
+			virtualNodeName:              "test-vnode",
+			skipTimeOutTaintsTolerations: false,
+			expectError:                  false,
+			expectedDeletedCount:         0,
+			expectedSkippedCount:         0,
 		},
 		{
 			name: "evict running and pending pods",
@@ -2454,8 +2460,52 @@ func TestPhysicalNodeReconciler_forceEvictPodsOnVirtualNode(t *testing.T) {
 					},
 				},
 			},
-			virtualNodeName: "test-vnode",
-			expectError:     false,
+			virtualNodeName:              "test-vnode",
+			skipTimeOutTaintsTolerations: false,
+			expectError:                  false,
+			expectedDeletedCount:         3,
+			expectedSkippedCount:         0,
+		},
+		{
+			name: "skip pods with TaintOutOfTimeWindows tolerations",
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "normal-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "tolerated-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-vnode",
+						Tolerations: []corev1.Toleration{
+							{
+								Key:      cloudv1beta1.TaintOutOfTimeWindows,
+								Operator: corev1.TolerationOpExists,
+								Effect:   corev1.TaintEffectNoExecute,
+							},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+					},
+				},
+			},
+			virtualNodeName:              "test-vnode",
+			skipTimeOutTaintsTolerations: true,
+			expectError:                  false,
+			expectedDeletedCount:         1,
+			expectedSkippedCount:         1,
 		},
 	}
 
@@ -2485,7 +2535,7 @@ func TestPhysicalNodeReconciler_forceEvictPodsOnVirtualNode(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			err := reconciler.forceEvictPodsOnVirtualNode(ctx, tt.virtualNodeName)
+			err := reconciler.forceEvictPodsOnVirtualNode(ctx, tt.virtualNodeName, tt.skipTimeOutTaintsTolerations)
 
 			if tt.expectError {
 				assert.Error(t, err)

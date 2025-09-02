@@ -301,7 +301,8 @@ func (r *PhysicalNodeReconciler) checkPodsOnVirtualNode(ctx context.Context, vir
 // forceEvictPodsOnVirtualNode forcefully evicts all pods on the virtual node by deleting them
 // Pods with deletionTimestamp set will be skipped
 // If any pod deletion fails, it continues with other pods but returns an error at the end
-func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context, virtualNodeName string) error {
+// skipTimeOutTaintsTolerations: if true, skip pods with TaintOutOfTimeWindows tolerations
+func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context, virtualNodeName string, skipTimeOutTaintsTolerations bool) error {
 	logger := r.Log.WithValues("virtualNode", virtualNodeName)
 
 	// List all pods on this virtual node
@@ -336,6 +337,13 @@ func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context
 			continue
 		}
 
+		// 如果 skipTimeOutTaintsTolerations 为 true，检查 Pod 是否有 TaintOutOfTimeWindows tolerations
+		if skipTimeOutTaintsTolerations && r.hasTaintOutOfTimeWindowsToleration(pod) {
+			skippedCount++
+			logger.V(1).Info("Skipping pod with TaintOutOfTimeWindows toleration", "pod", pod.Name, "namespace", pod.Namespace)
+			continue
+		}
+
 		logger.Info("Deleting pod to evict", "pod", pod.Name, "namespace", pod.Namespace, "phase", pod.Status.Phase)
 		// Delete the pod immediately
 		deleteOptions := &client.DeleteOptions{
@@ -367,6 +375,16 @@ func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context
 	}
 
 	return nil
+}
+
+// hasTaintOutOfTimeWindowsToleration checks if a pod has tolerations for TaintOutOfTimeWindows
+func (r *PhysicalNodeReconciler) hasTaintOutOfTimeWindowsToleration(pod *corev1.Pod) bool {
+	for _, toleration := range pod.Spec.Tolerations {
+		if toleration.Key == cloudv1beta1.TaintOutOfTimeWindows {
+			return true
+		}
+	}
+	return false
 }
 
 // handleNodeDeletion handles deletion of physical node
@@ -412,7 +430,7 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 		if gracefulReclaimPeriodSeconds == 0 {
 			// Immediate force eviction (physical node deleted scenario)
 			logger.Info("Immediate force eviction requested, evicting all pods")
-			if err := r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName); err != nil {
+			if err := r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName, false); err != nil {
 				logger.Error(err, "Failed to force evict pods")
 				return ctrl.Result{}, err
 			}
@@ -435,7 +453,7 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 				return ctrl.Result{RequeueAfter: remainingTime}, nil
 			}
 			logger.Info("Graceful reclaim period passed, force evicting pods")
-			if err := r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName); err != nil {
+			if err := r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName, false); err != nil {
 				logger.Error(err, "Failed to force evict pods")
 				return ctrl.Result{}, err
 			}
@@ -1373,7 +1391,8 @@ func (r *PhysicalNodeReconciler) handleOutOfTimeWindows(ctx context.Context, phy
 	// If gracefulPeriod is 0, immediately delete all pods
 	if gracefulPeriod == 0 {
 		logger.Info("Graceful period is 0, immediately deleting all virtual pods")
-		err = r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName)
+		// do not delete pods with taints tolerations because it will be recreated by controller
+		err = r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName, true)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to delete virtual pods on node %s: %w", virtualNodeName, err)
 		}
@@ -1388,7 +1407,7 @@ func (r *PhysicalNodeReconciler) handleOutOfTimeWindows(ctx context.Context, phy
 	// Check if graceful period has passed
 	if existingTaint.TimeAdded == nil {
 		logger.Info("No taint time found, immediately deleting all virtual pods")
-		err = r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName)
+		err = r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName, true)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to delete virtual pods on node %s: %w", virtualNodeName, err)
 		}
@@ -1402,7 +1421,7 @@ func (r *PhysicalNodeReconciler) handleOutOfTimeWindows(ctx context.Context, phy
 	// If graceful period has passed, delete all pods
 	if timeSinceTaint >= gracefulDuration {
 		logger.Info("Graceful period passed, deleting all virtual pods", "taintTime", taintTime, "timeSinceTaint", timeSinceTaint, "gracefulPeriod", gracefulPeriod)
-		err = r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName)
+		err = r.forceEvictPodsOnVirtualNode(ctx, virtualNodeName, true)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to delete virtual pods on node %s: %w", virtualNodeName, err)
 		}
