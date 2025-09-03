@@ -37,7 +37,7 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 	// Helper function to add clusterID label to virtual ConfigMap
 	addClusterIDLabel := func(configMap *corev1.ConfigMap) {
 		if configMap != nil && configMap.Labels != nil {
-			configMap.Labels["tapestry.io/synced-by-test-cluster-id"] = "true"
+			configMap.Labels["tapestry.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
 		}
 	}
 
@@ -79,7 +79,7 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 					Namespace: "virtual-ns",
 					Labels: map[string]string{
 						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
-						"tapestry.io/synced-by-other-cluster-id": "true",
+						"tapestry.io/synced-by-other-cluster-id": cloudv1beta1.LabelValueTrue,
 					},
 					Annotations: map[string]string{
 						cloudv1beta1.AnnotationPhysicalName: "physical-config",

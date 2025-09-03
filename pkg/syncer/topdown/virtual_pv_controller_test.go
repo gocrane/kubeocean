@@ -23,7 +23,7 @@ func TestVirtualPVReconciler_Reconcile(t *testing.T) {
 	// Helper function to add clusterID label to virtual PV
 	addClusterIDLabel := func(pv *corev1.PersistentVolume) {
 		if pv != nil && pv.Labels != nil {
-			pv.Labels["tapestry.io/synced-by-test-cluster-id"] = "true"
+			pv.Labels["tapestry.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
 		}
 	}
 
@@ -399,7 +399,7 @@ func TestVirtualPVReconciler_Reconcile(t *testing.T) {
 				},
 			}
 			if tt.virtualPV != nil {
-				req.NamespacedName.Name = tt.virtualPV.Name
+				req.Name = tt.virtualPV.Name
 			}
 
 			// Execute reconcile

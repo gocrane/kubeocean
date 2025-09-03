@@ -3,6 +3,7 @@ package topdown
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -136,7 +137,7 @@ func testVirtualPodCreationIntegration(t *testing.T, reconciler *VirtualPodRecon
 	// First reconcile should generate physical pod mapping
 	result, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.False(t, result.Requeue) // No longer requeue after generating mapping
+	assert.Equal(t, time.Duration(0), result.RequeueAfter) // No longer requeue after generating mapping
 
 	// Get updated virtual pod
 	err = virtualClient.Get(ctx, req.NamespacedName, virtualPod)
@@ -231,7 +232,7 @@ func testVirtualPodDeletionIntegration(t *testing.T, reconciler *VirtualPodRecon
 	// Reconcile should handle deletion
 	result, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.False(t, result.Requeue)
+	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 	// Physical pod should be deleted
 	err = physicalClient.Get(ctx, types.NamespacedName{
@@ -281,7 +282,7 @@ func testMissingPhysicalPodIntegration(t *testing.T, reconciler *VirtualPodRecon
 	// Reconcile should set virtual pod status to Failed
 	result, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.False(t, result.Requeue)
+	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 	// Get updated virtual pod
 	err = virtualClient.Get(ctx, req.NamespacedName, virtualPod)
@@ -327,7 +328,7 @@ func testPodMappingGenerationIntegration(t *testing.T, reconciler *VirtualPodRec
 	// First reconcile should generate physical pod mapping
 	result, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.False(t, result.Requeue) // No longer requeue after generating mapping
+	assert.Equal(t, time.Duration(0), result.RequeueAfter) // No longer requeue after generating mapping
 
 	// Get updated virtual pod
 	err = virtualClient.Get(ctx, req.NamespacedName, virtualPod)
@@ -389,7 +390,7 @@ func testCompleteWorkflowIntegration(t *testing.T, reconciler *VirtualPodReconci
 	// Step 1: Generate mapping
 	result, err := reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.False(t, result.Requeue) // No longer requeue after generating mapping
+	assert.Equal(t, time.Duration(0), result.RequeueAfter) // No longer requeue after generating mapping
 
 	// Get updated virtual pod
 	err = virtualClient.Get(ctx, req.NamespacedName, virtualPod)
@@ -409,7 +410,7 @@ func testCompleteWorkflowIntegration(t *testing.T, reconciler *VirtualPodReconci
 	// Reconcile should handle deletion
 	result, err = reconciler.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.False(t, result.Requeue)
+	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 	// Note: Physical pod deletion verification skipped due to Status().Update() behavior in tests
 }

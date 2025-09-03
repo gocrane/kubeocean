@@ -2,7 +2,6 @@ package v1beta1
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -20,7 +19,7 @@ type ClusterBindingSpec struct {
 
 	// NodeSelector specifies which nodes to monitor in the target cluster
 	// +optional
-	NodeSelector *v1.NodeSelector `json:"nodeSelector,omitempty"`
+	NodeSelector *corev1.NodeSelector `json:"nodeSelector,omitempty"`
 
 	// MountNamespace specifies the namespace to mount cluster resources
 	// +optional

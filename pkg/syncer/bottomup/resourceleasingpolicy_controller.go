@@ -21,6 +21,15 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 )
 
+const (
+	// ConditionTypeValid is the type for Valid condition
+	ConditionTypeValid = "Valid"
+	// ConditionTypeActive is the type for Active condition
+	ConditionTypeActive = "Active"
+	// ReasonValidationError is the reason for validation error
+	ReasonValidationError = "ValidationError"
+)
+
 // ResourceLeasingPolicyReconciler reconciles ResourceLeasingPolicy objects
 type ResourceLeasingPolicyReconciler struct {
 	Client         client.Client
@@ -66,8 +75,7 @@ func (r *ResourceLeasingPolicyReconciler) handlePolicyDeletion(ctx context.Conte
 
 	// At this point, we still have access to the complete policy object including NodeSelector
 	// Trigger node re-evaluation with the policy's NodeSelector
-	result, err := r.triggerNodeReEvaluation(policy)
-	if err != nil {
+	if err := r.triggerNodeReEvaluation(policy); err != nil {
 		log.Error(err, "Failed to trigger node re-evaluation during deletion")
 		return ctrl.Result{}, err
 	}
@@ -79,7 +87,7 @@ func (r *ResourceLeasingPolicyReconciler) handlePolicyDeletion(ctx context.Conte
 	}
 
 	log.Info("Successfully handled ResourceLeasingPolicy deletion")
-	return result, nil
+	return ctrl.Result{}, nil
 }
 
 // Reconcile handles ResourceLeasingPolicy events
@@ -125,15 +133,14 @@ func (r *ResourceLeasingPolicyReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Policy was created or updated, trigger re-evaluation
 	log.Info("ResourceLeasingPolicy changed, triggering node re-evaluation")
-	res, err := r.triggerNodeReEvaluation(policy)
-	if err != nil {
-		return res, err
+	if err := r.triggerNodeReEvaluation(policy); err != nil {
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: DefaultPolicySyncInterval}, nil
 }
 
 // triggerNodeReEvaluation triggers re-evaluation of all nodes by using the provided functions
-func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation(policy *cloudv1beta1.ResourceLeasingPolicy) (ctrl.Result, error) {
+func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation(policy *cloudv1beta1.ResourceLeasingPolicy) error {
 	policyName := ""
 	var nodeSelector *corev1.NodeSelector
 	if policy != nil {
@@ -143,7 +150,7 @@ func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation(policy *cloudv
 	log := r.Log.WithValues("resourceleasingpolicy", policyName)
 	if r.GetNodesMatchingSelector == nil || r.RequeueNodes == nil {
 		log.Error(fmt.Errorf("node re-evaluation functions not provided, skipping trigger"), "Node re-evaluation functions not provided, skipping trigger")
-		return ctrl.Result{}, nil
+		return nil
 	}
 
 	ctx := context.Background()
@@ -152,7 +159,7 @@ func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation(policy *cloudv
 	nodes, err := r.GetNodesMatchingSelector(ctx, nodeSelector)
 	if err != nil {
 		log.Error(err, "Failed to get nodes for re-evaluation")
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// Requeue each node for re-evaluation
@@ -160,11 +167,11 @@ func (r *ResourceLeasingPolicyReconciler) triggerNodeReEvaluation(policy *cloudv
 	if len(nodes) > 0 {
 		if err := r.RequeueNodes(nodes); err != nil {
 			log.Error(err, "Failed to requeue nodes for re-evaluation")
-			return ctrl.Result{}, err
+			return err
 		}
 	}
 
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // updatePolicyStatus updates the status of a ResourceLeasingPolicy
@@ -239,7 +246,7 @@ func (r *ResourceLeasingPolicyReconciler) updatePolicyConditions(policy *cloudv1
 	// Update Valid condition to True since validation passed
 	var validCondition *metav1.Condition
 	for i := range policy.Status.Conditions {
-		if policy.Status.Conditions[i].Type == "Valid" {
+		if policy.Status.Conditions[i].Type == ConditionTypeValid {
 			validCondition = &policy.Status.Conditions[i]
 			break
 		}
@@ -248,7 +255,7 @@ func (r *ResourceLeasingPolicyReconciler) updatePolicyConditions(policy *cloudv1
 	if validCondition == nil {
 		// Create new Valid condition
 		policy.Status.Conditions = append(policy.Status.Conditions, metav1.Condition{
-			Type:               "Valid",
+			Type:               ConditionTypeValid,
 			LastTransitionTime: now,
 		})
 		validCondition = &policy.Status.Conditions[len(policy.Status.Conditions)-1]
@@ -267,7 +274,7 @@ func (r *ResourceLeasingPolicyReconciler) updatePolicyConditions(policy *cloudv1
 	// Find or create the Active condition
 	var activeCondition *metav1.Condition
 	for i := range policy.Status.Conditions {
-		if policy.Status.Conditions[i].Type == "Active" {
+		if policy.Status.Conditions[i].Type == ConditionTypeActive {
 			activeCondition = &policy.Status.Conditions[i]
 			break
 		}
@@ -276,7 +283,7 @@ func (r *ResourceLeasingPolicyReconciler) updatePolicyConditions(policy *cloudv1
 	if activeCondition == nil {
 		// Create new condition
 		policy.Status.Conditions = append(policy.Status.Conditions, metav1.Condition{
-			Type:               "Active",
+			Type:               ConditionTypeActive,
 			LastTransitionTime: now,
 		})
 		activeCondition = &policy.Status.Conditions[len(policy.Status.Conditions)-1]
@@ -387,7 +394,7 @@ func (r *ResourceLeasingPolicyReconciler) updatePolicyConditionsWithValidationEr
 
 	// Update condition with validation error
 	newStatus := metav1.ConditionFalse
-	newReason := "ValidationError"
+	newReason := ReasonValidationError
 	newMessage := fmt.Sprintf("Policy validation failed: %s", errorMessage)
 
 	// Update condition if status changed

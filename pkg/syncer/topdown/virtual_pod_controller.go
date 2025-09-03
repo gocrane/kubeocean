@@ -328,14 +328,14 @@ func (r *VirtualPodReconciler) handlePhysicalPodCreation(ctx context.Context, vi
 	// 3. If cloudv1beta1.AnnotationPhysicalPodUID is empty but other annotations exist, create physical pod
 	if physicalUID == "" && physicalName != "" && physicalNamespace != "" {
 		logger.Info("Creating physical pod", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
-		res, err := r.createPhysicalPod(ctx, virtualPod, physicalNodeName)
+		err := r.createPhysicalPod(ctx, virtualPod, physicalNodeName)
 		if err != nil {
 			// Record warning event for virtual pod
 			if r.EventRecorder != nil {
 				r.EventRecorder.Eventf(virtualPod, corev1.EventTypeWarning, "FailedCreatePod", "Failed to create pod: %v", err)
 			}
 		}
-		return res, err
+		return ctrl.Result{}, err
 	}
 
 	// Should not reach here
@@ -395,7 +395,7 @@ func (r *VirtualPodReconciler) generatePhysicalPodMapping(ctx context.Context, v
 }
 
 // createPhysicalPod creates the physical pod based on virtual pod spec
-func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod *corev1.Pod, physicalNodeName string) (ctrl.Result, error) {
+func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod *corev1.Pod, physicalNodeName string) error {
 	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
 
 	physicalNamespace := virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace]
@@ -405,14 +405,14 @@ func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod
 	resourceMapping, err := r.syncDependentResources(ctx, virtualPod)
 	if err != nil {
 		logger.Error(err, "Failed to sync dependent resources")
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// 2. Build physical pod spec
 	podSpec, err := r.buildPhysicalPodSpec(virtualPod, physicalNodeName, resourceMapping)
 	if err != nil {
 		logger.Error(err, "Failed to build physical pod spec")
-		return ctrl.Result{}, err
+		return err
 	}
 
 	physicalPod := &corev1.Pod{
@@ -434,13 +434,13 @@ func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod
 			_, getErr := r.getPhysicalPodWithFallback(ctx, physicalNamespace, physicalName)
 			if getErr != nil {
 				logger.Error(getErr, "Failed to get existing physical pod")
-				return ctrl.Result{}, getErr
+				return getErr
 			}
 			// skip updating virtual pod with physical pod UID, it will be updated by physical pod controller
-			return ctrl.Result{}, nil
+			return nil
 		}
 		logger.Error(err, "Failed to create physical pod")
-		return ctrl.Result{}, err
+		return err
 	}
 
 	logger.Info("Successfully created physical pod",
@@ -448,7 +448,7 @@ func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod
 		"physicalUID", string(physicalPod.UID))
 
 	// skip updating virtual pod with physical pod UID, it will be updated by physical pod controller
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // updateVirtualPodWithPhysicalUID updates virtual pod with physical pod UID
@@ -613,34 +613,6 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 			}
 		}
 
-		// Handle kube-api-access projected volumes for service account tokens
-		if strings.HasPrefix(volume.Name, "kube-api-access-") && virtualPod.Spec.ServiceAccountName != "" {
-			if resourceMapping.ServiceAccountTokenName == "" {
-				return spec, fmt.Errorf("service account token mapping not found for virtual ServiceAccount: %s", virtualPod.Spec.ServiceAccountName)
-			}
-			if volume.Projected != nil {
-				for j := range volume.Projected.Sources {
-					source := &volume.Projected.Sources[j]
-					if source.ServiceAccountToken != nil {
-						// Replace the service account token source with our mapped secret
-						source.ServiceAccountToken = nil
-						source.Secret = &corev1.SecretProjection{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: resourceMapping.ServiceAccountTokenName,
-							},
-							Items: []corev1.KeyToPath{
-								{
-									Key:  "token",
-									Path: "token",
-								},
-							},
-						}
-						break
-					}
-				}
-			}
-		}
-
 		// Handle projected volumes for ConfigMaps and Secrets
 		if volume.Projected != nil {
 			for j := range volume.Projected.Sources {
@@ -667,6 +639,34 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 				// Handle DownwardAPI projections in projected volumes
 				if source.DownwardAPI != nil {
 					r.replaceDownwardAPIFieldPaths(source.DownwardAPI.Items)
+				}
+			}
+		}
+
+		// Handle kube-api-access projected volumes for service account tokens
+		if strings.HasPrefix(volume.Name, "kube-api-access-") && virtualPod.Spec.ServiceAccountName != "" {
+			if resourceMapping.ServiceAccountTokenName == "" {
+				return spec, fmt.Errorf("service account token mapping not found for virtual ServiceAccount: %s", virtualPod.Spec.ServiceAccountName)
+			}
+			if volume.Projected != nil {
+				for j := range volume.Projected.Sources {
+					source := &volume.Projected.Sources[j]
+					if source.ServiceAccountToken != nil {
+						// Replace the service account token source with our mapped secret
+						source.ServiceAccountToken = nil
+						source.Secret = &corev1.SecretProjection{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: resourceMapping.ServiceAccountTokenName,
+							},
+							Items: []corev1.KeyToPath{
+								{
+									Key:  "token",
+									Path: "token",
+								},
+							},
+						}
+						break
+					}
 				}
 			}
 		}
@@ -1457,7 +1457,7 @@ func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, virt
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			"token": []byte(base64.StdEncoding.EncodeToString([]byte(token.Status.Token))),
+			"token": []byte(token.Status.Token),
 		},
 	}
 
@@ -1488,7 +1488,7 @@ func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, virt
 		} else {
 			// Token is different, update the secret
 			newSecret := existingSecret.DeepCopy()
-			newSecret.Data["token"] = []byte(newTokenBase64)
+			newSecret.Data["token"] = []byte(token.Status.Token)
 			if err := r.PhysicalClient.Update(ctx, newSecret); err != nil {
 				return "", fmt.Errorf("failed to update service account token secret %s/%s: %v", physicalNamespace, physicalSecretName, err)
 			}

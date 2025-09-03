@@ -2,7 +2,9 @@ package integration
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
+	"strings"
 	"time"
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
@@ -21,8 +23,10 @@ const (
 	// Test constants
 	testTimeout         = 60 * time.Second
 	testPollingInterval = time.Second
-	testNamespace       = "pod-sync-test"
+	testPodNamespace    = "pod-sync-test"
 	testMountNamespace  = "default"
+	// testClusterIDValue is the value used for cluster ID labels in tests
+	testClusterIDValue = "true"
 )
 
 var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
@@ -58,7 +62,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			waitForVirtualNodeReady(ctx, virtualNodeName)
 
 			ginkgo.By("Creating a virtual pod in the virtual cluster")
-			virtualPod := createTestVirtualPod("test-pod-create", testNamespace, virtualNodeName)
+			virtualPod := createTestVirtualPod("test-pod-create", testPodNamespace, virtualNodeName)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			ginkgo.By("Waiting for physical pod to be created")
@@ -119,7 +123,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			waitForVirtualNodeReady(ctx, virtualNodeName)
 
 			ginkgo.By("Creating and waiting for virtual pod setup")
-			virtualPod := createTestVirtualPod("test-pod-delete", testNamespace, virtualNodeName)
+			virtualPod := createTestVirtualPod("test-pod-delete", testPodNamespace, virtualNodeName)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			// Wait for physical pod creation
@@ -195,7 +199,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(k8sVirtual.Create(ctx, nonTapestryNode)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual pod on non-tapestry node")
-			virtualPod := createTestVirtualPod("test-pod-non-tapestry", testNamespace, nonTapestryNode.Name)
+			virtualPod := createTestVirtualPod("test-pod-non-tapestry", testPodNamespace, nonTapestryNode.Name)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			ginkgo.By("Verifying no physical pod is created")
@@ -225,7 +229,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			virtualPod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      fmt.Sprintf("unscheduled-pod-%s", uniqueID),
-					Namespace: testNamespace,
+					Namespace: testPodNamespace,
 				},
 				Spec: corev1.PodSpec{
 					// No NodeName set - unscheduled
@@ -263,7 +267,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			waitForVirtualNodeReady(ctx, virtualNodeName)
 
 			ginkgo.By("Creating virtual pod and waiting for physical pod")
-			virtualPod := createTestVirtualPod("test-pod-status-sync", testNamespace, virtualNodeName)
+			virtualPod := createTestVirtualPod("test-pod-status-sync", testPodNamespace, virtualNodeName)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			var physicalPod *corev1.Pod
@@ -318,7 +322,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			waitForVirtualNodeReady(ctx, virtualNodeName)
 
 			ginkgo.By("Creating virtual pod and waiting for physical pod")
-			virtualPod := createTestVirtualPod("test-pod-metadata-sync", testNamespace, virtualNodeName)
+			virtualPod := createTestVirtualPod("test-pod-metadata-sync", testPodNamespace, virtualNodeName)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			var physicalPod *corev1.Pod
@@ -394,7 +398,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 					Annotations: map[string]string{
-						cloudv1beta1.AnnotationVirtualPodNamespace: testNamespace,
+						cloudv1beta1.AnnotationVirtualPodNamespace: testPodNamespace,
 						cloudv1beta1.AnnotationVirtualPodName:      "non-existent-virtual-pod",
 						cloudv1beta1.AnnotationVirtualPodUID:       "fake-uid-12345",
 					},
@@ -536,7 +540,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			waitForVirtualNodeReady(ctx, virtualNodeName)
 
 			ginkgo.By("Creating virtual pod and waiting for physical pod")
-			virtualPod := createTestVirtualPod("test-pod-recovery", testNamespace, virtualNodeName)
+			virtualPod := createTestVirtualPod("test-pod-recovery", testPodNamespace, virtualNodeName)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			var physicalPodName, physicalPodNamespace string
@@ -583,32 +587,32 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			waitForVirtualNodeReady(ctx, virtualNodeName)
 
 			ginkgo.By("Creating virtual ConfigMap")
-			virtualConfigMap := createTestVirtualConfigMap("test-config", testNamespace)
+			virtualConfigMap := createTestVirtualConfigMap("test-config", testPodNamespace)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualConfigMap)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual Secret")
-			virtualSecret := createTestVirtualSecret("test-secret", testNamespace)
+			virtualSecret := createTestVirtualSecret("test-secret", testPodNamespace)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualSecret)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual ConfigMap for init container")
-			virtualConfigMapInit := createTestVirtualConfigMapInit("test-config-init", testNamespace)
+			virtualConfigMapInit := createTestVirtualConfigMapInit("test-config-init", testPodNamespace)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualConfigMapInit)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual Secret for init container")
-			virtualSecretInit := createTestVirtualSecretInit("test-secret-init", testNamespace)
+			virtualSecretInit := createTestVirtualSecretInit("test-secret-init", testPodNamespace)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualSecretInit)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual PV")
-			virtualPV := createTestVirtualPV("test-pv", "test-pvc", testNamespace)
+			virtualPV := createTestVirtualPV("test-pv", "test-pvc", testPodNamespace)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPV)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual PVC")
-			virtualPVC := createTestVirtualPVC("test-pvc", testNamespace, "test-pv")
+			virtualPVC := createTestVirtualPVC("test-pvc", testPodNamespace, "test-pv")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPVC)).To(gomega.Succeed())
 
 			ginkgo.By("Manually updating virtual PVC to be bound")
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pvc", Namespace: testNamespace}, virtualPVC)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pvc", Namespace: testPodNamespace}, virtualPVC)
 				if err != nil {
 					return false
 				}
@@ -619,7 +623,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			ginkgo.By("Creating a virtual pod with resource references")
-			virtualPod := createTestVirtualPodWithResources("test-pod-refs", testNamespace, virtualNodeName, "test-config", "test-secret", "test-pvc")
+			virtualPod := createTestVirtualPodWithResources("test-pod-refs", testPodNamespace, virtualNodeName, "test-config", "test-secret", "test-pvc")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			ginkgo.By("Waiting for physical pod to be created")
@@ -663,13 +667,13 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			// Check virtual ConfigMap
 			updatedVirtualConfigMap := &corev1.ConfigMap{}
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config", Namespace: testNamespace}, updatedVirtualConfigMap)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config", Namespace: testPodNamespace}, updatedVirtualConfigMap)
 				if err != nil {
 					return false
 				}
 				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
-					updatedVirtualConfigMap.Labels[expectedManagedByClusterIDLabel] == "true" &&
+					updatedVirtualConfigMap.Labels[expectedManagedByClusterIDLabel] == testClusterIDValue &&
 					updatedVirtualConfigMap.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualConfigMap.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -677,13 +681,13 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			// Check virtual Secret
 			updatedVirtualSecret := &corev1.Secret{}
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret", Namespace: testNamespace}, updatedVirtualSecret)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret", Namespace: testPodNamespace}, updatedVirtualSecret)
 				if err != nil {
 					return false
 				}
 				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualSecret.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
-					updatedVirtualSecret.Labels[expectedManagedByClusterIDLabel] == "true" &&
+					updatedVirtualSecret.Labels[expectedManagedByClusterIDLabel] == testClusterIDValue &&
 					updatedVirtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -691,13 +695,13 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			// Check virtual ConfigMap for init container
 			updatedVirtualConfigMapInit := &corev1.ConfigMap{}
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config-init", Namespace: testNamespace}, updatedVirtualConfigMapInit)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config-init", Namespace: testPodNamespace}, updatedVirtualConfigMapInit)
 				if err != nil {
 					return false
 				}
 				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualConfigMapInit.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
-					updatedVirtualConfigMapInit.Labels[expectedManagedByClusterIDLabel] == "true" &&
+					updatedVirtualConfigMapInit.Labels[expectedManagedByClusterIDLabel] == testClusterIDValue &&
 					updatedVirtualConfigMapInit.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualConfigMapInit.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -705,13 +709,13 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			// Check virtual Secret for init container
 			updatedVirtualSecretInit := &corev1.Secret{}
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret-init", Namespace: testNamespace}, updatedVirtualSecretInit)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret-init", Namespace: testPodNamespace}, updatedVirtualSecretInit)
 				if err != nil {
 					return false
 				}
 				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualSecretInit.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
-					updatedVirtualSecretInit.Labels[expectedManagedByClusterIDLabel] == "true" &&
+					updatedVirtualSecretInit.Labels[expectedManagedByClusterIDLabel] == testClusterIDValue &&
 					updatedVirtualSecretInit.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualSecretInit.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -725,7 +729,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				}
 				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualPV.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
-					updatedVirtualPV.Labels[expectedManagedByClusterIDLabel] == "true" &&
+					updatedVirtualPV.Labels[expectedManagedByClusterIDLabel] == testClusterIDValue &&
 					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == ""
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -733,13 +737,13 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			// Check virtual PVC
 			updatedVirtualPVC := &corev1.PersistentVolumeClaim{}
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pvc", Namespace: testNamespace}, updatedVirtualPVC)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pvc", Namespace: testPodNamespace}, updatedVirtualPVC)
 				if err != nil {
 					return false
 				}
 				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualPVC.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
-					updatedVirtualPVC.Labels[expectedManagedByClusterIDLabel] == "true" &&
+					updatedVirtualPVC.Labels[expectedManagedByClusterIDLabel] == testClusterIDValue &&
 					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -764,7 +768,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			gomega.Expect(physicalConfigMap.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 			gomega.Expect(physicalConfigMap.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-config"))
-			gomega.Expect(physicalConfigMap.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+			gomega.Expect(physicalConfigMap.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testPodNamespace))
 
 			// Check physical Secret
 			physicalSecretName := updatedVirtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalName]
@@ -776,7 +780,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			gomega.Expect(physicalSecret.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 			gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-secret"))
-			gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+			gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testPodNamespace))
 
 			// Check physical PV
 			physicalPVName := updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalName]
@@ -800,7 +804,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			gomega.Expect(physicalPVC.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-pvc"))
-			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testPodNamespace))
 
 			// Check physical ConfigMap for init container
 			physicalConfigMapInitName := updatedVirtualConfigMapInit.Annotations[cloudv1beta1.AnnotationPhysicalName]
@@ -812,7 +816,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			gomega.Expect(physicalConfigMapInit.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 			gomega.Expect(physicalConfigMapInit.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-config-init"))
-			gomega.Expect(physicalConfigMapInit.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+			gomega.Expect(physicalConfigMapInit.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testPodNamespace))
 
 			// Check physical Secret for init container
 			physicalSecretInitName := updatedVirtualSecretInit.Annotations[cloudv1beta1.AnnotationPhysicalName]
@@ -824,7 +828,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			gomega.Expect(physicalSecretInit.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 			gomega.Expect(physicalSecretInit.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-secret-init"))
-			gomega.Expect(physicalSecretInit.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+			gomega.Expect(physicalSecretInit.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testPodNamespace))
 
 			// Verify that all resource references in physical pod are mapped to physical resource names
 			ginkgo.By("Verifying physical pod resource name mappings")
@@ -997,7 +1001,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			ginkgo.By("Verifying virtual PVC finalizer is removed")
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pvc", Namespace: testNamespace}, updatedVirtualPVC)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pvc", Namespace: testPodNamespace}, updatedVirtualPVC)
 				if err != nil {
 					return false
 				}
@@ -1058,22 +1062,22 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			ginkgo.By("Verifying virtual ConfigMap and Secret are deleted")
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config", Namespace: testNamespace}, updatedVirtualConfigMap)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config", Namespace: testPodNamespace}, updatedVirtualConfigMap)
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret", Namespace: testNamespace}, updatedVirtualSecret)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret", Namespace: testPodNamespace}, updatedVirtualSecret)
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config-init", Namespace: testNamespace}, updatedVirtualConfigMapInit)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-config-init", Namespace: testPodNamespace}, updatedVirtualConfigMapInit)
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret-init", Namespace: testNamespace}, updatedVirtualSecretInit)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-secret-init", Namespace: testPodNamespace}, updatedVirtualSecretInit)
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 		})
@@ -1083,24 +1087,24 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			waitForVirtualNodeReady(ctx, virtualNodeName)
 
 			ginkgo.By("Creating physical namespace for CSI Secret")
-			physicalNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNamespace}}
+			physicalNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testPodNamespace}}
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNamespace)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual CSI Secret")
-			virtualCSISecret := createTestVirtualSecret("test-csi-secret", testNamespace)
+			virtualCSISecret := createTestVirtualSecret("test-csi-secret", testPodNamespace)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualCSISecret)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual PV with CSI NodePublishSecretRef")
-			virtualPV := createTestVirtualPVWithCSI("test-csi-pv", "test-csi-pvc", testNamespace, "test-csi-secret")
+			virtualPV := createTestVirtualPVWithCSI("test-csi-pv", "test-csi-pvc", testPodNamespace, "test-csi-secret")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPV)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual PVC")
-			virtualPVC := createTestVirtualPVC("test-csi-pvc", testNamespace, "test-csi-pv")
+			virtualPVC := createTestVirtualPVC("test-csi-pvc", testPodNamespace, "test-csi-pv")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPVC)).To(gomega.Succeed())
 
 			ginkgo.By("Manually updating virtual PVC to be bound")
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pvc", Namespace: testNamespace}, virtualPVC)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pvc", Namespace: testPodNamespace}, virtualPVC)
 				if err != nil {
 					return false
 				}
@@ -1111,7 +1115,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			ginkgo.By("Creating a virtual pod with PVC reference only")
-			virtualPod := createTestVirtualPodWithPVCOnly("test-pod-csi", testNamespace, virtualNodeName, "test-csi-pvc")
+			virtualPod := createTestVirtualPodWithPVCOnly("test-pod-csi", testPodNamespace, virtualNodeName, "test-csi-pvc")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			ginkgo.By("Waiting for physical pod to be created")
@@ -1152,16 +1156,16 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			// Check virtual CSI Secret
 			updatedVirtualCSISecret := &corev1.Secret{}
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-secret", Namespace: testNamespace}, updatedVirtualCSISecret)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-secret", Namespace: testPodNamespace}, updatedVirtualCSISecret)
 				if err != nil {
 					return false
 				}
 				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualCSISecret.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
-					updatedVirtualCSISecret.Labels[expectedManagedByClusterIDLabel] == "true" &&
-					updatedVirtualCSISecret.Labels[cloudv1beta1.LabelUsedByPV] == "true" &&
+					updatedVirtualCSISecret.Labels[expectedManagedByClusterIDLabel] == testClusterIDValue &&
+					updatedVirtualCSISecret.Labels[cloudv1beta1.LabelUsedByPV] == testClusterIDValue &&
 					updatedVirtualCSISecret.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
-					updatedVirtualCSISecret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testNamespace
+					updatedVirtualCSISecret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testPodNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			// Check virtual PV
@@ -1173,7 +1177,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				}
 				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualPV.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
-					updatedVirtualPV.Labels[expectedManagedByClusterIDLabel] == "true" &&
+					updatedVirtualPV.Labels[expectedManagedByClusterIDLabel] == testClusterIDValue &&
 					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualPV.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == ""
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -1181,13 +1185,13 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			// Check virtual PVC
 			updatedVirtualPVC := &corev1.PersistentVolumeClaim{}
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pvc", Namespace: testNamespace}, updatedVirtualPVC)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pvc", Namespace: testPodNamespace}, updatedVirtualPVC)
 				if err != nil {
 					return false
 				}
 				expectedManagedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterBindingName)
 				return updatedVirtualPVC.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
-					updatedVirtualPVC.Labels[expectedManagedByClusterIDLabel] == "true" &&
+					updatedVirtualPVC.Labels[expectedManagedByClusterIDLabel] == testClusterIDValue &&
 					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName] != "" &&
 					updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] == testMountNamespace
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
@@ -1203,13 +1207,13 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			physicalCSISecretName := updatedVirtualCSISecret.Annotations[cloudv1beta1.AnnotationPhysicalName]
 			physicalCSISecret := &corev1.Secret{}
 			gomega.Eventually(func() bool {
-				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalCSISecretName, Namespace: testNamespace}, physicalCSISecret)
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalCSISecretName, Namespace: testPodNamespace}, physicalCSISecret)
 				return err == nil
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			gomega.Expect(physicalCSISecret.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 			gomega.Expect(physicalCSISecret.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-csi-secret"))
-			gomega.Expect(physicalCSISecret.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+			gomega.Expect(physicalCSISecret.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testPodNamespace))
 			// Verify CSI secret has the special label
 			gomega.Expect(physicalCSISecret.Labels[cloudv1beta1.LabelUsedByPV]).To(gomega.Equal("true"))
 
@@ -1228,7 +1232,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(physicalPV.Spec.CSI).NotTo(gomega.BeNil())
 			gomega.Expect(physicalPV.Spec.CSI.NodePublishSecretRef).NotTo(gomega.BeNil())
 			gomega.Expect(physicalPV.Spec.CSI.NodePublishSecretRef.Name).To(gomega.Equal(physicalCSISecretName))
-			gomega.Expect(physicalPV.Spec.CSI.NodePublishSecretRef.Namespace).To(gomega.Equal(testNamespace))
+			gomega.Expect(physicalPV.Spec.CSI.NodePublishSecretRef.Namespace).To(gomega.Equal(testPodNamespace))
 
 			// Check physical PVC
 			physicalPVCName := updatedVirtualPVC.Annotations[cloudv1beta1.AnnotationPhysicalName]
@@ -1240,7 +1244,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			gomega.Expect(physicalPVC.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualName]).To(gomega.Equal("test-csi-pvc"))
-			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testNamespace))
+			gomega.Expect(physicalPVC.Annotations[cloudv1beta1.AnnotationVirtualNamespace]).To(gomega.Equal(testPodNamespace))
 
 			ginkgo.By("Deleting virtual pod")
 			gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
@@ -1259,7 +1263,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			ginkgo.By("Verifying virtual pod is deleted")
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pod-csi", Namespace: testNamespace}, virtualPod)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pod-csi", Namespace: testPodNamespace}, virtualPod)
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
@@ -1322,7 +1326,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			ginkgo.By("Verifying virtual PVC finalizer is removed")
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pvc", Namespace: testNamespace}, updatedVirtualPVC)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-pvc", Namespace: testPodNamespace}, updatedVirtualPVC)
 				if err != nil {
 					return false
 				}
@@ -1357,20 +1361,225 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			ginkgo.By("Verifying physical CSI Secret deletion")
 			gomega.Eventually(func() bool {
-				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalCSISecretName, Namespace: testNamespace}, physicalCSISecret)
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalCSISecretName, Namespace: testPodNamespace}, physicalCSISecret)
 				return apierrors.IsNotFound(err) || (err == nil && physicalCSISecret.DeletionTimestamp != nil)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			ginkgo.By("Verifying virtual CSI Secret finalizer is deleted")
 			gomega.Eventually(func() bool {
-				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-secret", Namespace: testNamespace}, updatedVirtualCSISecret)
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-csi-secret", Namespace: testPodNamespace}, updatedVirtualCSISecret)
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+		})
+
+		ginkgo.It("should create and manage physical resources for virtual pod with ServiceAccount", func(ctx context.Context) {
+			// Wait for virtual node to be ready before creating pods
+			waitForVirtualNodeReady(ctx, virtualNodeName)
+
+			ginkgo.By("Creating a ServiceAccount for the virtual pod")
+			serviceAccount := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-serviceaccount",
+					Namespace: testPodNamespace,
+				},
+			}
+			err := k8sVirtual.Create(ctx, serviceAccount)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			ginkgo.By("Creating a virtual pod with ServiceAccount")
+			virtualPod := createTestVirtualPodWithServiceAccount("test-pod-sa", testPodNamespace, virtualNodeName, "test-serviceaccount")
+			err = k8sVirtual.Create(ctx, virtualPod)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			ginkgo.By("Verifying virtual pod has kube-api-access volume")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pod-sa", Namespace: testPodNamespace}, virtualPod)
+				if err != nil {
+					return false
+				}
+
+				// Check if virtual pod has kube-api-access volume
+				for _, volume := range virtualPod.Spec.Volumes {
+					if strings.HasPrefix(volume.Name, "kube-api-access-") {
+						return true
+					}
+				}
+				return false
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Waiting for physical pod to be created")
+			var physicalPod *corev1.Pod
+			gomega.Eventually(func() bool {
+				pods := &corev1.PodList{}
+				err := k8sPhysical.List(ctx, pods, client.InNamespace(testMountNamespace))
+				if err != nil {
+					return false
+				}
+
+				for i := range pods.Items {
+					pod := &pods.Items[i]
+					if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+						if pod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] == virtualPod.Namespace &&
+							pod.Annotations[cloudv1beta1.AnnotationVirtualPodName] == virtualPod.Name {
+							physicalPod = pod
+							return true
+						}
+					}
+				}
+				return false
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			physicalPodName := physicalPod.Name
+			physicalPodNamespace := physicalPod.Namespace
+
+			ginkgo.By("Verifying physical pod properties")
+			gomega.Expect(physicalPod).NotTo(gomega.BeNil())
+			gomega.Expect(physicalPod.Spec.NodeName).To(gomega.Equal(physicalNodeName))
+			gomega.Expect(physicalPod.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+
+			// Verify bidirectional mapping annotations
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace]).To(gomega.Equal(virtualPod.Namespace))
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName]).To(gomega.Equal(virtualPod.Name))
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]).To(gomega.Equal(string(virtualPod.UID)))
+
+			ginkgo.By("Verifying physical pod has empty serviceAccountName")
+			gomega.Expect(physicalPod.Spec.DeprecatedServiceAccount).To(gomega.Equal(""))
+			gomega.Expect(physicalPod.Spec.ServiceAccountName).To(gomega.Equal(""))
+
+			ginkgo.By("Verifying physical pod has kube-api-access volumes with correct mappings")
+			var kubeApiAccessVolumes []corev1.Volume
+			for _, volume := range physicalPod.Spec.Volumes {
+				if strings.HasPrefix(volume.Name, "kube-api-access-") {
+					kubeApiAccessVolumes = append(kubeApiAccessVolumes, volume)
+				}
+			}
+			gomega.Expect(len(kubeApiAccessVolumes)).To(gomega.BeNumerically(">", 0))
+
+			// Calculate expected physical secret name using the same logic as the controller
+			expectedSecretKey := fmt.Sprintf("%s-%s", virtualPod.Name, virtualPod.UID)
+			expectedSecretName := generatePhysicalName(expectedSecretKey, virtualPod.Namespace)
+
+			// Verify each kube-api-access volume has corresponding physical resources
+			for _, volume := range kubeApiAccessVolumes {
+				if volume.Projected != nil {
+					for _, source := range volume.Projected.Sources {
+						// 1. Verify ServiceAccountToken is nil in physical pod
+						gomega.Expect(source.ServiceAccountToken).To(gomega.BeNil())
+
+						// 2. Verify Secret projection exists and points to the correct physical secret
+						if source.Secret != nil {
+							gomega.Expect(source.Secret.Name).To(gomega.Equal(expectedSecretName))
+
+							// Verify the physical secret exists
+							ginkgo.By(fmt.Sprintf("Verifying physical secret %s exists", expectedSecretName))
+							physicalSecret := &corev1.Secret{}
+							err := k8sPhysical.Get(ctx, types.NamespacedName{Name: expectedSecretName, Namespace: physicalPodNamespace}, physicalSecret)
+							gomega.Expect(err).NotTo(gomega.HaveOccurred())
+							gomega.Expect(physicalSecret.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+							gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualPodName]).To(gomega.Equal(virtualPod.Name))
+							gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace]).To(gomega.Equal(virtualPod.Namespace))
+							gomega.Expect(physicalSecret.Annotations[cloudv1beta1.AnnotationVirtualPodUID]).To(gomega.Equal(string(virtualPod.UID)))
+						}
+
+						// 3. Verify ConfigMap projection uses correct physical name
+						if source.ConfigMap != nil {
+							configMapName := source.ConfigMap.Name
+							if configMapName != "" {
+								// Calculate expected physical configmap name
+								expectedConfigMapName := generatePhysicalName(configMapName, virtualPod.Namespace)
+								gomega.Expect(configMapName).To(gomega.Equal(expectedConfigMapName))
+
+								// Verify the physical configmap exists
+								ginkgo.By(fmt.Sprintf("Verifying physical configmap %s exists", configMapName))
+								physicalConfigMap := &corev1.ConfigMap{}
+								err := k8sPhysical.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: physicalPodNamespace}, physicalConfigMap)
+								gomega.Expect(err).NotTo(gomega.HaveOccurred())
+								gomega.Expect(physicalConfigMap.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+							}
+						}
+
+						// 4. Verify DownwardAPI fieldPath replacements
+						if source.DownwardAPI != nil {
+							for _, item := range source.DownwardAPI.Items {
+								if item.FieldRef != nil {
+									// Verify metadata.namespace is replaced with annotation reference
+									if item.FieldRef.FieldPath == "metadata.namespace" {
+										expectedFieldPath := fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace)
+										gomega.Expect(item.FieldRef.FieldPath).To(gomega.Equal(expectedFieldPath))
+									}
+									// Verify metadata.name is replaced with annotation reference
+									if item.FieldRef.FieldPath == "metadata.name" {
+										expectedFieldPath := fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
+										gomega.Expect(item.FieldRef.FieldPath).To(gomega.Equal(expectedFieldPath))
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			ginkgo.By("Deleting virtual pod")
+			gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical pod has DeletionTimestamp")
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: physicalPodNamespace}, physicalPod)
+				if err != nil {
+					return false
+				}
+				return physicalPod.DeletionTimestamp != nil
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Force deleting physical pod")
+			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &[]int64{0}[0]})).To(gomega.Succeed())
+
+			ginkgo.By("Verifying virtual pod is deleted")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: "test-pod-sa", Namespace: testPodNamespace}, virtualPod)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying physical service account token secrets are deleted")
+			// Check that all kube-api-access related secrets are deleted from physical cluster
+			secrets := &corev1.SecretList{}
+			listErr := k8sPhysical.List(ctx, secrets, client.InNamespace(physicalPodNamespace))
+			gomega.Expect(listErr).NotTo(gomega.HaveOccurred())
+
+			// Check that all secrets belonging to this pod are deleted
+			for _, secret := range secrets.Items {
+				if secret.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+					secret.Annotations[cloudv1beta1.AnnotationVirtualPodName] == virtualPod.Name {
+					gomega.Eventually(func() bool {
+						getErr := k8sPhysical.Get(ctx, types.NamespacedName{Name: secret.Name, Namespace: physicalPodNamespace}, &corev1.Secret{})
+						return apierrors.IsNotFound(getErr)
+					}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+				}
+			}
 		})
 	})
 })
 
 // Helper functions
+
+// generatePhysicalName generates physical name using MD5 hash
+// Format: name(前31字符)-md5(namespace+"/"+name)
+// This replicates the logic from VirtualPodReconciler.generatePhysicalName
+func generatePhysicalName(name, namespace string) string {
+	// Truncate name to first 31 characters
+	truncatedName := name
+	if len(name) > 31 {
+		truncatedName = name[:31]
+	}
+
+	// Generate MD5 hash of "namespace/name"
+	input := fmt.Sprintf("%s/%s", namespace, name)
+	hash := md5.Sum([]byte(input))
+	hashString := fmt.Sprintf("%x", hash)
+
+	// Return format: truncatedName-hashString
+	return fmt.Sprintf("%s-%s", truncatedName, hashString)
+}
 
 func setupPodSyncTestEnvironment(ctx context.Context, clusterBindingName, physicalNodeName string) {
 	ginkgo.By("Setting up pod sync test environment")
@@ -1380,7 +1589,7 @@ func setupPodSyncTestEnvironment(ctx context.Context, clusterBindingName, physic
 	_ = k8sVirtual.Create(ctx, ns)
 
 	// Create test namespace
-	testNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNamespace}}
+	testNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testPodNamespace}}
 	_ = k8sVirtual.Create(ctx, testNs)
 
 	// Create kubeconfig secret
@@ -1440,7 +1649,7 @@ func setupPodSyncTestEnvironment(ctx context.Context, clusterBindingName, physic
 func createAndStartSyncer(ctx context.Context, clusterBindingName string) *syncerpkg.TapestrySyncer {
 	ginkgo.By("Creating and starting TapestrySyncer")
 
-	syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBindingName)
+	syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBindingName, 100, 150)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// Start syncer in background
@@ -1509,7 +1718,7 @@ func createTestVirtualPod(name, namespace, nodeName string) *corev1.Pod {
 
 func cleanupPodSyncTestResources(ctx context.Context, clusterBindingName string) {
 	// Clean up virtual cluster resources
-	_ = k8sVirtual.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNamespace}})
+	_ = k8sVirtual.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testPodNamespace}})
 	_ = k8sVirtual.Delete(ctx, &cloudv1beta1.ClusterBinding{ObjectMeta: metav1.ObjectMeta{Name: clusterBindingName}})
 
 	// Clean up physical cluster resources
@@ -1831,6 +2040,54 @@ func createTestVirtualPodWithPVCOnly(name, namespace, nodeName, pvcName string) 
 					VolumeSource: corev1.VolumeSource{
 						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 							ClaimName: pvcName,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func createTestVirtualPodWithServiceAccount(name, namespace, nodeName, serviceAccountName string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app": "test-app",
+			},
+			Annotations: map[string]string{
+				"test-annotation": "test-value",
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:                     nodeName,
+			ServiceAccountName:           serviceAccountName,
+			AutomountServiceAccountToken: &[]bool{true}[0],
+			Containers: []corev1.Container{{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("100m"),
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+				},
+			}},
+			Volumes: []corev1.Volume{
+				{
+					Name: "kube-api-access-xyz",
+					VolumeSource: corev1.VolumeSource{
+						Projected: &corev1.ProjectedVolumeSource{
+							Sources: []corev1.VolumeProjection{
+								{
+									ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+										Audience:          "https://kubernetes.default.svc.cluster.local",
+										ExpirationSeconds: &[]int64{3607}[0],
+										Path:              "token",
+									},
+								},
+							},
 						},
 					},
 				},

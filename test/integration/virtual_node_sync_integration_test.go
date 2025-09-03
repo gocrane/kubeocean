@@ -11,7 +11,6 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	syncerpkg "github.com/TKEColocation/tapestry/pkg/syncer"
 	"github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -23,18 +22,27 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-var _ = Describe("Virtual Node Sync Test", func() {
+var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
+	const (
+		// testNamespace is the namespace used for secrets in tests
+		testNamespace = "tapestry-system"
+		// testNewValue is the value used for new labels in tests
+		testNewValue = "new-value"
+		// testUpdatedValue is the value used for updated labels in tests
+		testUpdatedValue = "updated-value"
+		// testSystemNamespace is the namespace used for system resources in tests
+		testSystemNamespace = "tapestry-system"
+	)
 	ginkgo.Describe("Virtual Node Creation Basic Test", func() {
 		ginkgo.It("should create virtual node for single physical node", func(ctx context.Context) {
 			// Create namespace for secrets
-			ns := "tapestry-system"
-			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testSystemNamespace}})
 
 			// Create kubeconfig secret
 			kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			secret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "basic-test-kc", Namespace: ns},
+				ObjectMeta: metav1.ObjectMeta{Name: "basic-test-kc", Namespace: testNamespace},
 				Data:       map[string][]byte{"kubeconfig": kc},
 			}
 			gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
@@ -44,7 +52,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "basic-test-cluster"},
 				Spec: cloudv1beta1.ClusterBindingSpec{
 					ClusterID:      "basic-test-cls",
-					SecretRef:      corev1.SecretReference{Name: "basic-test-kc", Namespace: ns},
+					SecretRef:      corev1.SecretReference{Name: "basic-test-kc", Namespace: testNamespace},
 					MountNamespace: "default",
 				},
 			}
@@ -82,7 +90,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			ginkgo.By("Physical node created")
 
 			// Create and start TapestrySyncer
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Start syncer in background
@@ -126,9 +134,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 	ginkgo.Describe("Virtual Node Resource Tests", func() {
 		var (
-			testNamespace = "tapestry-system"
-			clusterName   = "test-" + uniqueID // 缩短名称以避免超过63字符限制
-			secretName    = clusterName + "-kc"
+			clusterName = "test-" + uniqueID // 缩短名称以避免超过63字符限制
+			secretName  = clusterName + "-kc"
 		)
 
 		ginkgo.BeforeEach(func(ctx context.Context) {
@@ -202,7 +209,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 			ginkgo.By("Creating TapestrySyncer and starting it")
 
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -365,7 +372,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 			ginkgo.By("Physical node and pods created")
 
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -523,7 +530,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 			ginkgo.By("Physical node, ResourceLeasingPolicy and pod created")
 
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -725,7 +732,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 			ginkgo.By("Physical node, multiple ResourceLeasingPolicies and pod created")
 
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -885,7 +892,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 			ginkgo.By("Physical node, ResourceLeasingPolicy with Quantity+Percent limits and pod created")
 
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -972,7 +979,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
 			ginkgo.By("Starting TapestrySyncer")
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -1267,7 +1274,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			ginkgo.By(fmt.Sprintf("Policy1: %+v, Policy2: %+v, Policy3: %+v", policy1.CreationTimestamp, policy2.CreationTimestamp, policy3.CreationTimestamp))
 
 			// Create kubeconfig secret for physical cluster connection
-			ns := "tapestry-system"
+			ns := testSystemNamespace
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 			kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1285,7 +1292,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 			// Start syncer
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			go func() {
 				defer ginkgo.GinkgoRecover()
@@ -1356,7 +1363,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			nodeName := "node-" + uniqueID
 
 			// Create namespace for secrets
-			ns := "tapestry-system"
+			ns := testSystemNamespace
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 			// Create kubeconfig secret
@@ -1432,7 +1439,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
 			defer syncerCancel()
 
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterName)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterName, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			go func() {
@@ -1492,8 +1499,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			err = k8sPhysical.Get(ctx, types.NamespacedName{Name: nodeName}, physicalNode)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			physicalNode.Labels["new-label"] = "new-value"
-			physicalNode.Labels["initial-label"] = "updated-value"
+			physicalNode.Labels["new-label"] = testNewValue
+			physicalNode.Labels["initial-label"] = testUpdatedValue
 			gomega.Expect(k8sPhysical.Update(ctx, physicalNode)).To(gomega.Succeed())
 
 			// Wait for label sync
@@ -1502,8 +1509,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				if err != nil {
 					return false
 				}
-				return virtualNode.Labels["new-label"] == "new-value" &&
-					virtualNode.Labels["initial-label"] == "updated-value"
+				return virtualNode.Labels["new-label"] == testNewValue &&
+					virtualNode.Labels["initial-label"] == testUpdatedValue
 			}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
 
 			ginkgo.By("Physical node label changes synced to virtual node")
@@ -1514,8 +1521,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			err = k8sPhysical.Get(ctx, types.NamespacedName{Name: nodeName}, physicalNode)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			physicalNode.Annotations["new-annotation"] = "new-value"
-			physicalNode.Annotations["initial-annotation"] = "updated-value"
+			physicalNode.Annotations["new-annotation"] = testNewValue
+			physicalNode.Annotations["initial-annotation"] = testUpdatedValue
 			gomega.Expect(k8sPhysical.Update(ctx, physicalNode)).To(gomega.Succeed())
 
 			// Wait for annotation sync
@@ -1524,8 +1531,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				if err != nil {
 					return false
 				}
-				return virtualNode.Annotations["new-annotation"] == "new-value" &&
-					virtualNode.Annotations["initial-annotation"] == "updated-value"
+				return virtualNode.Annotations["new-annotation"] == testNewValue &&
+					virtualNode.Annotations["initial-annotation"] == testUpdatedValue
 			}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
 
 			ginkgo.By("Physical node annotation changes synced to virtual node")
@@ -1538,7 +1545,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 			physicalNode.Spec.Taints = append(physicalNode.Spec.Taints, corev1.Taint{
 				Key:    "new-taint",
-				Value:  "new-value",
+				Value:  testNewValue,
 				Effect: corev1.TaintEffectNoExecute,
 			})
 			gomega.Expect(k8sPhysical.Update(ctx, physicalNode)).To(gomega.Succeed())
@@ -1553,7 +1560,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 					return false
 				}
 				for _, taint := range virtualNode.Spec.Taints {
-					if taint.Key == "new-taint" && taint.Value == "new-value" {
+					if taint.Key == "new-taint" && taint.Value == testNewValue {
 						return true
 					}
 				}
@@ -1574,7 +1581,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			nodeName := "node-" + uniqueID
 
 			// Create namespace for secrets
-			ns := "tapestry-system"
+			ns := testSystemNamespace
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 			// Create kubeconfig secret
@@ -1630,7 +1637,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
 			defer syncerCancel()
 
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterName)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterName, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			go func() {
@@ -1711,7 +1718,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			nodeName := "node-" + uniqueID
 
 			// Create namespace for secrets
-			ns := "tapestry-system"
+			ns := testSystemNamespace
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 			// Create kubeconfig secret
@@ -1764,7 +1771,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
 			defer syncerCancel()
 
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterName)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterName, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			go func() {
@@ -1831,7 +1838,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			nodeName := "node-" + uniqueID
 
 			// Create namespace for secrets
-			ns := "tapestry-system"
+			ns := testSystemNamespace
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 			// Create kubeconfig secret
@@ -1884,7 +1891,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
 			defer syncerCancel()
 
-			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterName)
+			syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterName, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			go func() {
@@ -2007,7 +2014,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				gomega.Expect(k8sVirtual.Create(ctx, clusterBinding)).To(gomega.Succeed())
 
 				// Start syncer
-				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				go func() {
@@ -2093,7 +2100,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				gomega.Expect(k8sVirtual.Create(ctx, clusterBinding)).To(gomega.Succeed())
 
 				// Start syncer
-				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				go func() {
@@ -2271,7 +2278,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
 				// Start syncer
-				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				go func() {
@@ -2478,7 +2485,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
 				// Start syncer
-				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				go func() {
@@ -2638,7 +2645,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				gomega.Expect(k8sVirtual.Create(ctx, policy)).To(gomega.Succeed())
 
 				// Start syncer
-				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				go func() {
@@ -2737,11 +2744,11 @@ var _ = Describe("Virtual Node Sync Test", func() {
 		})
 	})
 
-	var _ = Describe("Virtual CSINode Sync Test", func() {
+	var _ = ginkgo.Describe("Virtual CSINode Sync Test", func() {
 		ginkgo.Describe("Virtual CSINode Creation and Update Tests", func() {
 			ginkgo.It("should create virtual CSINode when physical node and CSINode exist before syncer starts", func(ctx context.Context) {
 				// Create namespace for secrets
-				ns := "tapestry-system"
+				ns := testSystemNamespace
 				_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 				// Create kubeconfig secret
@@ -2825,7 +2832,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				gomega.Expect(k8sVirtual.Create(ctx, clusterBinding)).To(gomega.Succeed())
 
 				// Create and start TapestrySyncer
-				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -2892,8 +2899,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				err = k8sPhysical.Get(ctx, types.NamespacedName{Name: "csinode-test-node"}, physicalCSINode)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-				physicalCSINode.Labels["updated-label"] = "updated-value"
-				physicalCSINode.Annotations["updated-annotation"] = "updated-value"
+				physicalCSINode.Labels["updated-label"] = testUpdatedValue
+				physicalCSINode.Annotations["updated-annotation"] = testUpdatedValue
 				// Remove original driver and add a new CSI driver
 				newDriver := storagev1.CSINodeDriver{
 					Name:   "new-test-driver",
@@ -2915,8 +2922,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 					if err != nil {
 						return false
 					}
-					return virtualCSINode.Labels["updated-label"] == "updated-value" &&
-						virtualCSINode.Annotations["updated-annotation"] == "updated-value" &&
+					return virtualCSINode.Labels["updated-label"] == testUpdatedValue &&
+						virtualCSINode.Annotations["updated-annotation"] == testUpdatedValue &&
 						len(virtualCSINode.Spec.Drivers) == 1 &&
 						virtualCSINode.Spec.Drivers[0].Name == "new-test-driver"
 				}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
@@ -2952,7 +2959,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 
 			ginkgo.It("should create virtual CSINode when physical CSINode is created after virtual node exists", func(ctx context.Context) {
 				// Create namespace for secrets
-				ns := "tapestry-system"
+				ns := testSystemNamespace
 				_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 				// Create kubeconfig secret
@@ -3005,7 +3012,7 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
 				// Create and start TapestrySyncer
-				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name)
+				syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 				syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -3102,8 +3109,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 				err = k8sPhysical.Get(ctx, types.NamespacedName{Name: "csinode-test2-node"}, physicalCSINode)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-				physicalCSINode.Labels["updated-label"] = "updated-value"
-				physicalCSINode.Annotations["updated-annotation"] = "updated-value"
+				physicalCSINode.Labels["updated-label"] = testUpdatedValue
+				physicalCSINode.Annotations["updated-annotation"] = testUpdatedValue
 				// Add a new CSI driver (this is allowed)
 				newDriver := storagev1.CSINodeDriver{
 					Name:   "new-test-driver-2",
@@ -3125,8 +3132,8 @@ var _ = Describe("Virtual Node Sync Test", func() {
 					if err != nil {
 						return false
 					}
-					return virtualCSINode.Labels["updated-label"] == "updated-value" &&
-						virtualCSINode.Annotations["updated-annotation"] == "updated-value" &&
+					return virtualCSINode.Labels["updated-label"] == testUpdatedValue &&
+						virtualCSINode.Annotations["updated-annotation"] == testUpdatedValue &&
 						len(virtualCSINode.Spec.Drivers) == 2 &&
 						virtualCSINode.Spec.Drivers[1].Name == "new-test-driver-2"
 				}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())

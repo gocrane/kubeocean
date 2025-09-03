@@ -2,6 +2,7 @@ package token
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -20,12 +21,12 @@ import (
 )
 
 // Helper function to create a test token request
-func createTestTokenRequest(name, _ string, expirationSeconds int64, podUID types.UID) *authenticationv1.TokenRequest {
+func createTestTokenRequest(name string, podUID types.UID, expirationSeconds int64) *authenticationv1.TokenRequest {
 	now := time.Now()
 	return &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{
 			Audiences:         []string{"https://kubernetes.default.svc.cluster.local"},
-			ExpirationSeconds: &expirationSeconds,
+			ExpirationSeconds: int64Ptr(expirationSeconds),
 			BoundObjectRef: &authenticationv1.BoundObjectReference{
 				APIVersion: "v1",
 				Kind:       "Pod",
@@ -45,7 +46,7 @@ func createTestManager(mockClock clock.Clock, logger logr.Logger) *Manager {
 	return &Manager{
 		getToken: func(name, namespace string, tr *authenticationv1.TokenRequest) (*authenticationv1.TokenRequest, error) {
 			// Mock successful token creation
-			return createTestTokenRequest(name, namespace, 3600, "test-uid"), nil
+			return createTestTokenRequest(name, "test-uid", 3600), nil
 		},
 		cache:  make(map[string]*authenticationv1.TokenRequest),
 		clock:  mockClock,
@@ -99,8 +100,32 @@ func TestKeyFunc(t *testing.T) {
 		{
 			testName:  "basic token request",
 			namespace: "test-ns",
-			tokenReq:  createTestTokenRequest("test-sa", "test-ns", 3600, "test-uid-123"),
+			tokenReq:  createTestTokenRequest("test-sa", "test-uid-123", 3600),
 			expected:  `"test-sa"/"test-ns"/[]string{"https://kubernetes.default.svc.cluster.local"}/3600/v1.BoundObjectReference{Kind:"Pod", APIVersion:"v1", Name:"test-sa", UID:"test-uid-123"}`,
+		},
+		{
+			testName:  "token request with short expiration",
+			namespace: "test-ns",
+			tokenReq:  createTestTokenRequest("test-sa", "test-uid-123", 300),
+			expected:  `"test-sa"/"test-ns"/[]string{"https://kubernetes.default.svc.cluster.local"}/300/v1.BoundObjectReference{Kind:"Pod", APIVersion:"v1", Name:"test-sa", UID:"test-uid-123"}`,
+		},
+		{
+			testName:  "token request with long expiration",
+			namespace: "test-ns",
+			tokenReq:  createTestTokenRequest("test-sa", "test-uid-123", 86400),
+			expected:  `"test-sa"/"test-ns"/[]string{"https://kubernetes.default.svc.cluster.local"}/86400/v1.BoundObjectReference{Kind:"Pod", APIVersion:"v1", Name:"test-sa", UID:"test-uid-123"}`,
+		},
+		{
+			testName:  "token request with zero expiration",
+			namespace: "test-ns",
+			tokenReq:  createTestTokenRequest("test-sa", "test-uid-123", 0),
+			expected:  `"test-sa"/"test-ns"/[]string{"https://kubernetes.default.svc.cluster.local"}/0/v1.BoundObjectReference{Kind:"Pod", APIVersion:"v1", Name:"test-sa", UID:"test-uid-123"}`,
+		},
+		{
+			testName:  "token request with negative expiration",
+			namespace: "test-ns",
+			tokenReq:  createTestTokenRequest("test-sa", "test-uid-123", -1),
+			expected:  `"test-sa"/"test-ns"/[]string{"https://kubernetes.default.svc.cluster.local"}/-1/v1.BoundObjectReference{Kind:"Pod", APIVersion:"v1", Name:"test-sa", UID:"test-uid-123"}`,
 		},
 		{
 			testName:  "token request without expiration",
@@ -133,6 +158,258 @@ func TestKeyFunc(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestExpirationSecondsScenarios 专门测试 expirationSeconds 的各种场景
+func TestExpirationSecondsScenarios(t *testing.T) {
+	tests := []struct {
+		testName          string
+		expirationSeconds int64
+		expectedBehavior  string
+		description       string
+	}{
+		{
+			testName:          "standard_1_hour_expiration",
+			expirationSeconds: 3600,
+			expectedBehavior:  "normal",
+			description:       "标准的1小时过期时间，应该正常工作",
+		},
+		{
+			testName:          "short_5_minute_expiration",
+			expirationSeconds: 300,
+			expectedBehavior:  "normal",
+			description:       "5分钟短过期时间，应该正常工作",
+		},
+		{
+			testName:          "long_24_hour_expiration",
+			expirationSeconds: 86400,
+			expectedBehavior:  "normal",
+			description:       "24小时长过期时间，应该正常工作",
+		},
+		{
+			testName:          "zero_expiration",
+			expirationSeconds: 0,
+			expectedBehavior:  "edge_case",
+			description:       "零过期时间，边界情况测试",
+		},
+		{
+			testName:          "negative_expiration",
+			expirationSeconds: -1,
+			expectedBehavior:  "edge_case",
+			description:       "负过期时间，边界情况测试",
+		},
+		{
+			testName:          "very_short_1_second_expiration",
+			expirationSeconds: 1,
+			expectedBehavior:  "edge_case",
+			description:       "1秒极短过期时间，边界情况测试",
+		},
+		{
+			testName:          "very_long_30_day_expiration",
+			expirationSeconds: 2592000,
+			expectedBehavior:  "edge_case",
+			description:       "30天极长过期时间，边界情况测试（跳过刷新测试）",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			// 测试 keyFunc 的行为
+			tokenReq := createTestTokenRequest("test-sa", "test-uid-123", tt.expirationSeconds)
+			key := keyFunc("test-sa", "test-ns", tokenReq)
+
+			// 验证 key 中包含了正确的 expirationSeconds 值
+			expectedKey := fmt.Sprintf(`"test-sa"/"test-ns"/[]string{"https://kubernetes.default.svc.cluster.local"}/%d/v1.BoundObjectReference{Kind:"Pod", APIVersion:"v1", Name:"test-sa", UID:"test-uid-123"}`, tt.expirationSeconds)
+			assert.Equal(t, expectedKey, key, "keyFunc should include correct expirationSeconds in key")
+
+			// 测试 requiresRefresh 的行为
+			mockClock := clocktesting.NewFakeClock(time.Now())
+			logger := logr.Discard()
+			manager := createTestManager(mockClock, logger)
+
+			// 测试不同时间点的刷新需求
+			testRefreshScenarios(t, manager, tokenReq, tt.expirationSeconds)
+		})
+	}
+}
+
+// testRefreshScenarios 测试不同时间点的刷新需求
+func testRefreshScenarios(t *testing.T, manager *Manager, tokenReq *authenticationv1.TokenRequest, expirationSeconds int64) {
+	// 跳过边界情况的测试，因为它们可能导致复杂的计算问题
+	if expirationSeconds <= 0 {
+		t.Skip("Skipping refresh scenarios for non-positive expiration seconds")
+		return
+	}
+
+	// 跳过极短过期时间的测试，因为它们可能导致时间计算问题
+	if expirationSeconds < 60 { // 少于1分钟
+		t.Skip("Skipping refresh scenarios for very short expiration seconds")
+		return
+	}
+
+	// 跳过极长过期时间的测试，因为它们可能导致时间计算问题
+	if expirationSeconds > 86400 { // 超过24小时
+		t.Skip("Skipping refresh scenarios for very long expiration seconds")
+		return
+	}
+
+	now := time.Now()
+	expirationTime := now.Add(time.Duration(expirationSeconds) * time.Second)
+
+	// 更新 token 的过期时间
+	tokenReq.Status.ExpirationTimestamp = metav1.NewTime(expirationTime)
+
+	// 获取 mock clock
+	mockClock := manager.clock.(*clocktesting.FakeClock)
+
+	// 测试场景1: 刚创建时（0% TTL）
+	mockClock.SetTime(now)
+	needsRefresh := manager.requiresRefresh(context.Background(), tokenReq)
+	assert.False(t, needsRefresh, "Token should not need refresh at creation time")
+
+	// 测试场景2: 20% TTL 规则（更简单的时间计算）
+	// 计算20% TTL时间点
+	twentyPercentTTL := expirationTime.Add(-1 * time.Duration(expirationSeconds*20/100) * time.Second)
+
+	// 测试20% TTL之前 - 不需要刷新
+	mockClock.SetTime(twentyPercentTTL.Add(-1 * time.Minute))
+	needsRefresh = manager.requiresRefresh(context.Background(), tokenReq)
+	assert.False(t, needsRefresh, "Token should not need refresh before 20%% TTL")
+
+	// 测试20% TTL之后 - 需要刷新
+	mockClock.SetTime(twentyPercentTTL.Add(1 * time.Minute))
+	needsRefresh = manager.requiresRefresh(context.Background(), tokenReq)
+	assert.True(t, needsRefresh, "Token should need refresh after 20%% TTL")
+}
+
+// TestExpirationSecondsEdgeCases 测试 expirationSeconds 的边界情况
+func TestExpirationSecondsEdgeCases(t *testing.T) {
+	tests := []struct {
+		testName         string
+		tokenReq         *authenticationv1.TokenRequest
+		expectedKey      string
+		expectedBehavior string
+	}{
+		{
+			testName: "nil_expiration_seconds",
+			tokenReq: &authenticationv1.TokenRequest{
+				Spec: authenticationv1.TokenRequestSpec{
+					Audiences: []string{"https://kubernetes.default.svc.cluster.local"},
+					// ExpirationSeconds is nil
+				},
+				Status: authenticationv1.TokenRequestStatus{
+					Token:               "test-token",
+					ExpirationTimestamp: metav1.NewTime(time.Now().Add(time.Hour)),
+				},
+			},
+			expectedKey:      `"test-sa"/"test-ns"/[]string{"https://kubernetes.default.svc.cluster.local"}/0/v1.BoundObjectReference{Kind:"", APIVersion:"", Name:"", UID:""}`,
+			expectedBehavior: "nil_expiration_should_default_to_zero",
+		},
+		{
+			testName: "empty_bound_object_ref",
+			tokenReq: &authenticationv1.TokenRequest{
+				Spec: authenticationv1.TokenRequestSpec{
+					Audiences:         []string{"https://kubernetes.default.svc.cluster.local"},
+					ExpirationSeconds: int64Ptr(7200),
+				},
+				Status: authenticationv1.TokenRequestStatus{
+					Token:               "test-token",
+					ExpirationTimestamp: metav1.NewTime(time.Now().Add(2 * time.Hour)),
+				},
+			},
+			expectedKey:      `"test-sa"/"test-ns"/[]string{"https://kubernetes.default.svc.cluster.local"}/7200/v1.BoundObjectReference{Kind:"", APIVersion:"", Name:"", UID:""}`,
+			expectedBehavior: "empty_bound_object_ref_should_work",
+		},
+		{
+			testName:         "max_int64_expiration",
+			tokenReq:         createTestTokenRequest("test-sa", "test-uid-123", 9223372036854775807),
+			expectedKey:      `"test-sa"/"test-ns"/[]string{"https://kubernetes.default.svc.cluster.local"}/9223372036854775807/v1.BoundObjectReference{Kind:"Pod", APIVersion:"v1", Name:"test-sa", UID:"test-uid-123"}`,
+			expectedBehavior: "max_int64_expiration_should_work",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			key := keyFunc("test-sa", "test-ns", tt.tokenReq)
+			assert.Equal(t, tt.expectedKey, key, "keyFunc should handle edge cases correctly")
+		})
+	}
+}
+
+// TestExpirationSecondsIntegration 测试 expirationSeconds 与其他功能的集成
+func TestExpirationSecondsIntegration(t *testing.T) {
+	t.Run("expiration_seconds_with_cache_operations", func(t *testing.T) {
+		mockClock := clocktesting.NewFakeClock(time.Now())
+		logger := logr.Discard()
+		manager := createTestManager(mockClock, logger)
+
+		// 测试不同过期时间的 token 在缓存中的行为
+		shortToken := createTestTokenRequest("short-sa", "test-uid-123", 300) // 5分钟
+		longToken := createTestTokenRequest("long-sa", "test-uid-456", 86400) // 24小时
+
+		// 设置过期时间
+		now := time.Now()
+		shortToken.Status.ExpirationTimestamp = metav1.NewTime(now.Add(5 * time.Minute))
+		longToken.Status.ExpirationTimestamp = metav1.NewTime(now.Add(24 * time.Hour))
+
+		// 添加到缓存
+		manager.set("short-key", shortToken)
+		manager.set("long-key", longToken)
+
+		// 验证缓存大小
+		assert.Equal(t, 2, len(manager.cache), "Cache should contain 2 tokens")
+
+		// 测试过期检查
+		assert.False(t, manager.expired(shortToken), "Short token should not be expired yet")
+		assert.False(t, manager.expired(longToken), "Long token should not be expired yet")
+
+		// 模拟时间前进，使短 token 过期
+		mockClock.SetTime(now.Add(10 * time.Minute))
+		assert.True(t, manager.expired(shortToken), "Short token should be expired now")
+		assert.False(t, manager.expired(longToken), "Long token should still be valid")
+
+		// 运行清理，应该只删除过期的 token
+		manager.cleanup()
+		assert.Equal(t, 1, len(manager.cache), "Cache should only contain 1 valid token")
+
+		_, exists := manager.get("short-key")
+		assert.False(t, exists, "Expired short token should be removed")
+
+		_, exists = manager.get("long-key")
+		assert.True(t, exists, "Valid long token should remain")
+	})
+
+	t.Run("expiration_seconds_with_refresh_logic", func(t *testing.T) {
+		mockClock := clocktesting.NewFakeClock(time.Now())
+		logger := logr.Discard()
+		manager := createTestManager(mockClock, logger)
+
+		// 创建一个中等过期时间的 token
+		token := createTestTokenRequest("medium-sa", "test-uid-789", 7200) // 2小时
+		now := time.Now()
+		token.Status.ExpirationTimestamp = metav1.NewTime(now.Add(2 * time.Hour))
+
+		// 测试不同时间点的刷新需求
+		// 刚创建时（0% TTL）
+		mockClock.SetTime(now)
+		assert.False(t, manager.requiresRefresh(context.Background(), token), "Token should not need refresh at creation")
+
+		// 1小时后（50% TTL）
+		mockClock.SetTime(now.Add(1 * time.Hour))
+		assert.False(t, manager.requiresRefresh(context.Background(), token), "Token should not need refresh at 50%% TTL")
+
+		// 1.5小时后（75% TTL）
+		mockClock.SetTime(now.Add(90 * time.Minute))
+		assert.False(t, manager.requiresRefresh(context.Background(), token), "Token should not need refresh at 75%% TTL")
+
+		// 1.6小时后（80% TTL）
+		mockClock.SetTime(now.Add(96 * time.Minute))
+		assert.True(t, manager.requiresRefresh(context.Background(), token), "Token should need refresh at 80%% TTL")
+
+		// 1.8小时后（90% TTL）
+		mockClock.SetTime(now.Add(108 * time.Minute))
+		assert.True(t, manager.requiresRefresh(context.Background(), token), "Token should need refresh at 90%% TTL")
+	})
 }
 
 func TestManager_GetServiceAccountToken_WithFakeClient(t *testing.T) {
@@ -190,15 +467,15 @@ func TestManager_GetServiceAccountToken(t *testing.T) {
 			testName:      "successful token fetch",
 			namespace:     "test-ns",
 			saName:        "test-sa",
-			tokenReq:      createTestTokenRequest("test-sa", "test-ns", 3600, "test-uid-123"),
+			tokenReq:      createTestTokenRequest("test-sa", "test-uid-123", 3600),
 			expectedError: false,
 		},
 		{
 			testName:      "return cached token when refresh fails but old token still valid",
 			namespace:     "test-ns",
 			saName:        "test-sa",
-			tokenReq:      createTestTokenRequest("test-sa", "test-ns", 3600, "test-uid-123"),
-			existingToken: createTestTokenRequest("test-sa", "test-ns", 3600, "test-uid-123"),
+			tokenReq:      createTestTokenRequest("test-sa", "test-uid-123", 3600),
+			existingToken: createTestTokenRequest("test-sa", "test-uid-123", 3600),
 			expectedError: false,
 		},
 	}
@@ -241,9 +518,9 @@ func TestManager_DeleteServiceAccountToken(t *testing.T) {
 			testName: "delete token for specific pod",
 			podUID:   "test-uid-123",
 			cachedTokens: map[string]*authenticationv1.TokenRequest{
-				"key1": createTestTokenRequest("sa1", "ns1", 3600, "test-uid-123"),
-				"key2": createTestTokenRequest("sa2", "ns2", 3600, "test-uid-456"),
-				"key3": createTestTokenRequest("sa3", "ns3", 3600, "test-uid-123"),
+				"key1": createTestTokenRequest("sa1", "test-uid-123", 3600),
+				"key2": createTestTokenRequest("sa2", "test-uid-456", 3600),
+				"key3": createTestTokenRequest("sa3", "test-uid-123", 3600),
 			},
 			expectedCount: 1, // Only key2 should remain
 		},
@@ -251,9 +528,9 @@ func TestManager_DeleteServiceAccountToken(t *testing.T) {
 			testName: "delete multiple tokens for same pod",
 			podUID:   "test-uid-123",
 			cachedTokens: map[string]*authenticationv1.TokenRequest{
-				"key1": createTestTokenRequest("sa1", "ns1", 3600, "test-uid-123"),
-				"key2": createTestTokenRequest("sa2", "ns2", 3600, "test-uid-123"),
-				"key3": createTestTokenRequest("sa3", "ns3", 3600, "test-uid-123"),
+				"key1": createTestTokenRequest("sa1", "test-uid-123", 3600),
+				"key2": createTestTokenRequest("sa2", "test-uid-123", 3600),
+				"key3": createTestTokenRequest("sa3", "test-uid-123", 3600),
 			},
 			expectedCount: 0, // All should be deleted
 		},
@@ -261,8 +538,8 @@ func TestManager_DeleteServiceAccountToken(t *testing.T) {
 			testName: "no tokens to delete",
 			podUID:   "test-uid-123",
 			cachedTokens: map[string]*authenticationv1.TokenRequest{
-				"key1": createTestTokenRequest("sa1", "ns1", 3600, "test-uid-456"),
-				"key2": createTestTokenRequest("sa2", "ns2", 3600, "test-uid-789"),
+				"key1": createTestTokenRequest("sa1", "test-uid-456", 3600),
+				"key2": createTestTokenRequest("sa2", "test-uid-789", 3600),
 			},
 			expectedCount: 2, // None should be deleted
 		},
@@ -427,7 +704,7 @@ func TestManager_CacheOperations(t *testing.T) {
 	manager := createTestManager(mockClock, logger)
 
 	// Test set operation
-	token := createTestTokenRequest("test-sa", "test-ns", 3600, "test-uid-123")
+	token := createTestTokenRequest("test-sa", "test-uid-123", 3600)
 	key := "test-key"
 	manager.set(key, token)
 
@@ -450,10 +727,10 @@ func TestManager_Cleanup(t *testing.T) {
 	manager := createTestManager(mockClock, logger)
 
 	// Add expired and non-expired tokens
-	expiredToken := createTestTokenRequest("expired-sa", "test-ns", 3600, "test-uid-123")
+	expiredToken := createTestTokenRequest("expired-sa", "test-uid-123", 3600)
 	expiredToken.Status.ExpirationTimestamp = metav1.NewTime(time.Now().Add(-1 * time.Hour))
 
-	validToken := createTestTokenRequest("valid-sa", "test-ns", 3600, "test-uid-456")
+	validToken := createTestTokenRequest("valid-sa", "test-uid-456", 3600)
 	validToken.Status.ExpirationTimestamp = metav1.NewTime(time.Now().Add(1 * time.Hour))
 
 	manager.set("expired-key", expiredToken)

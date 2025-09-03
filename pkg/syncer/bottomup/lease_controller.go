@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/clock"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -308,8 +308,8 @@ func (lc *LeaseController) newLease(node *corev1.Node) *coordinationv1.Lease {
 			Namespace: corev1.NamespaceNodeLease,
 		},
 		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity:       pointer.StringPtr(lc.nodeName),
-			LeaseDurationSeconds: pointer.Int32Ptr(lc.leaseDurationSeconds),
+			HolderIdentity:       ptr.To(lc.nodeName),
+			LeaseDurationSeconds: ptr.To(lc.leaseDurationSeconds),
 			RenewTime:            &metav1.MicroTime{Time: lc.clock.Now()},
 		},
 	}

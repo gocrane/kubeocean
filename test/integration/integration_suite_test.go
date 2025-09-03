@@ -131,10 +131,10 @@ var _ = ginkgo.AfterEach(func() {
 })
 
 // kubeconfigFromRestConfig 将 rest.Config 转换为 kubeconfig 字节串，便于写入 Secret 使用
-func kubeconfigFromRestConfig(cfg *rest.Config, clusterName string) ([]byte, error) {
+func kubeconfigFromRestConfig(cfg *rest.Config, _ string) ([]byte, error) {
 	c := clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
-			clusterName: {
+			"physical": {
 				Server:                   cfg.Host,
 				CertificateAuthorityData: cfg.CAData,
 			},
@@ -147,7 +147,7 @@ func kubeconfigFromRestConfig(cfg *rest.Config, clusterName string) ([]byte, err
 			},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
-			"default": {Cluster: clusterName, AuthInfo: "default"},
+			"default": {Cluster: "physical", AuthInfo: "default"},
 		},
 		CurrentContext: "default",
 	}

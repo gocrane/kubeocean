@@ -56,7 +56,7 @@ func (r *VirtualConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// 2.5. Check if configmap belongs to this cluster
 	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
-	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[managedByClusterIDLabel] != "true" {
+	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
 		logger.V(1).Info("ConfigMap not managed by this cluster, skipping", "clusterID", r.clusterID)
 		return ctrl.Result{}, nil
 	}
@@ -248,7 +248,7 @@ func (r *VirtualConfigMapReconciler) SetupWithManager(virtualManager, physicalMa
 
 			// Only sync configmaps managed by this cluster
 			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
-			return configMap.Labels[managedByClusterIDLabel] == "true"
+			return configMap.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
 		})).
 		Complete(r)
 }

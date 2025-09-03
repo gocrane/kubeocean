@@ -16,6 +16,11 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const (
+	// testNodeName is the test node name used in tests
+	testNodeName = "test-node"
+)
+
 // createTestLeaseController creates a LeaseController for testing
 func createTestLeaseController(nodeName string) (*LeaseController, client.Client) {
 	kubeClient := fake.NewSimpleClientset()
@@ -27,10 +32,10 @@ func createTestLeaseController(nodeName string) (*LeaseController, client.Client
 }
 
 // createTestNode creates a test node
-func createTestNode(nodeName string, ready bool) *corev1.Node {
+func createTestNode(_ string, ready bool) *corev1.Node {
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
+			Name: testNodeName,
 			UID:  "test-uid-123",
 		},
 		Status: corev1.NodeStatus{
@@ -51,7 +56,7 @@ func createTestNode(nodeName string, ready bool) *corev1.Node {
 }
 
 func TestNewLeaseController(t *testing.T) {
-	nodeName := "test-node"
+	nodeName := testNodeName
 	lc, _ := createTestLeaseController(nodeName)
 
 	if lc.nodeName != nodeName {
@@ -73,7 +78,7 @@ func TestNewLeaseController(t *testing.T) {
 }
 
 func TestLeaseController_EnsureLease(t *testing.T) {
-	nodeName := "test-node"
+	nodeName := testNodeName
 	lc, virtualClient := createTestLeaseController(nodeName)
 
 	// Create and store the test node
@@ -130,7 +135,7 @@ func TestLeaseController_EnsureLease(t *testing.T) {
 }
 
 func TestLeaseController_NewLease(t *testing.T) {
-	nodeName := "test-node"
+	nodeName := testNodeName
 	fakeClock := clocktesting.NewFakeClock(time.Now())
 
 	lc, _ := createTestLeaseController(nodeName)
@@ -211,7 +216,7 @@ func TestLeaseController_StartStop(t *testing.T) {
 }
 
 func TestLeaseController_NodeStatusCheck(t *testing.T) {
-	nodeName := "test-node"
+	nodeName := testNodeName
 	lc, virtualClient := createTestLeaseController(nodeName)
 
 	// Test with ready node
@@ -248,7 +253,7 @@ func TestLeaseController_NodeStatusCheck(t *testing.T) {
 }
 
 func TestLeaseController_GetVirtualNode(t *testing.T) {
-	nodeName := "test-node"
+	nodeName := testNodeName
 	lc, virtualClient := createTestLeaseController(nodeName)
 
 	// Test getting non-existent node
@@ -279,7 +284,7 @@ func TestLeaseController_GetVirtualNode(t *testing.T) {
 }
 
 func TestLeaseController_RetryUpdateLease(t *testing.T) {
-	nodeName := "test-node"
+	nodeName := testNodeName
 	lc, _ := createTestLeaseController(nodeName)
 
 	// Create a test lease

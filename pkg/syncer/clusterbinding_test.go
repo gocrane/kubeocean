@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -21,7 +20,7 @@ import (
 )
 
 // setupTestEnvironment creates a test environment for ClusterBindingReconciler tests
-func setupTestEnvironment(t *testing.T) (*ClusterBindingReconciler, *runtime.Scheme, client.Client) {
+func setupTestEnvironment(t *testing.T) *ClusterBindingReconciler {
 	scheme := runtime.NewScheme()
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -38,11 +37,11 @@ func setupTestEnvironment(t *testing.T) (*ClusterBindingReconciler, *runtime.Sch
 		},
 	}
 
-	return reconciler, scheme, client
+	return reconciler
 }
 
 // setupTestEnvironmentWithExistingBinding creates a test environment with an existing ClusterBinding
-func setupTestEnvironmentWithExistingBinding(t *testing.T) (*ClusterBindingReconciler, *runtime.Scheme, client.Client) {
+func setupTestEnvironmentWithExistingBinding(t *testing.T) *ClusterBindingReconciler {
 	scheme := runtime.NewScheme()
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -83,12 +82,12 @@ func setupTestEnvironmentWithExistingBinding(t *testing.T) (*ClusterBindingRecon
 		},
 	}
 
-	return reconciler, scheme, client
+	return reconciler
 }
 
 // TestClusterBindingReconciler_hasNodeSelectorChanged tests the hasNodeSelectorChanged method
 func TestClusterBindingReconciler_hasNodeSelectorChanged(t *testing.T) {
-	reconciler, _, _ := setupTestEnvironment(t)
+	reconciler := setupTestEnvironment(t)
 
 	tests := []struct {
 		name           string
@@ -149,7 +148,7 @@ func TestClusterBindingReconciler_hasNodeSelectorChanged(t *testing.T) {
 
 // TestClusterBindingReconciler_hasDisableNodeDefaultTaintChanged tests the hasDisableNodeDefaultTaintChanged method
 func TestClusterBindingReconciler_hasDisableNodeDefaultTaintChanged(t *testing.T) {
-	reconciler, _, _ := setupTestEnvironment(t)
+	reconciler := setupTestEnvironment(t)
 
 	tests := []struct {
 		name           string
@@ -186,7 +185,7 @@ func TestClusterBindingReconciler_hasDisableNodeDefaultTaintChanged(t *testing.T
 
 // TestClusterBindingReconciler_unionAndDeduplicateNodes tests the unionAndDeduplicateNodes method
 func TestClusterBindingReconciler_unionAndDeduplicateNodes(t *testing.T) {
-	reconciler, _, _ := setupTestEnvironment(t)
+	reconciler := setupTestEnvironment(t)
 
 	tests := []struct {
 		name     string
@@ -243,7 +242,7 @@ func TestClusterBindingReconciler_unionAndDeduplicateNodes(t *testing.T) {
 
 // TestClusterBindingReconciler_hasDisableNodeDefaultTaintChanged_WithExistingBinding tests the hasDisableNodeDefaultTaintChanged method with existing binding
 func TestClusterBindingReconciler_hasDisableNodeDefaultTaintChanged_WithExistingBinding(t *testing.T) {
-	reconciler, _, _ := setupTestEnvironmentWithExistingBinding(t)
+	reconciler := setupTestEnvironmentWithExistingBinding(t)
 
 	tests := []struct {
 		name           string
@@ -280,7 +279,7 @@ func TestClusterBindingReconciler_hasDisableNodeDefaultTaintChanged_WithExisting
 
 // TestClusterBindingReconciler_hasNodeSelectorChanged_WithExistingBinding tests the hasNodeSelectorChanged method with existing binding
 func TestClusterBindingReconciler_hasNodeSelectorChanged_WithExistingBinding(t *testing.T) {
-	reconciler, _, _ := setupTestEnvironmentWithExistingBinding(t)
+	reconciler := setupTestEnvironmentWithExistingBinding(t)
 
 	tests := []struct {
 		name           string
@@ -341,7 +340,7 @@ func TestClusterBindingReconciler_hasNodeSelectorChanged_WithExistingBinding(t *
 
 // TestClusterBindingReconciler_Reconcile tests the Reconcile method
 func TestClusterBindingReconciler_Reconcile(t *testing.T) {
-	reconciler, _, client := setupTestEnvironmentWithExistingBinding(t)
+	reconciler := setupTestEnvironmentWithExistingBinding(t)
 
 	// Create a test ClusterBinding
 	clusterBinding := &cloudv1beta1.ClusterBinding{
@@ -369,7 +368,7 @@ func TestClusterBindingReconciler_Reconcile(t *testing.T) {
 	}
 
 	// Create the ClusterBinding in the client
-	err := client.Create(context.Background(), clusterBinding)
+	err := reconciler.Create(context.Background(), clusterBinding)
 	require.NoError(t, err)
 
 	tests := []struct {

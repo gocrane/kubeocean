@@ -42,6 +42,8 @@ func main() {
 	var leaderElectionLeaseDuration time.Duration
 	var leaderElectionRenewDeadline time.Duration
 	var leaderElectionRetryPeriod time.Duration
+	var kubeClientQPS int
+	var kubeClientBurst int
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -59,6 +61,8 @@ func main() {
 		"The duration that the acting master will retry refreshing leadership before giving up.")
 	flag.DurationVar(&leaderElectionRetryPeriod, "leader-election-retry-period", 2*time.Second,
 		"The duration the clients should wait between attempting acquisition and renewal of a leadership.")
+	flag.IntVar(&kubeClientQPS, "kube-client-qps", 100, "QPS for kubernetes client.")
+	flag.IntVar(&kubeClientBurst, "kube-client-burst", 150, "Burst for kubernetes client.")
 
 	opts := zap.Options{
 		Development:     false,
@@ -72,8 +76,13 @@ func main() {
 	// Initialize metrics
 	metrics.InitMetrics()
 
+	// Get the kubernetes config and modify it with QPS and Burst settings
+	cfg := ctrl.GetConfigOrDie()
+	cfg.QPS = float32(kubeClientQPS)
+	cfg.Burst = kubeClientBurst
+
 	// Setup manager options with enhanced leader election configuration
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
 			BindAddress: metricsAddr,
@@ -109,6 +118,12 @@ func main() {
 			"retryPeriod", leaderElectionRetryPeriod,
 		)
 	}
+
+	// Log kubernetes client configuration
+	setupLog.Info("Kubernetes client configuration",
+		"qps", kubeClientQPS,
+		"burst", kubeClientBurst,
+	)
 
 	// Setup ClusterBinding controller
 	if err = (&controller.ClusterBindingReconciler{

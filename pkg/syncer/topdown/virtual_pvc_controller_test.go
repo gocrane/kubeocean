@@ -23,7 +23,7 @@ func TestVirtualPVCReconciler_Reconcile(t *testing.T) {
 	// Helper function to add clusterID label to virtual PVC
 	addClusterIDLabel := func(pvc *corev1.PersistentVolumeClaim) {
 		if pvc != nil && pvc.Labels != nil {
-			pvc.Labels["tapestry.io/synced-by-test-cluster-id"] = "true"
+			pvc.Labels["tapestry.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
 		}
 	}
 
@@ -88,7 +88,7 @@ func TestVirtualPVCReconciler_Reconcile(t *testing.T) {
 					Namespace: "default",
 					Labels: map[string]string{
 						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
-						"tapestry.io/synced-by-other-cluster-id": "true",
+						"tapestry.io/synced-by-other-cluster-id": cloudv1beta1.LabelValueTrue,
 					},
 					Annotations: map[string]string{
 						cloudv1beta1.AnnotationPhysicalName: "test-pvc-physical",

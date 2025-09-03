@@ -20,12 +20,17 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
+const (
+	// testSystemNamespace is the namespace used for system resources in tests
+	testSystemNamespace = "tapestry-system"
+)
+
 var _ = ginkgo.Describe("Manager E2E Tests", func() {
 	ginkgo.It("集群注册：kubeconfig 连接性校验", func(ctx context.Context) {
 		// 在 virtual 集群准备 kubeconfig Secret，并用它直连 apiserver 做连通性校验
 		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
-		ns := "tapestry-system"
+		ns := testSystemNamespace
 		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "test-kubeconfig", Namespace: ns}, Data: map[string][]byte{"kubeconfig": kc}}
 		gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
@@ -52,7 +57,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-finalizer")).To(gomega.Succeed())
 
 		// 准备 kubeconfig Secret
-		ns := "tapestry-system"
+		ns := testSystemNamespace
 		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -103,7 +108,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-syncer")).To(gomega.Succeed())
 
 		// 准备 kubeconfig Secret
-		ns := "tapestry-system"
+		ns := testSystemNamespace
 		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -150,7 +155,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-bad-kc")).To(gomega.Succeed())
 
 		// Secret 缺少 kubeconfig 键
-		ns := "tapestry-system"
+		ns := testSystemNamespace
 		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		bad := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "bad-kc", Namespace: ns}, Data: map[string][]byte{"other": []byte("x")}}
 		gomega.Expect(k8sVirtual.Create(ctx, bad)).To(gomega.Succeed())
@@ -191,7 +196,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-clean")).To(gomega.Succeed())
 
 		// 有效 kubeconfig Secret
-		ns := "tapestry-system"
+		ns := testSystemNamespace
 		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())

@@ -1817,7 +1817,7 @@ func TestVirtualPodReconciler_syncPV(t *testing.T) {
 					Namespace: "test-namespace",
 				}, &physicalSecret)
 				assert.NoError(t, err)
-				assert.Equal(t, "true", physicalSecret.Labels[cloudv1beta1.LabelUsedByPV])
+				assert.Equal(t, cloudv1beta1.LabelValueTrue, physicalSecret.Labels[cloudv1beta1.LabelUsedByPV])
 
 				// Check that the PV was synced with updated secret reference
 				// Calculate expected PV name
@@ -2003,7 +2003,7 @@ func TestVirtualPodReconciler_syncResource(t *testing.T) {
 					Namespace: "test-cluster", // Secret is created in the mount namespace
 				}, &physicalSecret)
 				assert.NoError(t, err)
-				assert.Equal(t, "true", physicalSecret.Labels[cloudv1beta1.LabelUsedByPV])
+				assert.Equal(t, cloudv1beta1.LabelValueTrue, physicalSecret.Labels[cloudv1beta1.LabelUsedByPV])
 				assert.Equal(t, cloudv1beta1.LabelManagedByValue, physicalSecret.Labels[cloudv1beta1.LabelManagedBy])
 				assert.Equal(t, "value1", string(physicalSecret.Data["key1"]))
 			},
@@ -2825,7 +2825,7 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 		require.NoError(t, err)
 
 		expectedClusterIDLabel := "tapestry.io/synced-by-test-cluster-id"
-		assert.Equal(t, "true", updatedPod.Labels[expectedClusterIDLabel])
+		assert.Equal(t, cloudv1beta1.LabelValueTrue, updatedPod.Labels[expectedClusterIDLabel])
 		assert.Equal(t, cloudv1beta1.LabelManagedByValue, updatedPod.Labels[cloudv1beta1.LabelManagedBy])
 
 		// Test clusterID finalizer methods
@@ -3952,7 +3952,7 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 			syncResourceOpt:   nil,
 			expectedLabels: map[string]string{
 				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-				"tapestry.io/synced-by-test-cluster-id": "true",
+				"tapestry.io/synced-by-test-cluster-id": cloudv1beta1.LabelValueTrue,
 			},
 			expectedAnnotations: map[string]string{
 				cloudv1beta1.AnnotationPhysicalName:      "physical-pod",
@@ -3980,7 +3980,7 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 			expectedLabels: map[string]string{
 				"app":                                   "test",
 				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-				"tapestry.io/synced-by-test-cluster-id": "true",
+				"tapestry.io/synced-by-test-cluster-id": cloudv1beta1.LabelValueTrue,
 			},
 			expectedAnnotations: map[string]string{
 				"existing":                               "annotation",
@@ -4004,8 +4004,8 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 			},
 			expectedLabels: map[string]string{
 				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-				"tapestry.io/synced-by-test-cluster-id": "true",
-				cloudv1beta1.LabelUsedByPV:              "true",
+				"tapestry.io/synced-by-test-cluster-id": cloudv1beta1.LabelValueTrue,
+				cloudv1beta1.LabelUsedByPV:              cloudv1beta1.LabelValueTrue,
 			},
 			expectedAnnotations: map[string]string{
 				cloudv1beta1.AnnotationPhysicalName:      "physical-pod",

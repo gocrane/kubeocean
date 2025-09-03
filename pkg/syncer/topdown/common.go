@@ -99,7 +99,7 @@ func BuildPhysicalResourceLabelsWithClusterID(virtualObj client.Object, clusterI
 
 	// Add cluster-specific managed-by label
 	managedByClusterIDLabel := fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterID)
-	labels[managedByClusterIDLabel] = "true"
+	labels[managedByClusterIDLabel] = cloudv1beta1.LabelValueTrue
 
 	return labels
 }
@@ -190,7 +190,7 @@ func BuildPhysicalResource(resourceType ResourceType, virtualObj client.Object, 
 
 			// Add PV usage label if this secret is referenced by PV
 			if syncResourceOpt != nil && syncResourceOpt.IsPVRefSecret {
-				labels[cloudv1beta1.LabelUsedByPV] = "true"
+				labels[cloudv1beta1.LabelUsedByPV] = cloudv1beta1.LabelValueTrue
 			}
 
 			physicalSecret := &corev1.Secret{

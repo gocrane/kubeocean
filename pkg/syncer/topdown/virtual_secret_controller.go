@@ -56,7 +56,7 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// 2.5. Check if secret belongs to this cluster
 	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
-	if virtualSecret.Labels == nil || virtualSecret.Labels[managedByClusterIDLabel] != "true" {
+	if virtualSecret.Labels == nil || virtualSecret.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
 		logger.V(1).Info("Secret not managed by this cluster, skipping", "clusterID", r.clusterID)
 		return ctrl.Result{}, nil
 	}
@@ -96,7 +96,7 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// 6. If physical secret doesn't exist, create it
 	if !physicalSecretExists {
-		if virtualSecret.Labels[cloudv1beta1.LabelUsedByPV] == "true" {
+		if virtualSecret.Labels[cloudv1beta1.LabelUsedByPV] == cloudv1beta1.LabelValueTrue {
 			logger.Info("Physical Secret doesn't exist, but it's used by PV, skip creating it")
 			return ctrl.Result{}, nil
 		}
@@ -256,7 +256,7 @@ func (r *VirtualSecretReconciler) SetupWithManager(virtualManager, physicalManag
 
 			// Only sync secrets managed by this cluster
 			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
-			return secret.Labels[managedByClusterIDLabel] == "true"
+			return secret.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
 		})).
 		Complete(r)
 }

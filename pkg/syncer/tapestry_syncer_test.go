@@ -27,13 +27,15 @@ func TestNewTapestrySyncer(t *testing.T) {
 	// Create a fake manager - we'll use nil since the test doesn't require a real manager
 	var fakeManager manager.Manager = nil
 
-	syncer, err := NewTapestrySyncer(fakeManager, fakeClient, scheme, "test-binding")
+	syncer, err := NewTapestrySyncer(fakeManager, fakeClient, scheme, "test-binding", 100, 150)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, syncer)
 	assert.Equal(t, "test-binding", syncer.ClusterBindingName)
 	assert.NotNil(t, syncer.stopCh)
 	assert.NotNil(t, syncer.phyMgrCh)
+	assert.Equal(t, 100, syncer.physicalClientQPS)
+	assert.Equal(t, 150, syncer.physicalClientBurst)
 }
 
 func TestTapestrySyncer_LoadClusterBinding(t *testing.T) {
@@ -60,7 +62,7 @@ func TestTapestrySyncer_LoadClusterBinding(t *testing.T) {
 		WithObjects(clusterBinding).
 		Build()
 
-	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding")
+	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding", 100, 150)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -78,7 +80,7 @@ func TestTapestrySyncer_LoadClusterBinding_NotFound(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "nonexistent-binding")
+	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "nonexistent-binding", 100, 150)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -205,7 +207,7 @@ func TestTapestrySyncer_ReadKubeconfigSecret(t *testing.T) {
 				WithObjects(objects...).
 				Build()
 
-			syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, tt.binding.Name)
+			syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, tt.binding.Name, 100, 150)
 			require.NoError(t, err)
 			syncer.clusterBinding = tt.binding
 
@@ -231,7 +233,7 @@ func TestTapestrySyncer_StopAndChannels(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding")
+	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding", 100, 150)
 	require.NoError(t, err)
 
 	// Test that channels are initially open
@@ -319,7 +321,7 @@ users:
 		WithObjects(clusterBinding, secret).
 		Build()
 
-	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding")
+	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding", 100, 150)
 	require.NoError(t, err)
 
 	// Load cluster binding first
@@ -343,7 +345,7 @@ func TestTapestrySyncer_PhysicalManagerLifecycle(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding")
+	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding", 100, 150)
 	require.NoError(t, err)
 
 	// Simulate physical manager completion by closing the channel
@@ -385,7 +387,7 @@ func TestTapestrySyncer_GetClusterBinding(t *testing.T) {
 		WithObjects(clusterBinding).
 		Build()
 
-	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding")
+	syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, "test-binding", 100, 150)
 	require.NoError(t, err)
 
 	// Initially should return nil
@@ -500,7 +502,7 @@ users:
 				WithObjects(objects...).
 				Build()
 
-			syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, tt.binding.Name)
+			syncer, err := NewTapestrySyncer(nil, fakeClient, scheme, tt.binding.Name, 100, 150)
 			require.NoError(t, err)
 			syncer.clusterBinding = tt.binding
 

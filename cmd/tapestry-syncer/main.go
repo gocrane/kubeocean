@@ -42,6 +42,10 @@ func main() {
 	var probeAddr string
 	var leaderElectionID string
 	var clusterBindingName string
+	var virtualClientQPS int
+	var virtualClientBurst int
+	var physicalClientQPS int
+	var physicalClientBurst int
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -52,6 +56,10 @@ func main() {
 		"The name of the leader election ID to use. If empty, will be generated from cluster-binding-name.")
 	flag.StringVar(&clusterBindingName, "cluster-binding-name", "",
 		"The name of the ClusterBinding resource this syncer is responsible for.")
+	flag.IntVar(&virtualClientQPS, "virtual-client-qps", 500, "QPS for virtual kubernetes client.")
+	flag.IntVar(&virtualClientBurst, "virtual-client-burst", 800, "Burst for virtual kubernetes client.")
+	flag.IntVar(&physicalClientQPS, "physical-client-qps", 500, "QPS for physical kubernetes client.")
+	flag.IntVar(&physicalClientBurst, "physical-client-burst", 800, "Burst for physical kubernetes client.")
 
 	opts := zap.Options{
 		Development:     false,
@@ -74,6 +82,11 @@ func main() {
 
 	// Get clusterBinding to determine clusterID for label filtering
 	config := ctrl.GetConfigOrDie()
+
+	// Set QPS and Burst for the virtual client
+	config.QPS = float32(virtualClientQPS)
+	config.Burst = virtualClientBurst
+
 	k8sClient, err := client.New(config, client.Options{Scheme: scheme})
 	if err != nil {
 		setupLog.Error(err, "unable to create client")
@@ -145,7 +158,7 @@ func main() {
 	}
 
 	// Initialize the Tapestry Syncer
-	tapestrySyncer, err := syncer.NewTapestrySyncer(mgr, mgr.GetClient(), mgr.GetScheme(), clusterBindingName)
+	tapestrySyncer, err := syncer.NewTapestrySyncer(mgr, mgr.GetClient(), mgr.GetScheme(), clusterBindingName, physicalClientQPS, physicalClientBurst)
 	if err != nil {
 		setupLog.Error(err, "unable to create tapestry syncer")
 		os.Exit(1)
@@ -169,6 +182,14 @@ func main() {
 		setupLog.Error(err, "unable to add tapestry syncer to manager")
 		os.Exit(1)
 	}
+
+	// Log client configuration
+	setupLog.Info("Client configuration",
+		"virtualClientQPS", virtualClientQPS,
+		"virtualClientBurst", virtualClientBurst,
+		"physicalClientQPS", physicalClientQPS,
+		"physicalClientBurst", physicalClientBurst,
+	)
 
 	setupLog.Info("starting syncer manager")
 	if err := mgr.Start(ctx); err != nil {

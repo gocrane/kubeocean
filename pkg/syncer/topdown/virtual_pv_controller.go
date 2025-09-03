@@ -55,7 +55,7 @@ func (r *VirtualPVReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// 2.5. Check if PV belongs to this cluster
 	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
-	if virtualPV.Labels == nil || virtualPV.Labels[managedByClusterIDLabel] != "true" {
+	if virtualPV.Labels == nil || virtualPV.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
 		logger.V(1).Info("PV not managed by this cluster, skipping", "clusterID", r.clusterID)
 		return ctrl.Result{}, nil
 	}
@@ -182,7 +182,7 @@ func (r *VirtualPVReconciler) SetupWithManager(virtualManager, physicalManager c
 
 			// Only sync PVs managed by this cluster
 			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
-			return pv.Labels[managedByClusterIDLabel] == "true"
+			return pv.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
 		})).
 		Complete(r)
 }

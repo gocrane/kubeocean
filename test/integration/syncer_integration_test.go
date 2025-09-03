@@ -18,7 +18,7 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 	ginkgo.Describe("TapestrySyncer Initialization", func() {
 		ginkgo.It("should create TapestrySyncer instance successfully", func(ctx context.Context) {
 			// Create namespace for secrets
-			ns := "tapestry-system"
+			ns := testSystemNamespace
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 			// Create kubeconfig secret for physical cluster connection
@@ -53,7 +53,7 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Create TapestrySyncer instance
-			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(syncer).NotTo(gomega.BeNil())
 
@@ -65,7 +65,7 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 
 		ginkgo.It("should load ClusterBinding successfully", func(ctx context.Context) {
 			// Create namespace for secrets
-			ns := "tapestry-system"
+			ns := testSystemNamespace
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 			// Create kubeconfig secret
@@ -98,7 +98,7 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Create TapestrySyncer and start it briefly to load ClusterBinding
-			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Start syncer in background for a short time to trigger loading
@@ -135,7 +135,7 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Try to create TapestrySyncer with non-existent ClusterBinding
-			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, "non-existent-binding")
+			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, "non-existent-binding", 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(syncer).NotTo(gomega.BeNil())
 
@@ -152,7 +152,7 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 
 		ginkgo.It("should handle invalid kubeconfig gracefully", func(ctx context.Context) {
 			// Create namespace for secrets
-			ns := "tapestry-system"
+			ns := testSystemNamespace
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 
 			// Create invalid kubeconfig secret
@@ -183,7 +183,7 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Create TapestrySyncer
-			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name)
+			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Start syncer - should fail when trying to setup physical cluster connection

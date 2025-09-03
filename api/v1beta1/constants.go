@@ -32,6 +32,7 @@ const (
 	LabelClusterBinding    = "tapestry.io/cluster-binding"
 	LabelPhysicalClusterID = "tapestry.io/physical-cluster-id"
 	LabelPhysicalNodeName  = "tapestry.io/physical-node-name"
+	LabelValueTrue         = "true"
 
 	// Resource mapping labels
 	LabelPhysicalName = "tapestry.io/physical-name"

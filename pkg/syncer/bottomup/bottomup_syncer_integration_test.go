@@ -194,9 +194,8 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		}
 
 		// Test policy reconciliation
-		result, err := policyReconciler.triggerNodeReEvaluation(policy)
+		err := policyReconciler.triggerNodeReEvaluation(policy)
 		require.NoError(t, err)
-		assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue after successful trigger")
 	})
 
 	t.Run("BottomUpSyncer initialization", func(t *testing.T) {

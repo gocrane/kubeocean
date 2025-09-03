@@ -56,20 +56,26 @@ type TapestrySyncer struct {
 	// Control channels
 	stopCh   chan struct{}
 	phyMgrCh chan struct{}
+
+	// Physical client QPS and Burst
+	physicalClientQPS   int
+	physicalClientBurst int
 }
 
 // NewTapestrySyncer creates a new TapestrySyncer instance
-func NewTapestrySyncer(mgr manager.Manager, client client.Client, scheme *runtime.Scheme, bindingName string) (*TapestrySyncer, error) {
+func NewTapestrySyncer(mgr manager.Manager, client client.Client, scheme *runtime.Scheme, bindingName string, physicalClientQPS int, physicalClientBurst int) (*TapestrySyncer, error) {
 	log := ctrl.Log.WithName("tapestry-syncer").WithValues("binding", bindingName)
 
 	return &TapestrySyncer{
-		Client:             client,
-		Scheme:             scheme,
-		Log:                log,
-		ClusterBindingName: bindingName,
-		manager:            mgr,
-		stopCh:             make(chan struct{}),
-		phyMgrCh:           make(chan struct{}),
+		Client:              client,
+		Scheme:              scheme,
+		Log:                 log,
+		ClusterBindingName:  bindingName,
+		manager:             mgr,
+		stopCh:              make(chan struct{}),
+		phyMgrCh:            make(chan struct{}),
+		physicalClientQPS:   physicalClientQPS,
+		physicalClientBurst: physicalClientBurst,
 	}, nil
 }
 
@@ -185,6 +191,10 @@ func (ts *TapestrySyncer) setupPhysicalClusterConnection(ctx context.Context) er
 		// Set connection timeout
 		config.Timeout = connectionTimeout
 
+		// Set QPS and Burst for the physical client
+		config.QPS = float32(ts.physicalClientQPS)
+		config.Burst = ts.physicalClientBurst
+
 		// Test the connection by creating a client
 		_, err = client.New(config, client.Options{
 			Scheme: ts.Scheme,
@@ -229,7 +239,7 @@ func (ts *TapestrySyncer) readKubeconfigSecret(ctx context.Context) ([]byte, err
 		Namespace: secretRef.Namespace,
 	}
 
-	if err := ts.Client.Get(ctx, key, &secret); err != nil {
+	if err := ts.Get(ctx, key, &secret); err != nil {
 		return nil, fmt.Errorf("failed to get secret %s: %w", key, err)
 	}
 
@@ -349,7 +359,7 @@ func (ts *TapestrySyncer) Stop() {
 }
 
 // setupClusterBindingController sets up the ClusterBinding controller
-func (ts *TapestrySyncer) setupClusterBindingController(ctx context.Context) error {
+func (ts *TapestrySyncer) setupClusterBindingController(_ context.Context) error {
 	ts.Log.Info("Setting up ClusterBinding controller")
 
 	if ts.manager == nil {

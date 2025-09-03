@@ -207,9 +207,8 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 			}
 
 			if tt.expectRequeue {
-				assert.True(t, result.Requeue || result.RequeueAfter > 0, "Expected requeue")
+				assert.True(t, result.RequeueAfter > 0, "Expected requeue")
 			} else {
-				assert.False(t, result.Requeue, "Expected no immediate requeue")
 				assert.Equal(t, time.Duration(0), result.RequeueAfter, "Expected no requeue after delay")
 			}
 		})
@@ -275,10 +274,9 @@ func TestResourceLeasingPolicyReconciler_TriggerNodeReEvaluation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := reconciler.triggerNodeReEvaluation(nil)
+			err := reconciler.triggerNodeReEvaluation(nil)
 
 			assert.NoError(t, err)
-			assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue after successful trigger")
 		})
 	}
 }
@@ -373,7 +371,7 @@ func TestResourceLeasingPolicyReconciler_Finalizer(t *testing.T) {
 		// First reconcile should add finalizer
 		result, err := reconciler.Reconcile(ctx, req)
 		require.NoError(t, err)
-		assert.False(t, result.Requeue)
+		assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 		// Verify finalizer was added
 		updatedPolicy := &cloudv1beta1.ResourceLeasingPolicy{}

@@ -21,6 +21,13 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 )
 
+const (
+	// testClusterIDValue is the value used for cluster ID labels in tests
+	testClusterIDValue = "true"
+	// testVirtualNamespace is the virtual namespace used in tests
+	testVirtualNamespace = "virtual-ns"
+)
+
 func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -37,7 +44,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 	// Helper function to add clusterID label to virtual Secret
 	addClusterIDLabel := func(secret *corev1.Secret) {
 		if secret != nil && secret.Labels != nil {
-			secret.Labels["tapestry.io/synced-by-test-cluster-id"] = "true"
+			secret.Labels["tapestry.io/synced-by-test-cluster-id"] = testClusterIDValue
 		}
 	}
 
@@ -59,7 +66,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			virtualSecret: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-secret",
-					Namespace: "virtual-ns",
+					Namespace: testVirtualNamespace,
 					Labels: map[string]string{
 						"app": "test",
 					},
@@ -77,10 +84,10 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			virtualSecret: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-secret",
-					Namespace: "virtual-ns",
+					Namespace: testVirtualNamespace,
 					Labels: map[string]string{
 						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
-						"tapestry.io/synced-by-other-cluster-id": "true",
+						"tapestry.io/synced-by-other-cluster-id": testClusterIDValue,
 					},
 					Annotations: map[string]string{
 						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
@@ -100,7 +107,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			virtualSecret: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-secret",
-					Namespace: "virtual-ns",
+					Namespace: testVirtualNamespace,
 					Labels: map[string]string{
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
@@ -118,7 +125,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			virtualSecret: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:              "test-secret",
-					Namespace:         "virtual-ns",
+					Namespace:         testVirtualNamespace,
 					DeletionTimestamp: &metav1.Time{Time: metav1.Now().Time},
 					Finalizers:        []string{"test-finalizer"},
 					Labels: map[string]string{
@@ -162,7 +169,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			virtualSecret: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-secret",
-					Namespace: "virtual-ns",
+					Namespace: testVirtualNamespace,
 					Labels: map[string]string{
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
@@ -195,7 +202,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			virtualSecret: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-secret",
-					Namespace: "virtual-ns",
+					Namespace: testVirtualNamespace,
 					Labels: map[string]string{
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
@@ -242,7 +249,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			virtualSecret: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-secret",
-					Namespace: "virtual-ns",
+					Namespace: testVirtualNamespace,
 					Labels: map[string]string{
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
@@ -334,7 +341,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 						if tt.virtualSecret != nil {
 							return tt.virtualSecret.Namespace
 						}
-						return "virtual-ns"
+						return testVirtualNamespace
 					}(),
 				},
 			}
@@ -571,7 +578,7 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 				Namespace: "test-ns",
 				Labels: map[string]string{
 					cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-					"tapestry.io/synced-by-test-cluster-id": "true",
+					"tapestry.io/synced-by-test-cluster-id": testClusterIDValue,
 				},
 				Annotations: map[string]string{
 					cloudv1beta1.AnnotationPhysicalName: "physical-secret",
@@ -586,7 +593,7 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 				Namespace: "test-ns",
 				Labels: map[string]string{
 					cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
-					"tapestry.io/synced-by-other-cluster-id": "true",
+					"tapestry.io/synced-by-other-cluster-id": testClusterIDValue,
 				},
 				Annotations: map[string]string{
 					cloudv1beta1.AnnotationPhysicalName: "physical-secret-other",
@@ -626,7 +633,7 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 				Namespace: "test-ns",
 				Labels: map[string]string{
 					cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-					"tapestry.io/synced-by-test-cluster-id": "true",
+					"tapestry.io/synced-by-test-cluster-id": testClusterIDValue,
 				},
 			},
 		}
@@ -647,7 +654,7 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 
 			// Only sync secrets managed by this cluster
 			managedByClusterIDLabel := GetManagedByClusterIDLabel(reconciler.clusterID)
-			return secret.Labels[managedByClusterIDLabel] == "true"
+			return secret.Labels[managedByClusterIDLabel] == testClusterIDValue
 		}
 
 		// Test the predicate function
