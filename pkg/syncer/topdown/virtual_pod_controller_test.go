@@ -12,12 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -27,11 +30,6 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 )
-
-// int64Ptr returns a pointer to an int64 value
-func int64Ptr(v int64) *int64 {
-	return &v
-}
 
 // MockTokenManager is a mock implementation of the token.TokenManagerInterface for testing
 type MockTokenManager struct {
@@ -110,6 +108,42 @@ func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 		Spec: cloudv1beta1.ClusterBindingSpec{
 			ClusterID:      "test-cluster-id",
 			MountNamespace: "test-cluster",
+		},
+	}
+
+	// Create mock services for loadbalancer IPs
+	kubernetesIntranetService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kubernetes-intranet",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Port: 443,
+				},
+			},
+		},
+		Status: corev1.ServiceStatus{
+			LoadBalancer: corev1.LoadBalancerStatus{
+				Ingress: []corev1.LoadBalancerIngress{
+					{IP: "10.0.0.1"},
+				},
+			},
+		},
+	}
+
+	kubeDnsIntranetService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kube-dns-intranet",
+			Namespace: "kube-system",
+		},
+		Status: corev1.ServiceStatus{
+			LoadBalancer: corev1.LoadBalancerStatus{
+				Ingress: []corev1.LoadBalancerIngress{
+					{IP: "10.0.0.2"},
+				},
+			},
 		},
 	}
 
@@ -529,6 +563,8 @@ func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 			if tt.virtualPV != nil {
 				virtualObjs = append(virtualObjs, tt.virtualPV)
 			}
+			// Add mock services for loadbalancer IPs
+			virtualObjs = append(virtualObjs, kubernetesIntranetService, kubeDnsIntranetService)
 			virtualClient := fakeclient.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(virtualObjs...).
@@ -1698,7 +1734,7 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 		}
 
 		// Test buildPhysicalPodSpec - should return error for missing mappings
-		_, err := reconciler.buildPhysicalPodSpec(virtualPod, "test-node", resourceMapping)
+		_, err := reconciler.buildPhysicalPodSpec(context.Background(), virtualPod, "test-node", resourceMapping)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "configMap mapping not found for virtual ConfigMap: missing-config")
 	})
@@ -2899,7 +2935,7 @@ func TestVirtualPodReconciler_CleanupServiceAccountToken(t *testing.T) {
 										{
 											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 												Audience:          "https://kubernetes.default.svc.cluster.local",
-												ExpirationSeconds: int64Ptr(3607),
+												ExpirationSeconds: ptr.To(int64(3607)),
 												Path:              "token",
 											},
 										},
@@ -2931,7 +2967,7 @@ func TestVirtualPodReconciler_CleanupServiceAccountToken(t *testing.T) {
 										{
 											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 												Audience:          "https://kubernetes.default.svc.cluster.local",
-												ExpirationSeconds: int64Ptr(3607),
+												ExpirationSeconds: ptr.To(int64(3607)),
 												Path:              "token",
 											},
 										},
@@ -3083,7 +3119,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 										{
 											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 												Audience:          "https://kubernetes.default.svc.cluster.local",
-												ExpirationSeconds: int64Ptr(3607),
+												ExpirationSeconds: ptr.To(int64(3607)),
 												Path:              "token",
 											},
 										},
@@ -3117,7 +3153,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 										{
 											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 												Audience:          "https://kubernetes.default.svc.cluster.local",
-												ExpirationSeconds: int64Ptr(3607),
+												ExpirationSeconds: ptr.To(int64(3607)),
 												Path:              "token",
 											},
 										},
@@ -3151,7 +3187,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 										{
 											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 												Audience:          "https://kubernetes.default.svc.cluster.local",
-												ExpirationSeconds: int64Ptr(3607),
+												ExpirationSeconds: ptr.To(int64(3607)),
 												Path:              "token",
 											},
 										},
@@ -3185,7 +3221,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 										{
 											ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 												Audience:          "https://kubernetes.default.svc.cluster.local",
-												ExpirationSeconds: int64Ptr(3607),
+												ExpirationSeconds: ptr.To(int64(3607)),
 												Path:              "token",
 											},
 										},
@@ -3836,8 +3872,50 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithProjectedVolumes(t *testin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create mock services for loadbalancer IPs
+			kubernetesIntranetService := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubernetes-intranet",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Port: 443,
+						},
+					},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{IP: "10.0.0.1"},
+						},
+					},
+				},
+			}
+
+			kubeDnsIntranetService := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kube-dns-intranet",
+					Namespace: "kube-system",
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{IP: "10.0.0.2"},
+						},
+					},
+				},
+			}
+
+			// Create mock virtual client with services
+			virtualClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(kubernetesIntranetService, kubeDnsIntranetService).
+				Build()
+
 			reconciler := &VirtualPodReconciler{
-				VirtualClient:  nil, // Not needed for this test
+				VirtualClient:  virtualClient,
 				PhysicalClient: nil, // Not needed for this test
 				ClusterBinding: clusterBinding,
 				Log:            ctrl.Log.WithName("test"),
@@ -3845,7 +3923,7 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithProjectedVolumes(t *testin
 			}
 
 			// Call the function
-			result, err := reconciler.buildPhysicalPodSpec(tt.virtualPod, "test-node", tt.resourceMapping)
+			result, err := reconciler.buildPhysicalPodSpec(context.Background(), tt.virtualPod, "test-node", tt.resourceMapping)
 
 			if tt.expectedError {
 				assert.Error(t, err)
@@ -3907,6 +3985,727 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithProjectedVolumes(t *testin
 						}
 					}
 				}
+			}
+
+			// Verify that KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables were injected
+			for _, container := range result.Containers {
+				var hasKubernetesServiceHost, hasKubernetesServicePort bool
+				for _, envVar := range container.Env {
+					if envVar.Name == KubernetesServiceHost {
+						assert.Equal(t, "10.0.0.1", envVar.Value, "KUBERNETES_SERVICE_HOST should be set to kubernetes-intranet IP")
+						hasKubernetesServiceHost = true
+					}
+					if envVar.Name == KubernetesServicePort {
+						assert.Equal(t, "443", envVar.Value, "KUBERNETES_SERVICE_PORT should be set to kubernetes-intranet port")
+						hasKubernetesServicePort = true
+					}
+				}
+				assert.True(t, hasKubernetesServiceHost, "KUBERNETES_SERVICE_HOST environment variable should be injected")
+				assert.True(t, hasKubernetesServicePort, "KUBERNETES_SERVICE_PORT environment variable should be injected")
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_GetKubernetesIntranetIPAndPort tests the getKubernetesIntranetIPAndPort function
+func TestVirtualPodReconciler_GetKubernetesIntranetIPAndPort(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	tests := []struct {
+		name          string
+		service       *corev1.Service
+		virtualClient client.Client
+		expectedIP    string
+		expectedPort  string
+		expectedError bool
+		errorContains string
+	}{
+		{
+			name: "successful_get_with_valid_service",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubernetes-intranet",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Port: 443,
+						},
+					},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{IP: "10.0.0.1"},
+						},
+					},
+				},
+			},
+			expectedIP:    "10.0.0.1",
+			expectedPort:  "443",
+			expectedError: false,
+		},
+		{
+			name: "successful_get_with_different_port",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubernetes-intranet",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Port: 6443,
+						},
+					},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{IP: "192.168.1.100"},
+						},
+					},
+				},
+			},
+			expectedIP:    "192.168.1.100",
+			expectedPort:  "6443",
+			expectedError: false,
+		},
+		{
+			name:          "error_when_virtual_client_is_nil",
+			service:       nil,
+			virtualClient: nil,
+			expectedError: true,
+			errorContains: "VirtualClient is not available",
+		},
+		{
+			name: "error_when_service_not_found",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "different-service",
+					Namespace: "default",
+				},
+			},
+			expectedError: true,
+			errorContains: "failed to get kubernetes-intranet service",
+		},
+		{
+			name: "error_when_no_loadbalancer_ingress",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubernetes-intranet",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Port: 443,
+						},
+					},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{},
+					},
+				},
+			},
+			expectedError: true,
+			errorContains: "kubernetes-intranet service has no loadbalancer ingress",
+		},
+		{
+			name: "error_when_loadbalancer_ip_is_empty",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubernetes-intranet",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Port: 443,
+						},
+					},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{IP: ""},
+						},
+					},
+				},
+			},
+			expectedError: true,
+			errorContains: "kubernetes-intranet service loadbalancer ingress IP is empty",
+		},
+		{
+			name: "error_when_no_ports",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubernetes-intranet",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{IP: "10.0.0.1"},
+						},
+					},
+				},
+			},
+			expectedError: true,
+			errorContains: "kubernetes-intranet service has no ports",
+		},
+		{
+			name: "error_when_port_is_zero",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubernetes-intranet",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Port: 0,
+						},
+					},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{IP: "10.0.0.1"},
+						},
+					},
+				},
+			},
+			expectedError: true,
+			errorContains: "kubernetes-intranet service first port is invalid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var virtualClient client.Client
+			if tt.virtualClient != nil {
+				virtualClient = tt.virtualClient
+			} else if tt.service != nil {
+				virtualClient = fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(tt.service).
+					Build()
+			} else if tt.name == "error_when_virtual_client_is_nil" {
+				virtualClient = nil // Explicitly set to nil for this test case
+			} else {
+				virtualClient = fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					Build()
+			}
+
+			reconciler := &VirtualPodReconciler{
+				VirtualClient: virtualClient,
+				Log:           ctrl.Log.WithName("test"),
+			}
+
+			// Test getting IP and port
+			ip, port, err := reconciler.getKubernetesIntranetIPAndPort(context.Background())
+
+			if tt.expectedError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorContains)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedIP, ip)
+				assert.Equal(t, tt.expectedPort, port)
+
+				// Test caching - should return cached values
+				ip2, port2, err2 := reconciler.getKubernetesIntranetIPAndPort(context.Background())
+				assert.NoError(t, err2)
+				assert.Equal(t, tt.expectedIP, ip2)
+				assert.Equal(t, tt.expectedPort, port2)
+
+				// Verify cached values in reconciler
+				assert.Equal(t, tt.expectedIP, reconciler.kubernetesIntranetIP)
+				assert.Equal(t, tt.expectedPort, reconciler.kubernetesIntranetPort)
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_InjectKubernetesServiceEnvVars tests the injectKubernetesServiceEnvVars function
+func TestVirtualPodReconciler_InjectKubernetesServiceEnvVars(t *testing.T) {
+	reconciler := &VirtualPodReconciler{
+		Log: ctrl.Log.WithName("test"),
+	}
+
+	tests := []struct {
+		name                string
+		container           *corev1.Container
+		host                string
+		port                string
+		expectedEnvVars     map[string]string
+		expectedEnvVarCount int
+	}{
+		{
+			name: "inject_env_vars_to_empty_container",
+			container: &corev1.Container{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Env:   []corev1.EnvVar{},
+			},
+			host: "10.0.0.1",
+			port: "443",
+			expectedEnvVars: map[string]string{
+				KubernetesServiceHost: "10.0.0.1",
+				KubernetesServicePort: "443",
+			},
+			expectedEnvVarCount: 2,
+		},
+		{
+			name: "inject_env_vars_to_container_with_existing_env_vars",
+			container: &corev1.Container{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Env: []corev1.EnvVar{
+					{
+						Name:  "EXISTING_VAR",
+						Value: "existing_value",
+					},
+					{
+						Name:  "ANOTHER_VAR",
+						Value: "another_value",
+					},
+				},
+			},
+			host: "192.168.1.100",
+			port: "6443",
+			expectedEnvVars: map[string]string{
+				"EXISTING_VAR":        "existing_value",
+				"ANOTHER_VAR":         "another_value",
+				KubernetesServiceHost: "192.168.1.100",
+				KubernetesServicePort: "6443",
+			},
+			expectedEnvVarCount: 4,
+		},
+		{
+			name: "override_existing_kubernetes_service_env_vars",
+			container: &corev1.Container{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Env: []corev1.EnvVar{
+					{
+						Name:  KubernetesServiceHost,
+						Value: "old-host",
+					},
+					{
+						Name:  KubernetesServicePort,
+						Value: "old-port",
+					},
+					{
+						Name:  "OTHER_VAR",
+						Value: "other_value",
+					},
+				},
+			},
+			host: "10.0.0.1",
+			port: "443",
+			expectedEnvVars: map[string]string{
+				KubernetesServiceHost: "10.0.0.1",
+				KubernetesServicePort: "443",
+				"OTHER_VAR":           "other_value",
+			},
+			expectedEnvVarCount: 3,
+		},
+		{
+			name: "inject_with_different_values",
+			container: &corev1.Container{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Env: []corev1.EnvVar{
+					{
+						Name:  "APP_ENV",
+						Value: "production",
+					},
+				},
+			},
+			host: "172.16.0.1",
+			port: "8080",
+			expectedEnvVars: map[string]string{
+				"APP_ENV":             "production",
+				KubernetesServiceHost: "172.16.0.1",
+				KubernetesServicePort: "8080",
+			},
+			expectedEnvVarCount: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a copy of the container to avoid modifying the original
+			container := tt.container.DeepCopy()
+
+			// Call the function
+			reconciler.injectKubernetesServiceEnvVars(container, tt.host, tt.port)
+
+			// Verify the number of environment variables
+			assert.Equal(t, tt.expectedEnvVarCount, len(container.Env), "Environment variable count should match expected")
+
+			// Verify all expected environment variables are present with correct values
+			envMap := make(map[string]string)
+			for _, envVar := range container.Env {
+				envMap[envVar.Name] = envVar.Value
+			}
+
+			for expectedName, expectedValue := range tt.expectedEnvVars {
+				actualValue, exists := envMap[expectedName]
+				assert.True(t, exists, "Environment variable %s should exist", expectedName)
+				assert.Equal(t, expectedValue, actualValue, "Environment variable %s should have correct value", expectedName)
+			}
+
+			// Verify KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT are always present
+			assert.Contains(t, envMap, KubernetesServiceHost, "KUBERNETES_SERVICE_HOST should always be present")
+			assert.Contains(t, envMap, KubernetesServicePort, "KUBERNETES_SERVICE_PORT should always be present")
+			assert.Equal(t, tt.host, envMap[KubernetesServiceHost], "KUBERNETES_SERVICE_HOST should match provided host")
+			assert.Equal(t, tt.port, envMap[KubernetesServicePort], "KUBERNETES_SERVICE_PORT should match provided port")
+		})
+	}
+}
+
+// TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection tests the buildPhysicalPodSpec function with environment variable injection
+func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Create mock services for loadbalancer IPs
+	kubernetesIntranetService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kubernetes-intranet",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Port: 443,
+				},
+			},
+		},
+		Status: corev1.ServiceStatus{
+			LoadBalancer: corev1.LoadBalancerStatus{
+				Ingress: []corev1.LoadBalancerIngress{
+					{IP: "10.0.0.1"},
+				},
+			},
+		},
+	}
+
+	kubeDnsIntranetService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kube-dns-intranet",
+			Namespace: "kube-system",
+		},
+		Status: corev1.ServiceStatus{
+			LoadBalancer: corev1.LoadBalancerStatus{
+				Ingress: []corev1.LoadBalancerIngress{
+					{IP: "10.0.0.2"},
+				},
+			},
+		},
+	}
+
+	// Create mock virtual client with services
+	virtualClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(kubernetesIntranetService, kubeDnsIntranetService).
+		Build()
+
+	reconciler := &VirtualPodReconciler{
+		VirtualClient: virtualClient,
+		Log:           ctrl.Log.WithName("test"),
+	}
+
+	tests := []struct {
+		name                    string
+		virtualPod              *corev1.Pod
+		resourceMapping         *ResourceMapping
+		expectedEnvVarInjection bool
+		expectedHostAlias       bool
+		expectedDNSConfig       bool
+	}{
+		{
+			name: "pod_with_containers_and_init_containers_should_inject_env_vars",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "main-container",
+							Image: "nginx:latest",
+							Env: []corev1.EnvVar{
+								{
+									Name:  "EXISTING_VAR",
+									Value: "existing_value",
+								},
+							},
+						},
+					},
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-container",
+							Image: "busybox:latest",
+							Env: []corev1.EnvVar{
+								{
+									Name:  "INIT_VAR",
+									Value: "init_value",
+								},
+							},
+						},
+					},
+					DNSPolicy: corev1.DNSClusterFirst,
+				},
+			},
+			resourceMapping: &ResourceMapping{
+				ConfigMaps: map[string]string{},
+				Secrets:    map[string]string{},
+			},
+			expectedEnvVarInjection: true,
+			expectedHostAlias:       true,
+			expectedDNSConfig:       true,
+		},
+		{
+			name: "pod_with_only_containers_should_inject_env_vars",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "main-container",
+							Image: "nginx:latest",
+						},
+					},
+					DNSPolicy: corev1.DNSClusterFirstWithHostNet,
+				},
+			},
+			resourceMapping: &ResourceMapping{
+				ConfigMaps: map[string]string{},
+				Secrets:    map[string]string{},
+			},
+			expectedEnvVarInjection: true,
+			expectedHostAlias:       true,
+			expectedDNSConfig:       true,
+		},
+		{
+			name: "pod_with_only_init_containers_should_inject_env_vars",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-container",
+							Image: "busybox:latest",
+						},
+					},
+					DNSPolicy: corev1.DNSClusterFirst,
+				},
+			},
+			resourceMapping: &ResourceMapping{
+				ConfigMaps: map[string]string{},
+				Secrets:    map[string]string{},
+			},
+			expectedEnvVarInjection: true,
+			expectedHostAlias:       true,
+			expectedDNSConfig:       true,
+		},
+		{
+			name: "pod_with_different_dns_policy_should_not_configure_dns",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "main-container",
+							Image: "nginx:latest",
+						},
+					},
+					DNSPolicy: corev1.DNSDefault,
+				},
+			},
+			resourceMapping: &ResourceMapping{
+				ConfigMaps: map[string]string{},
+				Secrets:    map[string]string{},
+			},
+			expectedEnvVarInjection: true,
+			expectedHostAlias:       true,
+			expectedDNSConfig:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Call buildPhysicalPodSpec
+			result, err := reconciler.buildPhysicalPodSpec(context.Background(), tt.virtualPod, "test-physical-node", tt.resourceMapping)
+			assert.NoError(t, err)
+
+			// Verify hostAlias is added
+			if tt.expectedHostAlias {
+				assert.Len(t, result.HostAliases, 1, "Should have one hostAlias")
+				assert.Equal(t, "10.0.0.1", result.HostAliases[0].IP, "HostAlias IP should match kubernetes-intranet IP")
+				assert.Equal(t, []string{"kubernetes.default.svc"}, result.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
+			}
+
+			// Verify DNS configuration
+			if tt.expectedDNSConfig {
+				assert.Equal(t, corev1.DNSNone, result.DNSPolicy, "DNSPolicy should be set to None")
+				assert.NotNil(t, result.DNSConfig, "DNSConfig should be set")
+				assert.Len(t, result.DNSConfig.Nameservers, 1, "Should have one nameserver")
+				assert.Equal(t, "10.0.0.2", result.DNSConfig.Nameservers[0], "Nameserver should match kube-dns-intranet IP")
+				assert.Len(t, result.DNSConfig.Options, 1, "Should have one DNS option")
+				assert.Equal(t, "ndots", result.DNSConfig.Options[0].Name, "DNS option name should be ndots")
+				assert.Equal(t, "3", *result.DNSConfig.Options[0].Value, "DNS option value should be 3")
+				assert.Len(t, result.DNSConfig.Searches, 3, "Should have three search domains")
+				assert.Equal(t, []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"}, result.DNSConfig.Searches, "Search domains should be correct")
+			}
+
+			// Verify environment variable injection
+			if tt.expectedEnvVarInjection {
+				// Check containers
+				for _, container := range result.Containers {
+					var hasKubernetesServiceHost, hasKubernetesServicePort bool
+					for _, envVar := range container.Env {
+						if envVar.Name == KubernetesServiceHost {
+							assert.Equal(t, "10.0.0.1", envVar.Value, "KUBERNETES_SERVICE_HOST should be set to kubernetes-intranet IP")
+							hasKubernetesServiceHost = true
+						}
+						if envVar.Name == KubernetesServicePort {
+							assert.Equal(t, "443", envVar.Value, "KUBERNETES_SERVICE_PORT should be set to kubernetes-intranet port")
+							hasKubernetesServicePort = true
+						}
+					}
+					assert.True(t, hasKubernetesServiceHost, "Container should have KUBERNETES_SERVICE_HOST environment variable")
+					assert.True(t, hasKubernetesServicePort, "Container should have KUBERNETES_SERVICE_PORT environment variable")
+				}
+
+				// Check init containers
+				for _, container := range result.InitContainers {
+					var hasKubernetesServiceHost, hasKubernetesServicePort bool
+					for _, envVar := range container.Env {
+						if envVar.Name == KubernetesServiceHost {
+							assert.Equal(t, "10.0.0.1", envVar.Value, "KUBERNETES_SERVICE_HOST should be set to kubernetes-intranet IP")
+							hasKubernetesServiceHost = true
+						}
+						if envVar.Name == KubernetesServicePort {
+							assert.Equal(t, "443", envVar.Value, "KUBERNETES_SERVICE_PORT should be set to kubernetes-intranet port")
+							hasKubernetesServicePort = true
+						}
+					}
+					assert.True(t, hasKubernetesServiceHost, "InitContainer should have KUBERNETES_SERVICE_HOST environment variable")
+					assert.True(t, hasKubernetesServicePort, "InitContainer should have KUBERNETES_SERVICE_PORT environment variable")
+				}
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjectionErrors tests error scenarios in buildPhysicalPodSpec
+func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjectionErrors(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	tests := []struct {
+		name          string
+		virtualClient client.Client
+		expectedError bool
+		errorContains string
+	}{
+		{
+			name:          "error_when_virtual_client_is_nil",
+			virtualClient: nil,
+			expectedError: true,
+			errorContains: "VirtualClient is not available",
+		},
+		{
+			name: "error_when_kubernetes_intranet_service_not_found",
+			virtualClient: fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				Build(),
+			expectedError: true,
+			errorContains: "failed to get kubernetes-intranet IP and port",
+		},
+		{
+			name: "error_when_kubernetes_intranet_service_has_no_ports",
+			virtualClient: fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(&corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kubernetes-intranet",
+						Namespace: "default",
+					},
+					Spec: corev1.ServiceSpec{
+						Ports: []corev1.ServicePort{},
+					},
+					Status: corev1.ServiceStatus{
+						LoadBalancer: corev1.LoadBalancerStatus{
+							Ingress: []corev1.LoadBalancerIngress{
+								{IP: "10.0.0.1"},
+							},
+						},
+					},
+				}).
+				Build(),
+			expectedError: true,
+			errorContains: "failed to get kubernetes-intranet IP and port",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				VirtualClient: tt.virtualClient,
+				Log:           ctrl.Log.WithName("test"),
+			}
+
+			virtualPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "main-container",
+							Image: "nginx:latest",
+						},
+					},
+				},
+			}
+
+			resourceMapping := &ResourceMapping{
+				ConfigMaps: map[string]string{},
+				Secrets:    map[string]string{},
+			}
+
+			// Call buildPhysicalPodSpec
+			_, err := reconciler.buildPhysicalPodSpec(context.Background(), virtualPod, "test-physical-node", resourceMapping)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorContains)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}
@@ -4121,4 +4920,307 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 			}
 		})
 	}
+}
+
+func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster"},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "physical-ns",
+		},
+	}
+
+	t.Run("should succeed when all resources exist", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Create physical resources
+		physicalConfigMap := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-config-physical",
+				Namespace: "physical-ns",
+			},
+			Data: map[string]string{"key": "value"},
+		}
+
+		physicalSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret-physical",
+				Namespace: "physical-ns",
+			},
+			Data: map[string][]byte{"key": []byte("value")},
+		}
+
+		physicalPVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-pvc-physical",
+				Namespace: "physical-ns",
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+			},
+		}
+
+		physicalServiceAccountToken := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-sa-token-physical",
+				Namespace: "physical-ns",
+			},
+			Data: map[string][]byte{"token": []byte("test-token")},
+		}
+
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(
+			physicalConfigMap, physicalSecret, physicalPVC, physicalServiceAccountToken,
+		).Build()
+
+		reconciler := &VirtualPodReconciler{
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            zap.New(),
+		}
+
+		resourceMapping := &ResourceMapping{
+			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
+			Secrets:                 map[string]string{"test-secret": "test-secret-physical"},
+			PVCs:                    map[string]string{"test-pvc": "test-pvc-physical"},
+			ServiceAccountTokenName: "test-sa-token-physical",
+		}
+
+		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
+		assert.NoError(t, err)
+	})
+
+	t.Run("should succeed when no ServiceAccountToken", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Create physical resources (no ServiceAccountToken)
+		physicalConfigMap := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-config-physical",
+				Namespace: "physical-ns",
+			},
+			Data: map[string]string{"key": "value"},
+		}
+
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalConfigMap).Build()
+
+		reconciler := &VirtualPodReconciler{
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            zap.New(),
+		}
+
+		resourceMapping := &ResourceMapping{
+			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
+			Secrets:                 map[string]string{},
+			PVCs:                    map[string]string{},
+			ServiceAccountTokenName: "", // No ServiceAccountToken
+		}
+
+		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
+		assert.NoError(t, err)
+	})
+
+	t.Run("should timeout when resources do not exist", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Create empty physical client (no resources)
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+		reconciler := &VirtualPodReconciler{
+			PhysicalClient: physicalClient,
+			ClusterBinding: clusterBinding,
+			Log:            zap.New(),
+		}
+
+		resourceMapping := &ResourceMapping{
+			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
+			Secrets:                 map[string]string{},
+			PVCs:                    map[string]string{},
+			ServiceAccountTokenName: "",
+		}
+
+		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "timeout waiting for physical resources to be created")
+	})
+
+	t.Run("should return error immediately for non-NotFound errors", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Create a mock client that returns a non-NotFound error
+		mockClient := &MockClient{
+			getFunc: func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				return fmt.Errorf("permission denied")
+			},
+		}
+
+		reconciler := &VirtualPodReconciler{
+			PhysicalClient: mockClient,
+			ClusterBinding: clusterBinding,
+			Log:            zap.New(),
+		}
+
+		resourceMapping := &ResourceMapping{
+			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
+			Secrets:                 map[string]string{},
+			PVCs:                    map[string]string{},
+			ServiceAccountTokenName: "",
+		}
+
+		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "permission denied")
+	})
+
+	t.Run("should continue polling when ConfigMap is NotFound", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Create a mock client that returns NotFound for ConfigMap but exists for others
+		callCount := 0
+		mockClient := &MockClient{
+			getFunc: func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				callCount++
+				// First call for ConfigMap returns NotFound, subsequent calls succeed
+				if key.Name == "test-config-physical" && callCount == 1 {
+					return apierrors.NewNotFound(corev1.Resource("configmap"), key.Name)
+				}
+				// Simulate resource creation after first call
+				if key.Name == "test-config-physical" && callCount > 1 {
+					configMap := obj.(*corev1.ConfigMap)
+					configMap.ObjectMeta = metav1.ObjectMeta{
+						Name:      key.Name,
+						Namespace: key.Namespace,
+					}
+					configMap.Data = map[string]string{"key": "value"}
+					return nil
+				}
+				return nil
+			},
+		}
+
+		reconciler := &VirtualPodReconciler{
+			PhysicalClient: mockClient,
+			ClusterBinding: clusterBinding,
+			Log:            zap.New(),
+		}
+
+		resourceMapping := &ResourceMapping{
+			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
+			Secrets:                 map[string]string{},
+			PVCs:                    map[string]string{},
+			ServiceAccountTokenName: "",
+		}
+
+		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
+		assert.NoError(t, err)
+		assert.Greater(t, callCount, 1, "Should have made multiple calls due to polling")
+	})
+
+	t.Run("should check all resource types in each polling iteration", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Track which resources were checked and how many times
+		checkedResources := make(map[string]int)
+		callCount := 0
+		mockClient := &MockClient{
+			getFunc: func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				checkedResources[key.Name]++
+				callCount++
+				// Return NotFound for all resources to trigger polling
+				return apierrors.NewNotFound(corev1.Resource(""), key.Name)
+			},
+		}
+
+		reconciler := &VirtualPodReconciler{
+			PhysicalClient: mockClient,
+			ClusterBinding: clusterBinding,
+			Log:            zap.New(),
+		}
+
+		resourceMapping := &ResourceMapping{
+			ConfigMaps:              map[string]string{"config1": "config1-physical"},
+			Secrets:                 map[string]string{},
+			PVCs:                    map[string]string{},
+			ServiceAccountTokenName: "",
+		}
+
+		// This should timeout, but we can verify the resource was checked multiple times
+		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
+		assert.Error(t, err)
+
+		// Verify the resource was checked multiple times (due to polling)
+		assert.Greater(t, checkedResources["config1-physical"], 1, "ConfigMap should have been checked multiple times due to polling")
+		assert.Greater(t, callCount, 1, "Should have made multiple calls due to polling")
+	})
+}
+
+// MockClient is a mock implementation of client.Client for testing
+type MockClient struct {
+	getFunc func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error
+}
+
+func (m *MockClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if m.getFunc != nil {
+		return m.getFunc(ctx, key, obj, opts...)
+	}
+	return apierrors.NewNotFound(corev1.Resource(""), key.Name)
+}
+
+// Implement other required methods as no-ops for testing
+func (m *MockClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return nil
+}
+
+func (m *MockClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	return nil
+}
+
+func (m *MockClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	return nil
+}
+
+func (m *MockClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	return nil
+}
+
+func (m *MockClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	return nil
+}
+
+func (m *MockClient) DeleteAllOf(ctx context.Context, obj client.Object, opts ...client.DeleteAllOfOption) error {
+	return nil
+}
+
+func (m *MockClient) Status() client.StatusWriter {
+	return nil
+}
+
+func (m *MockClient) Scheme() *runtime.Scheme {
+	return nil
+}
+
+func (m *MockClient) RESTMapper() meta.RESTMapper {
+	return nil
+}
+
+func (m *MockClient) GroupVersionKindFor(obj runtime.Object) (schema.GroupVersionKind, error) {
+	return schema.GroupVersionKind{}, nil
+}
+
+func (m *MockClient) IsObjectNamespaced(obj runtime.Object) (bool, error) {
+	return false, nil
+}
+
+func (m *MockClient) SubResource(subResource string) client.SubResourceClient {
+	return nil
 }

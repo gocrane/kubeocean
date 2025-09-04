@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -84,6 +85,12 @@ var _ = ginkgo.BeforeEach(func(ctx context.Context) {
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	k8sPhysical, err = client.New(cfgPhysical, client.Options{Scheme: scheme})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// 创建必要的 namespaces
+	createRequiredNamespaces(ctx)
+
+	// 创建必要的 services
+	createRequiredServices(ctx)
 
 	// 创建新的 Manager 实例，确保每个测试用例都有独立的 manager
 	suiteCtx, suiteCancel = context.WithCancel(context.Background())
@@ -157,4 +164,88 @@ func kubeconfigFromRestConfig(cfg *rest.Config, _ string) ([]byte, error) {
 // generateUniqueID generates a unique identifier for test resources
 func generateUniqueID() string {
 	return strconv.FormatInt(time.Now().UnixNano()+int64(rand.Intn(1000)), 36)
+}
+
+// createRequiredNamespaces creates necessary namespaces for integration tests
+func createRequiredNamespaces(ctx context.Context) {
+	// Create default namespace if it doesn't exist
+	defaultNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "default",
+		},
+	}
+	_ = k8sVirtual.Create(ctx, defaultNs)
+
+	// Create kube-system namespace if it doesn't exist
+	kubeSystemNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "kube-system",
+		},
+	}
+	_ = k8sVirtual.Create(ctx, kubeSystemNs)
+}
+
+// createRequiredServices creates necessary services for integration tests
+func createRequiredServices(ctx context.Context) {
+	// Create kubernetes-intranet service in default namespace
+	kubernetesIntranetService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kubernetes-intranet",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeLoadBalancer,
+			Ports: []corev1.ServicePort{
+				{
+					Port: 443,
+					Name: "https",
+				},
+			},
+			Selector: map[string]string{
+				"app": "kubernetes-intranet",
+			},
+		},
+	}
+	gomega.Expect(k8sVirtual.Create(ctx, kubernetesIntranetService)).To(gomega.Succeed())
+
+	// Update the service status to simulate LoadBalancer ingress
+	kubernetesIntranetService.Status = corev1.ServiceStatus{
+		LoadBalancer: corev1.LoadBalancerStatus{
+			Ingress: []corev1.LoadBalancerIngress{
+				{IP: "10.0.0.1"},
+			},
+		},
+	}
+	gomega.Expect(k8sVirtual.Status().Update(ctx, kubernetesIntranetService)).To(gomega.Succeed())
+
+	// Create kube-dns-intranet service in kube-system namespace
+	kubeDnsIntranetService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kube-dns-intranet",
+			Namespace: "kube-system",
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeLoadBalancer,
+			Ports: []corev1.ServicePort{
+				{
+					Port: 53,
+					Name: "dns",
+				},
+			},
+			Selector: map[string]string{
+				"k8s-app": "kube-dns",
+			},
+		},
+	}
+	gomega.Expect(k8sVirtual.Create(ctx, kubeDnsIntranetService)).To(gomega.Succeed())
+
+	// Update the service status to simulate LoadBalancer ingress
+	kubeDnsIntranetService.Status = corev1.ServiceStatus{
+		LoadBalancer: corev1.LoadBalancerStatus{
+			Ingress: []corev1.LoadBalancerIngress{
+				{IP: "10.0.0.2"},
+			},
+		},
+	}
+	gomega.Expect(k8sVirtual.Status().Update(ctx, kubeDnsIntranetService)).To(gomega.Succeed())
 }

@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -18,7 +19,6 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	"github.com/TKEColocation/tapestry/pkg/controller"
 	"github.com/TKEColocation/tapestry/pkg/metrics"
-	"github.com/TKEColocation/tapestry/pkg/utils"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -97,7 +97,7 @@ func main() {
 		RetryPeriod:                   &leaderElectionRetryPeriod,
 		LeaderElectionReleaseOnCancel: true,
 		Cache: cache.Options{
-			SyncPeriod: utils.DurationPtr(10 * time.Minute),
+			SyncPeriod: ptr.To(10 * time.Minute),
 		},
 	})
 	if err != nil {

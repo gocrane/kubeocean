@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -30,7 +31,6 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	"github.com/TKEColocation/tapestry/pkg/metrics"
-	"github.com/TKEColocation/tapestry/pkg/utils"
 )
 
 const (
@@ -504,7 +504,7 @@ func (r *ClusterBindingReconciler) setOwnerReference(clusterBinding *cloudv1beta
 		Kind:       clusterBinding.Kind,
 		Name:       clusterBinding.Name,
 		UID:        clusterBinding.UID,
-		Controller: utils.BoolPtr(true),
+		Controller: ptr.To(true),
 	}
 
 	// Fallback: if APIVersion/Kind are empty (common in tests when TypeMeta not set), fill them explicitly

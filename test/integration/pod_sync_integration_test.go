@@ -27,6 +27,10 @@ const (
 	testMountNamespace  = "default"
 	// testClusterIDValue is the value used for cluster ID labels in tests
 	testClusterIDValue = "true"
+
+	// Kubernetes service environment variable names
+	kubernetesServiceHostConst = "KUBERNETES_SERVICE_HOST"
+	kubernetesServicePortConst = "KUBERNETES_SERVICE_PORT"
 )
 
 var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
@@ -660,6 +664,67 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName]).To(gomega.Equal(virtualPod.Name))
 			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]).To(gomega.Equal(string(virtualPod.UID)))
 
+			// Verify HostAliases injection
+			ginkgo.By("Verifying HostAliases injection")
+			gomega.Expect(physicalPod.Spec.HostAliases).To(gomega.HaveLen(1))
+			gomega.Expect(physicalPod.Spec.HostAliases[0].IP).To(gomega.Equal("10.0.0.1")) // kubernetes-intranet IP
+			gomega.Expect(physicalPod.Spec.HostAliases[0].Hostnames).To(gomega.ContainElement("kubernetes.default.svc"))
+
+			// Verify environment variable injection for containers
+			ginkgo.By("Verifying environment variable injection for containers")
+			gomega.Expect(physicalPod.Spec.Containers).To(gomega.HaveLen(1))
+			mainContainer := physicalPod.Spec.Containers[0]
+
+			// Find KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables
+			var kubernetesServiceHost, kubernetesServicePort *corev1.EnvVar
+			for i := range mainContainer.Env {
+				switch mainContainer.Env[i].Name {
+				case kubernetesServiceHostConst:
+					kubernetesServiceHost = &mainContainer.Env[i]
+				case kubernetesServicePortConst:
+					kubernetesServicePort = &mainContainer.Env[i]
+				}
+			}
+			gomega.Expect(kubernetesServiceHost).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_HOST should be injected")
+			gomega.Expect(kubernetesServiceHost.Value).To(gomega.Equal("10.0.0.1"))
+			gomega.Expect(kubernetesServicePort).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_PORT should be injected")
+			gomega.Expect(kubernetesServicePort.Value).To(gomega.Equal("443"))
+
+			// Verify environment variable injection for init containers
+			ginkgo.By("Verifying environment variable injection for init containers")
+			gomega.Expect(physicalPod.Spec.InitContainers).To(gomega.HaveLen(1))
+			initContainer := physicalPod.Spec.InitContainers[0]
+
+			// Find KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables in init container
+			var initKubernetesServiceHost, initKubernetesServicePort *corev1.EnvVar
+			for i := range initContainer.Env {
+				switch initContainer.Env[i].Name {
+				case kubernetesServiceHostConst:
+					initKubernetesServiceHost = &initContainer.Env[i]
+				case kubernetesServicePortConst:
+					initKubernetesServicePort = &initContainer.Env[i]
+				}
+			}
+			gomega.Expect(initKubernetesServiceHost).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_HOST should be injected in init container")
+			gomega.Expect(initKubernetesServiceHost.Value).To(gomega.Equal("10.0.0.1"))
+			gomega.Expect(initKubernetesServicePort).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_PORT should be injected in init container")
+			gomega.Expect(initKubernetesServicePort.Value).To(gomega.Equal("443"))
+
+			// Verify DNS configuration
+			ginkgo.By("Verifying DNS configuration")
+			// Since virtual pod doesn't specify DNSPolicy, it defaults to ClusterFirst, which should be changed to None
+			gomega.Expect(physicalPod.Spec.DNSPolicy).To(gomega.Equal(corev1.DNSNone))
+			gomega.Expect(physicalPod.Spec.DNSConfig).ToNot(gomega.BeNil())
+			gomega.Expect(physicalPod.Spec.DNSConfig.Nameservers).To(gomega.ContainElement("10.0.0.2")) // kube-dns-intranet IP
+			gomega.Expect(physicalPod.Spec.DNSConfig.Options).To(gomega.HaveLen(1))
+			gomega.Expect(physicalPod.Spec.DNSConfig.Options[0].Name).To(gomega.Equal("ndots"))
+			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("3"))
+			gomega.Expect(physicalPod.Spec.DNSConfig.Searches).To(gomega.Equal([]string{
+				"default.svc.cluster.local",
+				"svc.cluster.local",
+				"cluster.local",
+			}))
+
 			// Note: Resource name mapping verification will be done after physical resources are created
 			// and we have the physical resource names available
 
@@ -839,30 +904,54 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			// Check init container env references
 			gomega.Expect(latestPhysicalPod.Spec.InitContainers).To(gomega.HaveLen(1))
-			initContainer := latestPhysicalPod.Spec.InitContainers[0]
+			latestInitContainer := latestPhysicalPod.Spec.InitContainers[0]
 
-			// Verify init container ConfigMap reference
-			initConfigEnv := initContainer.Env[0]
-			gomega.Expect(initConfigEnv.Name).To(gomega.Equal("INIT_CONFIG_VALUE"))
+			// Find init container ConfigMap reference by name
+			var initConfigEnv *corev1.EnvVar
+			for i := range latestInitContainer.Env {
+				if latestInitContainer.Env[i].Name == "INIT_CONFIG_VALUE" {
+					initConfigEnv = &latestInitContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(initConfigEnv).ToNot(gomega.BeNil(), "INIT_CONFIG_VALUE environment variable should exist")
 			gomega.Expect(initConfigEnv.ValueFrom.ConfigMapKeyRef.Name).To(gomega.Equal(physicalConfigMapInitName))
 
-			// Verify init container Secret reference
-			initSecretEnv := initContainer.Env[1]
-			gomega.Expect(initSecretEnv.Name).To(gomega.Equal("INIT_SECRET_VALUE"))
+			// Find init container Secret reference by name
+			var initSecretEnv *corev1.EnvVar
+			for i := range latestInitContainer.Env {
+				if latestInitContainer.Env[i].Name == "INIT_SECRET_VALUE" {
+					initSecretEnv = &latestInitContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(initSecretEnv).ToNot(gomega.BeNil(), "INIT_SECRET_VALUE environment variable should exist")
 			gomega.Expect(initSecretEnv.ValueFrom.SecretKeyRef.Name).To(gomega.Equal(physicalSecretInitName))
 
 			// Check main container env references
 			gomega.Expect(latestPhysicalPod.Spec.Containers).To(gomega.HaveLen(1))
-			mainContainer := latestPhysicalPod.Spec.Containers[0]
+			latestMainContainer := latestPhysicalPod.Spec.Containers[0]
 
-			// Verify main container ConfigMap reference
-			configEnv := mainContainer.Env[0]
-			gomega.Expect(configEnv.Name).To(gomega.Equal("CONFIG_VALUE"))
+			// Find main container ConfigMap reference by name
+			var configEnv *corev1.EnvVar
+			for i := range latestMainContainer.Env {
+				if latestMainContainer.Env[i].Name == "CONFIG_VALUE" {
+					configEnv = &latestMainContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(configEnv).ToNot(gomega.BeNil(), "CONFIG_VALUE environment variable should exist")
 			gomega.Expect(configEnv.ValueFrom.ConfigMapKeyRef.Name).To(gomega.Equal(physicalConfigMapName))
 
-			// Verify main container Secret reference
-			secretEnv := mainContainer.Env[1]
-			gomega.Expect(secretEnv.Name).To(gomega.Equal("SECRET_VALUE"))
+			// Find main container Secret reference by name
+			var secretEnv *corev1.EnvVar
+			for i := range latestMainContainer.Env {
+				if latestMainContainer.Env[i].Name == "SECRET_VALUE" {
+					secretEnv = &latestMainContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(secretEnv).ToNot(gomega.BeNil(), "SECRET_VALUE environment variable should exist")
 			gomega.Expect(secretEnv.ValueFrom.SecretKeyRef.Name).To(gomega.Equal(physicalSecretName))
 
 			// Check volume references
@@ -1151,6 +1240,47 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace]).To(gomega.Equal(virtualPod.Namespace))
 			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName]).To(gomega.Equal(virtualPod.Name))
 			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]).To(gomega.Equal(string(virtualPod.UID)))
+
+			// Verify HostAliases injection
+			ginkgo.By("Verifying HostAliases injection")
+			gomega.Expect(physicalPod.Spec.HostAliases).To(gomega.HaveLen(1))
+			gomega.Expect(physicalPod.Spec.HostAliases[0].IP).To(gomega.Equal("10.0.0.1")) // kubernetes-intranet IP
+			gomega.Expect(physicalPod.Spec.HostAliases[0].Hostnames).To(gomega.ContainElement("kubernetes.default.svc"))
+
+			// Verify environment variable injection for containers
+			ginkgo.By("Verifying environment variable injection for containers")
+			gomega.Expect(physicalPod.Spec.Containers).To(gomega.HaveLen(1))
+			mainContainer := physicalPod.Spec.Containers[0]
+
+			// Find KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables
+			var kubernetesServiceHost, kubernetesServicePort *corev1.EnvVar
+			for i := range mainContainer.Env {
+				switch mainContainer.Env[i].Name {
+				case kubernetesServiceHostConst:
+					kubernetesServiceHost = &mainContainer.Env[i]
+				case kubernetesServicePortConst:
+					kubernetesServicePort = &mainContainer.Env[i]
+				}
+			}
+			gomega.Expect(kubernetesServiceHost).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_HOST should be injected")
+			gomega.Expect(kubernetesServiceHost.Value).To(gomega.Equal("10.0.0.1"))
+			gomega.Expect(kubernetesServicePort).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_PORT should be injected")
+			gomega.Expect(kubernetesServicePort.Value).To(gomega.Equal("443"))
+
+			// Verify DNS configuration
+			ginkgo.By("Verifying DNS configuration")
+			// Since virtual pod doesn't specify DNSPolicy, it defaults to ClusterFirst, which should be changed to None
+			gomega.Expect(physicalPod.Spec.DNSPolicy).To(gomega.Equal(corev1.DNSNone))
+			gomega.Expect(physicalPod.Spec.DNSConfig).ToNot(gomega.BeNil())
+			gomega.Expect(physicalPod.Spec.DNSConfig.Nameservers).To(gomega.ContainElement("10.0.0.2")) // kube-dns-intranet IP
+			gomega.Expect(physicalPod.Spec.DNSConfig.Options).To(gomega.HaveLen(1))
+			gomega.Expect(physicalPod.Spec.DNSConfig.Options[0].Name).To(gomega.Equal("ndots"))
+			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("3"))
+			gomega.Expect(physicalPod.Spec.DNSConfig.Searches).To(gomega.Equal([]string{
+				"default.svc.cluster.local",
+				"svc.cluster.local",
+				"cluster.local",
+			}))
 
 			ginkgo.By("Verifying virtual resources have correct labels, annotations and finalizers")
 			// Check virtual CSI Secret
@@ -1442,6 +1572,47 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName]).To(gomega.Equal(virtualPod.Name))
 			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]).To(gomega.Equal(string(virtualPod.UID)))
 
+			// Verify HostAliases injection
+			ginkgo.By("Verifying HostAliases injection")
+			gomega.Expect(physicalPod.Spec.HostAliases).To(gomega.HaveLen(1))
+			gomega.Expect(physicalPod.Spec.HostAliases[0].IP).To(gomega.Equal("10.0.0.1")) // kubernetes-intranet IP
+			gomega.Expect(physicalPod.Spec.HostAliases[0].Hostnames).To(gomega.ContainElement("kubernetes.default.svc"))
+
+			// Verify environment variable injection for containers
+			ginkgo.By("Verifying environment variable injection for containers")
+			gomega.Expect(physicalPod.Spec.Containers).To(gomega.HaveLen(1))
+			mainContainer := physicalPod.Spec.Containers[0]
+
+			// Find KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables
+			var kubernetesServiceHost, kubernetesServicePort *corev1.EnvVar
+			for i := range mainContainer.Env {
+				switch mainContainer.Env[i].Name {
+				case kubernetesServiceHostConst:
+					kubernetesServiceHost = &mainContainer.Env[i]
+				case kubernetesServicePortConst:
+					kubernetesServicePort = &mainContainer.Env[i]
+				}
+			}
+			gomega.Expect(kubernetesServiceHost).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_HOST should be injected")
+			gomega.Expect(kubernetesServiceHost.Value).To(gomega.Equal("10.0.0.1"))
+			gomega.Expect(kubernetesServicePort).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_PORT should be injected")
+			gomega.Expect(kubernetesServicePort.Value).To(gomega.Equal("443"))
+
+			// Verify DNS configuration
+			ginkgo.By("Verifying DNS configuration")
+			// Since virtual pod doesn't specify DNSPolicy, it defaults to ClusterFirst, which should be changed to None
+			gomega.Expect(physicalPod.Spec.DNSPolicy).To(gomega.Equal(corev1.DNSNone))
+			gomega.Expect(physicalPod.Spec.DNSConfig).ToNot(gomega.BeNil())
+			gomega.Expect(physicalPod.Spec.DNSConfig.Nameservers).To(gomega.ContainElement("10.0.0.2")) // kube-dns-intranet IP
+			gomega.Expect(physicalPod.Spec.DNSConfig.Options).To(gomega.HaveLen(1))
+			gomega.Expect(physicalPod.Spec.DNSConfig.Options[0].Name).To(gomega.Equal("ndots"))
+			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("3"))
+			gomega.Expect(physicalPod.Spec.DNSConfig.Searches).To(gomega.Equal([]string{
+				"default.svc.cluster.local",
+				"svc.cluster.local",
+				"cluster.local",
+			}))
+
 			ginkgo.By("Verifying physical pod has empty serviceAccountName")
 			gomega.Expect(physicalPod.Spec.DeprecatedServiceAccount).To(gomega.Equal(""))
 			gomega.Expect(physicalPod.Spec.ServiceAccountName).To(gomega.Equal(""))
@@ -1453,7 +1624,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 					kubeApiAccessVolumes = append(kubeApiAccessVolumes, volume)
 				}
 			}
-			gomega.Expect(len(kubeApiAccessVolumes)).To(gomega.BeNumerically(">", 0))
+			gomega.Expect(kubeApiAccessVolumes).ToNot(gomega.BeEmpty())
 
 			// Calculate expected physical secret name using the same logic as the controller
 			expectedSecretKey := fmt.Sprintf("%s-%s", virtualPod.Name, virtualPod.UID)

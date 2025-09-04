@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/utils/clock"
 	clocktesting "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 )
 
 // Helper function to create a test token request
@@ -26,7 +27,7 @@ func createTestTokenRequest(name string, podUID types.UID, expirationSeconds int
 	return &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{
 			Audiences:         []string{"https://kubernetes.default.svc.cluster.local"},
-			ExpirationSeconds: int64Ptr(expirationSeconds),
+			ExpirationSeconds: ptr.To(expirationSeconds),
 			BoundObjectRef: &authenticationv1.BoundObjectReference{
 				APIVersion: "v1",
 				Kind:       "Pod",
@@ -144,7 +145,7 @@ func TestKeyFunc(t *testing.T) {
 			tokenReq: &authenticationv1.TokenRequest{
 				Spec: authenticationv1.TokenRequestSpec{
 					Audiences:         []string{"https://kubernetes.default.svc.cluster.local"},
-					ExpirationSeconds: int64Ptr(3600),
+					ExpirationSeconds: ptr.To(int64(3600)),
 					// No BoundObjectRef
 				},
 			},
@@ -310,7 +311,7 @@ func TestExpirationSecondsEdgeCases(t *testing.T) {
 			tokenReq: &authenticationv1.TokenRequest{
 				Spec: authenticationv1.TokenRequestSpec{
 					Audiences:         []string{"https://kubernetes.default.svc.cluster.local"},
-					ExpirationSeconds: int64Ptr(7200),
+					ExpirationSeconds: ptr.To(int64(7200)),
 				},
 				Status: authenticationv1.TokenRequestStatus{
 					Token:               "test-token",
@@ -636,7 +637,7 @@ func TestManager_RequiresRefresh(t *testing.T) {
 			testName: "token within 80% TTL - no refresh needed",
 			tokenReq: &authenticationv1.TokenRequest{
 				Spec: authenticationv1.TokenRequestSpec{
-					ExpirationSeconds: int64Ptr(3600), // 1 hour
+					ExpirationSeconds: ptr.To(int64(3600)), // 1 hour
 				},
 				Status: authenticationv1.TokenRequestStatus{
 					ExpirationTimestamp: metav1.NewTime(time.Now().Add(30 * time.Minute)), // 30 minutes from now
@@ -649,7 +650,7 @@ func TestManager_RequiresRefresh(t *testing.T) {
 			testName: "token within 20% of expiration - refresh needed",
 			tokenReq: &authenticationv1.TokenRequest{
 				Spec: authenticationv1.TokenRequestSpec{
-					ExpirationSeconds: int64Ptr(3600), // 1 hour
+					ExpirationSeconds: ptr.To(int64(3600)), // 1 hour
 				},
 				Status: authenticationv1.TokenRequestStatus{
 					ExpirationTimestamp: metav1.NewTime(time.Now().Add(5 * time.Minute)), // 5 minutes from now
@@ -662,7 +663,7 @@ func TestManager_RequiresRefresh(t *testing.T) {
 			testName: "token older than 24 hours - refresh needed",
 			tokenReq: &authenticationv1.TokenRequest{
 				Spec: authenticationv1.TokenRequestSpec{
-					ExpirationSeconds: int64Ptr(3600), // 1 hour
+					ExpirationSeconds: ptr.To(int64(3600)), // 1 hour
 				},
 				Status: authenticationv1.TokenRequestStatus{
 					ExpirationTimestamp: metav1.NewTime(time.Now().Add(1 * time.Hour)), // 1 hour from now
@@ -751,6 +752,3 @@ func TestManager_Cleanup(t *testing.T) {
 }
 
 // Helper function to create int64 pointer
-func int64Ptr(v int64) *int64 {
-	return &v
-}

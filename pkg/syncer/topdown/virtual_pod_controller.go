@@ -14,10 +14,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -28,6 +30,12 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
 	"github.com/TKEColocation/tapestry/pkg/syncer/topdown/token"
 	authenticationv1 "k8s.io/api/authentication/v1"
+)
+
+const (
+	// Kubernetes service environment variable names
+	KubernetesServiceHost = "KUBERNETES_SERVICE_HOST"
+	KubernetesServicePort = "KUBERNETES_SERVICE_PORT"
 )
 
 // VirtualPodReconciler reconciles Pod objects from virtual cluster
@@ -43,6 +51,10 @@ type VirtualPodReconciler struct {
 	clusterID         string // Cached cluster ID for performance
 	EventRecorder     record.EventRecorder
 	TokenManager      token.TokenManagerInterface
+	// Cached loadbalancer IPs and ports
+	kubernetesIntranetIP   string // Cached kubernetes-intranet loadbalancer IP
+	kubernetesIntranetPort string // Cached kubernetes-intranet service port
+	kubeDnsIntranetIP      string // Cached kube-dns-intranet loadbalancer IP
 }
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
@@ -409,7 +421,7 @@ func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod
 	}
 
 	// 2. Build physical pod spec
-	podSpec, err := r.buildPhysicalPodSpec(virtualPod, physicalNodeName, resourceMapping)
+	podSpec, err := r.buildPhysicalPodSpec(ctx, virtualPod, physicalNodeName, resourceMapping)
 	if err != nil {
 		logger.Error(err, "Failed to build physical pod spec")
 		return err
@@ -569,7 +581,7 @@ func (r *VirtualPodReconciler) replaceContainerDownwardAPIFieldPaths(envVars []c
 	}
 }
 
-func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, physicalNodeName string, resourceMapping *ResourceMapping) (corev1.PodSpec, error) {
+func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtualPod *corev1.Pod, physicalNodeName string, resourceMapping *ResourceMapping) (corev1.PodSpec, error) {
 	// Deep copy the spec to avoid modifying the original
 	spec := *virtualPod.Spec.DeepCopy()
 
@@ -583,6 +595,35 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 	spec.Affinity = nil
 
 	// Replace resource names in volumes
+	if err := r.replaceVolumeResourceNames(&spec, virtualPod, resourceMapping); err != nil {
+		return spec, err
+	}
+
+	// Replace resource names in containers
+	if err := r.replaceContainerResourceNamesInSpec(&spec, resourceMapping); err != nil {
+		return spec, err
+	}
+
+	// Replace image pull secret names
+	if err := r.replaceImagePullSecretNames(&spec, resourceMapping); err != nil {
+		return spec, err
+	}
+
+	// Add hostAliases and inject environment variables
+	if err := r.addHostAliasesAndEnvVars(ctx, &spec); err != nil {
+		return spec, err
+	}
+
+	// Configure DNS policy and DNS config
+	if err := r.configureDNSPolicy(ctx, &spec); err != nil {
+		return spec, err
+	}
+
+	return spec, nil
+}
+
+// replaceVolumeResourceNames replaces resource names in volumes
+func (r *VirtualPodReconciler) replaceVolumeResourceNames(spec *corev1.PodSpec, virtualPod *corev1.Pod, resourceMapping *ResourceMapping) error {
 	for i := range spec.Volumes {
 		volume := &spec.Volumes[i]
 
@@ -591,7 +632,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 			if physicalName, exists := resourceMapping.ConfigMaps[volume.ConfigMap.Name]; exists {
 				volume.ConfigMap.Name = physicalName
 			} else {
-				return spec, fmt.Errorf("configMap mapping not found for virtual ConfigMap: %s", volume.ConfigMap.Name)
+				return fmt.Errorf("configMap mapping not found for virtual ConfigMap: %s", volume.ConfigMap.Name)
 			}
 		}
 
@@ -600,7 +641,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 			if physicalName, exists := resourceMapping.Secrets[volume.Secret.SecretName]; exists {
 				volume.Secret.SecretName = physicalName
 			} else {
-				return spec, fmt.Errorf("secret mapping not found for virtual Secret: %s", volume.Secret.SecretName)
+				return fmt.Errorf("secret mapping not found for virtual Secret: %s", volume.Secret.SecretName)
 			}
 		}
 
@@ -609,7 +650,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 			if physicalName, exists := resourceMapping.PVCs[volume.PersistentVolumeClaim.ClaimName]; exists {
 				volume.PersistentVolumeClaim.ClaimName = physicalName
 			} else {
-				return spec, fmt.Errorf("PVC mapping not found for virtual PVC: %s", volume.PersistentVolumeClaim.ClaimName)
+				return fmt.Errorf("PVC mapping not found for virtual PVC: %s", volume.PersistentVolumeClaim.ClaimName)
 			}
 		}
 
@@ -623,7 +664,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 					if physicalName, exists := resourceMapping.ConfigMaps[source.ConfigMap.Name]; exists {
 						source.ConfigMap.Name = physicalName
 					} else {
-						return spec, fmt.Errorf("configMap mapping not found for virtual ConfigMap in projected volume: %s", source.ConfigMap.Name)
+						return fmt.Errorf("configMap mapping not found for virtual ConfigMap in projected volume: %s", source.ConfigMap.Name)
 					}
 				}
 
@@ -632,7 +673,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 					if physicalName, exists := resourceMapping.Secrets[source.Secret.Name]; exists {
 						source.Secret.Name = physicalName
 					} else {
-						return spec, fmt.Errorf("secret mapping not found for virtual Secret in projected volume: %s", source.Secret.Name)
+						return fmt.Errorf("secret mapping not found for virtual Secret in projected volume: %s", source.Secret.Name)
 					}
 				}
 
@@ -646,7 +687,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 		// Handle kube-api-access projected volumes for service account tokens
 		if strings.HasPrefix(volume.Name, "kube-api-access-") && virtualPod.Spec.ServiceAccountName != "" {
 			if resourceMapping.ServiceAccountTokenName == "" {
-				return spec, fmt.Errorf("service account token mapping not found for virtual ServiceAccount: %s", virtualPod.Spec.ServiceAccountName)
+				return fmt.Errorf("service account token mapping not found for virtual ServiceAccount: %s", virtualPod.Spec.ServiceAccountName)
 			}
 			if volume.Projected != nil {
 				for j := range volume.Projected.Sources {
@@ -676,12 +717,16 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 			r.replaceDownwardAPIFieldPaths(volume.DownwardAPI.Items)
 		}
 	}
+	return nil
+}
 
+// replaceContainerResourceNamesInSpec replaces resource names in all containers
+func (r *VirtualPodReconciler) replaceContainerResourceNamesInSpec(spec *corev1.PodSpec, resourceMapping *ResourceMapping) error {
 	// Replace resource names in containers
 	for i := range spec.Containers {
 		container := &spec.Containers[i]
 		if err := r.replaceContainerResourceNames(container, resourceMapping); err != nil {
-			return spec, err
+			return err
 		}
 	}
 
@@ -689,21 +734,83 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(virtualPod *corev1.Pod, phys
 	for i := range spec.InitContainers {
 		container := &spec.InitContainers[i]
 		if err := r.replaceContainerResourceNames(container, resourceMapping); err != nil {
-			return spec, err
+			return err
 		}
 	}
+	return nil
+}
 
-	// Replace image pull secret names
+// replaceImagePullSecretNames replaces image pull secret names
+func (r *VirtualPodReconciler) replaceImagePullSecretNames(spec *corev1.PodSpec, resourceMapping *ResourceMapping) error {
 	for i := range spec.ImagePullSecrets {
 		imagePullSecret := &spec.ImagePullSecrets[i]
 		if physicalName, exists := resourceMapping.Secrets[imagePullSecret.Name]; exists {
 			imagePullSecret.Name = physicalName
 		} else {
-			return spec, fmt.Errorf("secret mapping not found for image pull secret: %s", imagePullSecret.Name)
+			return fmt.Errorf("secret mapping not found for image pull secret: %s", imagePullSecret.Name)
 		}
 	}
+	return nil
+}
 
-	return spec, nil
+// addHostAliasesAndEnvVars adds hostAliases and injects environment variables
+func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spec *corev1.PodSpec) error {
+	// Add hostAliases for kubernetes.default.svc and get IP/port for environment variables
+	kubernetesIntranetIP, kubernetesIntranetPort, err := r.getKubernetesIntranetIPAndPort(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get kubernetes-intranet IP and port: %v", err)
+	}
+
+	// Add hostAlias for kubernetes.default.svc
+	spec.HostAliases = append(spec.HostAliases, corev1.HostAlias{
+		IP:        kubernetesIntranetIP,
+		Hostnames: []string{"kubernetes.default.svc"},
+	})
+
+	// Inject KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables to all containers
+	for i := range spec.Containers {
+		container := &spec.Containers[i]
+		r.injectKubernetesServiceEnvVars(container, kubernetesIntranetIP, kubernetesIntranetPort)
+	}
+
+	// Inject KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables to all init containers
+	for i := range spec.InitContainers {
+		container := &spec.InitContainers[i]
+		r.injectKubernetesServiceEnvVars(container, kubernetesIntranetIP, kubernetesIntranetPort)
+	}
+	return nil
+}
+
+// configureDNSPolicy configures DNS policy and DNS config
+func (r *VirtualPodReconciler) configureDNSPolicy(ctx context.Context, spec *corev1.PodSpec) error {
+	// Configure DNS policy and DNS config
+	if spec.DNSPolicy == corev1.DNSClusterFirst || spec.DNSPolicy == corev1.DNSClusterFirstWithHostNet {
+		// Get kube-dns-intranet IP
+		kubeDnsIntranetIP, err := r.getKubeDnsIntranetIP(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get kube-dns-intranet IP: %v", err)
+		}
+
+		// Set DNS policy to None
+		spec.DNSPolicy = corev1.DNSNone
+
+		// Configure DNS config
+		spec.DNSConfig = &corev1.PodDNSConfig{
+			Nameservers: []string{kubeDnsIntranetIP},
+			Options: []corev1.PodDNSConfigOption{
+				{
+					Name:  "ndots",
+					Value: ptr.To("3"),
+				},
+			},
+			Searches: []string{
+				"default.svc.cluster.local",
+				"svc.cluster.local",
+				"cluster.local",
+			},
+		}
+	}
+	return nil
 }
 
 // replaceContainerResourceNames replaces resource names in container environment variables
@@ -1035,7 +1142,124 @@ func (r *VirtualPodReconciler) syncDependentResources(ctx context.Context, virtu
 		ServiceAccountTokenName: serviceAccountTokenName,
 	}
 
+	// 5. Poll to verify all resources are created in physical cluster
+	if err := r.pollPhysicalResources(ctx, resourceMapping, virtualPod.Namespace, virtualPod.Name); err != nil {
+		logger.Error(err, "Failed to verify physical resources creation")
+		return nil, err
+	}
+
 	return resourceMapping, nil
+}
+
+// pollPhysicalResources polls to verify that all resources in the mapping are created in the physical cluster
+func (r *VirtualPodReconciler) pollPhysicalResources(ctx context.Context, resourceMapping *ResourceMapping, virtualNamespace, virtualPodName string) error {
+	logger := r.Log.WithValues("operation", "pollPhysicalResources", "virtualPod", fmt.Sprintf("%s/%s", virtualNamespace, virtualPodName))
+
+	// Convert virtual namespace to physical namespace
+	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
+
+	// Poll configuration: 500ms interval, 5s timeout
+	pollInterval := 500 * time.Millisecond
+	pollTimeout := 5 * time.Second
+
+	logger.V(1).Info("Starting to poll physical resources",
+		"physicalNamespace", physicalNamespace,
+		"pollInterval", pollInterval,
+		"pollTimeout", pollTimeout)
+
+	// Use wait.PollUntilContextTimeout for polling (replaces deprecated PollImmediateWithContext)
+	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
+		// Check all ConfigMaps
+		for virtualName, physicalName := range resourceMapping.ConfigMaps {
+			var configMap corev1.ConfigMap
+			err := r.PhysicalClient.Get(ctx, types.NamespacedName{Namespace: physicalNamespace, Name: physicalName}, &configMap)
+			if err != nil {
+				// For non-NotFound errors, return immediately
+				if !apierrors.IsNotFound(err) {
+					logger.Error(err, "Error checking ConfigMap existence",
+						"virtualName", virtualName,
+						"physicalName", physicalName)
+					return false, err
+				}
+				// Resource not found, continue polling
+				logger.V(1).Info("ConfigMap not found, continuing to poll",
+					"virtualName", virtualName,
+					"physicalName", physicalName)
+				return false, nil
+			}
+		}
+
+		// Check all Secrets
+		for virtualName, physicalName := range resourceMapping.Secrets {
+			var secret corev1.Secret
+			err := r.PhysicalClient.Get(ctx, types.NamespacedName{Namespace: physicalNamespace, Name: physicalName}, &secret)
+			if err != nil {
+				// For non-NotFound errors, return immediately
+				if !apierrors.IsNotFound(err) {
+					logger.Error(err, "Error checking Secret existence",
+						"virtualName", virtualName,
+						"physicalName", physicalName)
+					return false, err
+				}
+				// Resource not found, continue polling
+				logger.V(1).Info("Secret not found, continuing to poll",
+					"virtualName", virtualName,
+					"physicalName", physicalName)
+				return false, nil
+			}
+		}
+
+		// Check all PVCs
+		for virtualName, physicalName := range resourceMapping.PVCs {
+			var pvc corev1.PersistentVolumeClaim
+			err := r.PhysicalClient.Get(ctx, types.NamespacedName{Namespace: physicalNamespace, Name: physicalName}, &pvc)
+			if err != nil {
+				// For non-NotFound errors, return immediately
+				if !apierrors.IsNotFound(err) {
+					logger.Error(err, "Error checking PVC existence",
+						"virtualName", virtualName,
+						"physicalName", physicalName)
+					return false, err
+				}
+				// Resource not found, continue polling
+				logger.V(1).Info("PVC not found, continuing to poll",
+					"virtualName", virtualName,
+					"physicalName", physicalName)
+				return false, nil
+			}
+		}
+
+		// Check ServiceAccountToken if exists
+		if resourceMapping.ServiceAccountTokenName != "" {
+			var secret corev1.Secret
+			err := r.PhysicalClient.Get(ctx, types.NamespacedName{Namespace: physicalNamespace, Name: resourceMapping.ServiceAccountTokenName}, &secret)
+			if err != nil {
+				// For non-NotFound errors, return immediately
+				if !apierrors.IsNotFound(err) {
+					logger.Error(err, "Error checking ServiceAccountToken existence",
+						"physicalName", resourceMapping.ServiceAccountTokenName)
+					return false, err
+				}
+				// Resource not found, continue polling
+				logger.V(1).Info("ServiceAccountToken not found, continuing to poll",
+					"physicalName", resourceMapping.ServiceAccountTokenName)
+				return false, nil
+			}
+		}
+
+		// All resources exist
+		logger.Info("All physical resources verified successfully")
+		return true, nil
+	})
+
+	if err != nil {
+		if wait.Interrupted(err) {
+			return fmt.Errorf("timeout waiting for physical resources to be created: %w", err)
+		}
+		return fmt.Errorf("error polling physical resources: %w", err)
+	}
+
+	return nil
 }
 
 // syncConfigMaps syncs ConfigMaps referenced by the virtual pod and returns the mapping
@@ -1591,4 +1815,132 @@ func (r *VirtualPodReconciler) hasSyncedResourceFinalizer(obj client.Object) boo
 func (r *VirtualPodReconciler) addSyncedResourceFinalizer(obj client.Object) {
 	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.clusterID)
 	controllerutil.AddFinalizer(obj, clusterSpecificFinalizer)
+}
+
+// getKubernetesIntranetIP gets the kubernetes-intranet loadbalancer IP from virtual cluster
+// Returns cached value if available, otherwise fetches from virtual cluster and caches it
+func (r *VirtualPodReconciler) getKubernetesIntranetIPAndPort(ctx context.Context) (string, string, error) {
+	// Return cached values if available
+	if r.kubernetesIntranetIP != "" && r.kubernetesIntranetPort != "" {
+		return r.kubernetesIntranetIP, r.kubernetesIntranetPort, nil
+	}
+
+	// Check if VirtualClient is available (e.g., in test environments)
+	if r.VirtualClient == nil {
+		return "", "", fmt.Errorf("VirtualClient is not available")
+	}
+
+	// Fetch from virtual cluster
+	service := &corev1.Service{}
+	err := r.VirtualClient.Get(ctx, types.NamespacedName{
+		Name:      "kubernetes-intranet",
+		Namespace: "default",
+	}, service)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get kubernetes-intranet service: %v", err)
+	}
+
+	// Check if service has loadbalancer ingress
+	if len(service.Status.LoadBalancer.Ingress) == 0 {
+		return "", "", fmt.Errorf("kubernetes-intranet service has no loadbalancer ingress")
+	}
+
+	// Get the first ingress IP
+	ip := service.Status.LoadBalancer.Ingress[0].IP
+	if ip == "" {
+		return "", "", fmt.Errorf("kubernetes-intranet service loadbalancer ingress IP is empty")
+	}
+
+	// Get the first port from service spec
+	if len(service.Spec.Ports) == 0 {
+		return "", "", fmt.Errorf("kubernetes-intranet service has no ports")
+	}
+
+	port := service.Spec.Ports[0].Port
+	if port == 0 {
+		return "", "", fmt.Errorf("kubernetes-intranet service first port is invalid")
+	}
+
+	// Convert port to string
+	portStr := fmt.Sprintf("%d", port)
+
+	// Cache the IP and port
+	r.kubernetesIntranetIP = ip
+	r.kubernetesIntranetPort = portStr
+	return ip, portStr, nil
+}
+
+// getKubeDnsIntranetIP gets the kube-dns-intranet loadbalancer IP from virtual cluster
+// Returns cached value if available, otherwise fetches from virtual cluster and caches it
+func (r *VirtualPodReconciler) getKubeDnsIntranetIP(ctx context.Context) (string, error) {
+	// Return cached value if available
+	if r.kubeDnsIntranetIP != "" {
+		return r.kubeDnsIntranetIP, nil
+	}
+
+	// Check if VirtualClient is available (e.g., in test environments)
+	if r.VirtualClient == nil {
+		return "", fmt.Errorf("VirtualClient is not available")
+	}
+
+	// Fetch from virtual cluster
+	service := &corev1.Service{}
+	err := r.VirtualClient.Get(ctx, types.NamespacedName{
+		Name:      "kube-dns-intranet",
+		Namespace: "kube-system",
+	}, service)
+	if err != nil {
+		return "", fmt.Errorf("failed to get kube-dns-intranet service: %v", err)
+	}
+
+	// Check if service has loadbalancer ingress
+	if len(service.Status.LoadBalancer.Ingress) == 0 {
+		return "", fmt.Errorf("kube-dns-intranet service has no loadbalancer ingress")
+	}
+
+	// Get the first ingress IP
+	ip := service.Status.LoadBalancer.Ingress[0].IP
+	if ip == "" {
+		return "", fmt.Errorf("kube-dns-intranet service loadbalancer ingress IP is empty")
+	}
+
+	// Cache the IP
+	r.kubeDnsIntranetIP = ip
+	return ip, nil
+}
+
+// injectKubernetesServiceEnvVars injects KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables
+// into the container's environment variables, overriding any existing values
+func (r *VirtualPodReconciler) injectKubernetesServiceEnvVars(container *corev1.Container, host, port string) {
+	// Track if we found and updated existing environment variables
+	hostFound := false
+	portFound := false
+
+	// First pass: update existing environment variables if they exist
+	for i := range container.Env {
+		switch container.Env[i].Name {
+		case KubernetesServiceHost:
+			container.Env[i].Value = host
+			container.Env[i].ValueFrom = nil // Clear ValueFrom if it exists
+			hostFound = true
+		case KubernetesServicePort:
+			container.Env[i].Value = port
+			container.Env[i].ValueFrom = nil // Clear ValueFrom if it exists
+			portFound = true
+		}
+	}
+
+	// Second pass: append missing environment variables
+	if !hostFound {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  KubernetesServiceHost,
+			Value: host,
+		})
+	}
+	if !portFound {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  KubernetesServicePort,
+			Value: port,
+		})
+	}
 }
