@@ -867,6 +867,11 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualpod-%s", r.ClusterBinding.Name)
 
+	rateLimiter := workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute)
+	r.workQueue = workqueue.NewTypedRateLimitingQueueWithConfig(rateLimiter, workqueue.TypedRateLimitingQueueConfig[reconcile.Request]{
+		Name: controllerName,
+	})
+
 	// Setup physical pod informer for watching physical pod changes
 	podInformer, err := physicalManager.GetCache().GetInformer(context.TODO(), &corev1.Pod{})
 	if err != nil {
@@ -886,13 +891,9 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 		Named(controllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 100,
-			RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute),
+			RateLimiter:             rateLimiter,
 			NewQueue: func(controllerName string, rateLimiter workqueue.TypedRateLimiter[reconcile.Request]) workqueue.TypedRateLimitingInterface[reconcile.Request] {
-				wq := workqueue.NewTypedRateLimitingQueueWithConfig(rateLimiter, workqueue.TypedRateLimitingQueueConfig[reconcile.Request]{
-					Name: controllerName,
-				})
-				r.workQueue = wq
-				return wq
+				return r.workQueue
 			},
 		}).
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {

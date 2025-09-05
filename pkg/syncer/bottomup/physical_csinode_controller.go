@@ -369,6 +369,11 @@ func (r *PhysicalCSINodeReconciler) SetupWithManager(physicalManager, virtualMan
 
 	uniqueControllerName := fmt.Sprintf("csiNode-%s", r.ClusterBindingName)
 
+	rateLimiter := workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute)
+	r.workQueue = workqueue.NewTypedRateLimitingQueueWithConfig(rateLimiter, workqueue.TypedRateLimitingQueueConfig[reconcile.Request]{
+		Name: uniqueControllerName,
+	})
+
 	// Setup virtualManager node informer for watching virtual node changes
 	nodeInformer, err := virtualManager.GetCache().GetInformer(context.TODO(), &corev1.Node{})
 	if err != nil {
@@ -408,13 +413,9 @@ func (r *PhysicalCSINodeReconciler) SetupWithManager(physicalManager, virtualMan
 		Named(uniqueControllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 50,
-			RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute),
+			RateLimiter:             rateLimiter,
 			NewQueue: func(controllerName string, rateLimiter workqueue.TypedRateLimiter[reconcile.Request]) workqueue.TypedRateLimitingInterface[reconcile.Request] {
-				wq := workqueue.NewTypedRateLimitingQueueWithConfig(rateLimiter, workqueue.TypedRateLimitingQueueConfig[reconcile.Request]{
-					Name: controllerName,
-				})
-				r.workQueue = wq
-				return wq
+				return r.workQueue
 			},
 		}).
 		Complete(r)
