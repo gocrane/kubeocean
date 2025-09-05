@@ -663,8 +663,8 @@ func TestVirtualPodReconciler_GeneratePhysicalPodName(t *testing.T) {
 
 			// Check that result starts with expected prefix (truncated pod name)
 			expectedPrefix := tt.podName
-			if len(tt.podName) > 31 {
-				expectedPrefix = tt.podName[:31]
+			if len(tt.podName) > 30 {
+				expectedPrefix = tt.podName[:30]
 			}
 
 			assert.True(t, strings.HasPrefix(result, expectedPrefix),
@@ -2204,21 +2204,21 @@ func TestVirtualPodReconciler_GeneratePhysicalResourceName(t *testing.T) {
 		t.Logf("Long name length: %d", len(longName))
 		t.Logf("Physical name length: %d", len(physicalName))
 
-		// Should be truncated to 31 characters + hash
-		assert.True(t, strings.HasPrefix(physicalName, "very-long-config-map-name-that-"))
+		// Should be truncated to 30 characters + hash
+		assert.True(t, strings.HasPrefix(physicalName, "very-long-config-map-name-th"))
 		assert.False(t, strings.HasPrefix(physicalName, longName))
 
 		// Should contain MD5 hash
 		expectedHash := fmt.Sprintf("%x", md5.Sum([]byte("virtual-ns/"+longName)))
 		assert.True(t, strings.HasSuffix(physicalName, expectedHash))
 
-		// Verify the truncated part is exactly 31 characters
+		// Verify the truncated part is exactly 30 characters
 		// Format is: truncatedName-hashString
 		lastDashIndex := strings.LastIndex(physicalName, "-")
 		assert.True(t, lastDashIndex > 0)
 		truncatedPart := physicalName[:lastDashIndex]
 		t.Logf("Truncated part: %s (length: %d)", truncatedPart, len(truncatedPart))
-		assert.Equal(t, 31, len(truncatedPart))
+		assert.Equal(t, 30, len(truncatedPart))
 	})
 
 	t.Run("should generate consistent names for same input", func(t *testing.T) {
@@ -3008,8 +3008,8 @@ func TestVirtualPodReconciler_CleanupServiceAccountToken(t *testing.T) {
 
 					// Generate physical name using the same logic as generatePhysicalName
 					truncatedKey := key
-					if len(key) > 31 {
-						truncatedKey = key[:31]
+					if len(key) > 30 {
+						truncatedKey = key[:30]
 					}
 					input := fmt.Sprintf("%s/%s", tt.virtualPod.Namespace, key)
 					hash := fmt.Sprintf("%x", md5.Sum([]byte(input)))

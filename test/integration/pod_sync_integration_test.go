@@ -1734,13 +1734,13 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 // Helper functions
 
 // generatePhysicalName generates physical name using MD5 hash
-// Format: name(前31字符)-md5(namespace+"/"+name)
+// Format: name(前30字符)-md5(namespace+"/"+name)
 // This replicates the logic from VirtualPodReconciler.generatePhysicalName
 func generatePhysicalName(name, namespace string) string {
-	// Truncate name to first 31 characters
+	// Truncate name to first 30 characters
 	truncatedName := name
-	if len(name) > 31 {
-		truncatedName = name[:31]
+	if len(name) > 30 {
+		truncatedName = name[:30]
 	}
 
 	// Generate MD5 hash of "namespace/name"

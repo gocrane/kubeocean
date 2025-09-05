@@ -310,11 +310,11 @@ TopDown Syncer 实现了精确的资源映射机制，通过注解、标签、fi
 #### 5.1.3 名称映射规则
 
 **Pod 名称映射**:
-- 格式: `podName(前31字符)-md5(podNamespace+"/"+podName)`
+- 格式: `podName(前30字符)-md5(podNamespace+"/"+podName)`
 - 示例: 虚拟 Pod `my-app` 在 `default` 命名空间 → 物理 Pod `my-app-abc123def456`
 
 **依赖资源名称映射**:
-- 格式: `resourceName(前31字符)-md5(resourceNamespace+"/"+resourceName)`
+- 格式: `resourceName(前30字符)-md5(resourceNamespace+"/"+resourceName)`
 - 适用于 ConfigMap、Secret、PVC、PV 等资源
 - 确保名称唯一性和可预测性
 

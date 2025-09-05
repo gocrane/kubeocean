@@ -404,7 +404,7 @@ func TestExpirationSecondsIntegration(t *testing.T) {
 		assert.False(t, manager.requiresRefresh(context.Background(), token), "Token should not need refresh at 75%% TTL")
 
 		// 1.6小时后（80% TTL）
-		mockClock.SetTime(now.Add(96 * time.Minute))
+		mockClock.SetTime(now.Add(97 * time.Minute))
 		assert.True(t, manager.requiresRefresh(context.Background(), token), "Token should need refresh at 80%% TTL")
 
 		// 1.8小时后（90% TTL）

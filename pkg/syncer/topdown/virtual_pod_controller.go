@@ -366,7 +366,7 @@ func (r *VirtualPodReconciler) generatePhysicalPodMapping(ctx context.Context, v
 		return ctrl.Result{}, fmt.Errorf("ClusterBinding MountNamespace is empty")
 	}
 
-	// 2. Generate physical pod name using new format: podName(前31字符)-md5(podNamespace+"/"+podName)
+	// 2. Generate physical pod name using new format: podName(前30字符)-md5(podNamespace+"/"+podName)
 	physicalName := r.generatePhysicalPodName(virtualPod.Name, virtualPod.Namespace)
 
 	// 3. Check if physical pod with this name already exists using fallback method
@@ -997,12 +997,12 @@ func isDaemonSetPod(pod *corev1.Pod) bool {
 }
 
 // generatePhysicalName generates physical name using MD5 hash
-// Format: name(前31字符)-md5(namespace+"/"+name)
+// Format: name(前30字符)-md5(namespace+"/"+name)
 func (r *VirtualPodReconciler) generatePhysicalName(name, namespace string) string {
-	// Truncate name to first 31 characters
+	// Truncate name to first 30 characters
 	truncatedName := name
-	if len(name) > 31 {
-		truncatedName = name[:31]
+	if len(name) > 30 {
+		truncatedName = name[:30]
 	}
 
 	// Generate MD5 hash of "namespace/name"
@@ -1015,7 +1015,7 @@ func (r *VirtualPodReconciler) generatePhysicalName(name, namespace string) stri
 }
 
 // generatePhysicalPodName generates physical pod name using MD5 hash
-// Format: podName(前31字符)-md5(podNamespace+"/"+podName)
+// Format: podName(前30字符)-md5(podNamespace+"/"+podName)
 func (r *VirtualPodReconciler) generatePhysicalPodName(podName, podNamespace string) string {
 	return r.generatePhysicalName(podName, podNamespace)
 }
@@ -1735,7 +1735,7 @@ func (r *VirtualPodReconciler) createPhysicalResourceWithOpt(ctx context.Context
 }
 
 // generatePhysicalResourceName generates physical resource name using MD5 hash
-// Format: resourceName(前31字符)-md5(resourceNamespace+"/"+resourceName)
+// Format: resourceName(前30字符)-md5(resourceNamespace+"/"+resourceName)
 func (r *VirtualPodReconciler) generatePhysicalResourceName(resourceName, resourceNamespace string) string {
 	return r.generatePhysicalName(resourceName, resourceNamespace)
 }
