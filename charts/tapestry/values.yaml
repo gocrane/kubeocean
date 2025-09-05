@@ -55,6 +55,10 @@ manager:
     leaseDuration: 15s
     renewDeadline: 10s
     retryPeriod: 2s
+  # Kubernetes client configuration
+  kubeClient:
+    qps: 0  # QPS for kubernetes client (default 0 means no limit)
+    burst: 0  # Burst for kubernetes client (default 0 means no limit)
   # Metrics configuration
   metrics:
     enabled: true
@@ -131,6 +135,14 @@ syncer:
     leaseDuration: 15s
     renewDeadline: 10s
     retryPeriod: 2s
+  # Kubernetes client configuration
+  kubeClient:
+    virtual:
+      qps: 0  # QPS for virtual kubernetes client (default 0 means no limit)
+      burst: 0  # Burst for virtual kubernetes client (default 0 means no limit)
+    physical:
+      qps: 0  # QPS for physical kubernetes client (default 0 means no limit)
+      burst: 0  # Burst for physical kubernetes client (default 0 means no limit)
   # Metrics configuration
   metrics:
     enabled: true

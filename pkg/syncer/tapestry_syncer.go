@@ -192,8 +192,15 @@ func (ts *TapestrySyncer) setupPhysicalClusterConnection(ctx context.Context) er
 		config.Timeout = connectionTimeout
 
 		// Set QPS and Burst for the physical client
-		config.QPS = float32(ts.physicalClientQPS)
-		config.Burst = ts.physicalClientBurst
+		if ts.physicalClientQPS > 0 {
+			config.QPS = float32(ts.physicalClientQPS)
+		} else {
+			// disable client-side ratelimiter
+			config.QPS = -1
+		}
+		if ts.physicalClientBurst > 0 {
+			config.Burst = ts.physicalClientBurst
+		}
 
 		// Test the connection by creating a client
 		_, err = client.New(config, client.Options{

@@ -63,6 +63,12 @@ spec:
         {{- if .Values.logging.format }}
         - --zap-encoder={{ .Values.logging.format }}
         {{- end }}
+        {{- if gt (int .Values.manager.kubeClient.qps) 0 }}
+        - --kube-client-qps={{ .Values.manager.kubeClient.qps }}
+        {{- end }}
+        {{- if gt (int .Values.manager.kubeClient.burst) 0 }}
+        - --kube-client-burst={{ .Values.manager.kubeClient.burst }}
+        {{- end }}
         env: []
         ports:
         {{- if .Values.manager.metrics.enabled }}

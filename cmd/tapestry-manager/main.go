@@ -61,8 +61,8 @@ func main() {
 		"The duration that the acting master will retry refreshing leadership before giving up.")
 	flag.DurationVar(&leaderElectionRetryPeriod, "leader-election-retry-period", 2*time.Second,
 		"The duration the clients should wait between attempting acquisition and renewal of a leadership.")
-	flag.IntVar(&kubeClientQPS, "kube-client-qps", 100, "QPS for kubernetes client.")
-	flag.IntVar(&kubeClientBurst, "kube-client-burst", 150, "Burst for kubernetes client.")
+	flag.IntVar(&kubeClientQPS, "kube-client-qps", 0, "QPS for kubernetes client.(default 0 means no limit)")
+	flag.IntVar(&kubeClientBurst, "kube-client-burst", 0, "Burst for kubernetes client.(default 0 means no limit)")
 
 	opts := zap.Options{
 		Development:     false,
@@ -78,8 +78,12 @@ func main() {
 
 	// Get the kubernetes config and modify it with QPS and Burst settings
 	cfg := ctrl.GetConfigOrDie()
-	cfg.QPS = float32(kubeClientQPS)
-	cfg.Burst = kubeClientBurst
+	if kubeClientQPS > 0 {
+		cfg.QPS = float32(kubeClientQPS)
+	}
+	if kubeClientBurst > 0 {
+		cfg.Burst = kubeClientBurst
+	}
 
 	// Setup manager options with enhanced leader election configuration
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{

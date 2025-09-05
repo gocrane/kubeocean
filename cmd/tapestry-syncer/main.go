@@ -56,10 +56,10 @@ func main() {
 		"The name of the leader election ID to use. If empty, will be generated from cluster-binding-name.")
 	flag.StringVar(&clusterBindingName, "cluster-binding-name", "",
 		"The name of the ClusterBinding resource this syncer is responsible for.")
-	flag.IntVar(&virtualClientQPS, "virtual-client-qps", 500, "QPS for virtual kubernetes client.")
-	flag.IntVar(&virtualClientBurst, "virtual-client-burst", 800, "Burst for virtual kubernetes client.")
-	flag.IntVar(&physicalClientQPS, "physical-client-qps", 500, "QPS for physical kubernetes client.")
-	flag.IntVar(&physicalClientBurst, "physical-client-burst", 800, "Burst for physical kubernetes client.")
+	flag.IntVar(&virtualClientQPS, "virtual-client-qps", 0, "QPS for virtual kubernetes client.(default 0 means no limit)")
+	flag.IntVar(&virtualClientBurst, "virtual-client-burst", 0, "Burst for virtual kubernetes client.(default 0 means no limit)")
+	flag.IntVar(&physicalClientQPS, "physical-client-qps", 0, "QPS for physical kubernetes client.(default 0 means no limit)")
+	flag.IntVar(&physicalClientBurst, "physical-client-burst", 0, "Burst for physical kubernetes client.(default 0 means no limit)")
 
 	opts := zap.Options{
 		Development:     false,
@@ -84,8 +84,12 @@ func main() {
 	config := ctrl.GetConfigOrDie()
 
 	// Set QPS and Burst for the virtual client
-	config.QPS = float32(virtualClientQPS)
-	config.Burst = virtualClientBurst
+	if virtualClientQPS > 0 {
+		config.QPS = float32(virtualClientQPS)
+	}
+	if virtualClientBurst > 0 {
+		config.Burst = virtualClientBurst
+	}
 
 	k8sClient, err := client.New(config, client.Options{Scheme: scheme})
 	if err != nil {

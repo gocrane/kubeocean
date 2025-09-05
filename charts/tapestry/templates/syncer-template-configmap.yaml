@@ -90,6 +90,18 @@ data:
             {{- if .Values.logging.format }}
             - --zap-encoder={{ .Values.logging.format }}
             {{- end }}
+            {{- if gt (int .Values.syncer.kubeClient.virtual.qps) 0 }}
+            - --virtual-client-qps={{ .Values.syncer.kubeClient.virtual.qps }}
+            {{- end }}
+            {{- if gt (int .Values.syncer.kubeClient.virtual.burst) 0 }}
+            - --virtual-client-burst={{ .Values.syncer.kubeClient.virtual.burst }}
+            {{- end }}
+            {{- if gt (int .Values.syncer.kubeClient.physical.qps) 0 }}
+            - --physical-client-qps={{ .Values.syncer.kubeClient.physical.qps }}
+            {{- end }}
+            {{- if gt (int .Values.syncer.kubeClient.physical.burst) 0 }}
+            - --physical-client-burst={{ .Values.syncer.kubeClient.physical.burst }}
+            {{- end }}
             env:
             - name: CLUSTER_BINDING_NAME
               value: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
