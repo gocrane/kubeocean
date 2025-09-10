@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
@@ -234,7 +234,7 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 					assert.Equal(t, virtualNodeName, virtualNode.Name)
 					assert.Equal(t, "test-cluster", virtualNode.Labels[cloudv1beta1.LabelPhysicalClusterID])
 					assert.Equal(t, "test-node", virtualNode.Labels[cloudv1beta1.LabelPhysicalNodeName])
-					assert.Equal(t, "tapestry", virtualNode.Labels[cloudv1beta1.LabelManagedBy])
+					assert.Equal(t, "kubeocean", virtualNode.Labels[cloudv1beta1.LabelManagedBy])
 				} else {
 					assert.True(t, client.IgnoreNotFound(err) == nil, "Virtual node should not exist")
 				}
@@ -1052,12 +1052,12 @@ func TestPhysicalNodeReconciler_UserCustomizationPreservation(t *testing.T) {
 	existing := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: map[string]string{
-				"custom-label":           "custom-value", // User added
-				"tapestry.io/managed-by": "tapestry",     // Tapestry managed
+				"custom-label":            "custom-value", // User added
+				"kubeocean.io/managed-by": "kubeocean",    // Kubeocean managed
 			},
 			Annotations: map[string]string{
-				"custom-annotation":     "custom-value", // User added
-				"tapestry.io/last-sync": "old-time",     // Tapestry managed
+				"custom-annotation":      "custom-value", // User added
+				"kubeocean.io/last-sync": "old-time",     // Kubeocean managed
 			},
 		},
 		Spec: corev1.NodeSpec{
@@ -1070,10 +1070,10 @@ func TestPhysicalNodeReconciler_UserCustomizationPreservation(t *testing.T) {
 	new := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: map[string]string{
-				"tapestry.io/managed-by": "tapestry",
+				"kubeocean.io/managed-by": "kubeocean",
 			},
 			Annotations: map[string]string{
-				"tapestry.io/last-sync": "new-time",
+				"kubeocean.io/last-sync": "new-time",
 			},
 		},
 		Spec: corev1.NodeSpec{
@@ -1087,9 +1087,9 @@ func TestPhysicalNodeReconciler_UserCustomizationPreservation(t *testing.T) {
 	// Verify the method completed and the expected metadata annotation was added
 	assert.Contains(t, new.Annotations, cloudv1beta1.AnnotationExpectedMetadata)
 
-	// Verify Tapestry-managed values are still present
-	assert.Equal(t, "tapestry", new.Labels["tapestry.io/managed-by"])
-	assert.Equal(t, "new-time", new.Annotations["tapestry.io/last-sync"])
+	// Verify Kubeocean-managed values are still present
+	assert.Equal(t, "kubeocean", new.Labels["kubeocean.io/managed-by"])
+	assert.Equal(t, "new-time", new.Annotations["kubeocean.io/last-sync"])
 }
 
 func TestPhysicalNodeReconciler_ExpectedMetadataHelpers(t *testing.T) {

@@ -29,7 +29,7 @@ type ClusterBindingSpec struct {
 	// +optional
 	ServiceNamespaces []string `json:"serviceNamespaces,omitempty"`
 
-	// DisableNodeDefaultTaint controls whether to add the default tapestry.io/vnode taint to virtual nodes
+	// DisableNodeDefaultTaint controls whether to add the default kubeocean.io/vnode taint to virtual nodes
 	// If true, the default taint will not be added; if false or not set, the default taint will be added
 	// +optional
 	DisableNodeDefaultTaint bool `json:"disableNodeDefaultTaint,omitempty"`

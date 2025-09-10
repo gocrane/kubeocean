@@ -1,17 +1,17 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: tapestry-syncer-template
-  namespace: tapestry-system
+  name: kubeocean-syncer-template
+  namespace: kubeocean-system
   labels:
-    app.kubernetes.io/name: tapestry-syncer-template
-    app.kubernetes.io/part-of: tapestry
+    app.kubernetes.io/name: kubeocean-syncer-template
+    app.kubernetes.io/part-of: kubeocean
     app.kubernetes.io/component: config
 data:
-  serviceAccountName: "tapestry-syncer"
-  clusterRoleName: "tapestry-syncer"
-  clusterRoleBindingName: "tapestry-syncer"
-  syncerNamespace: "tapestry-system"
+  serviceAccountName: "kubeocean-syncer"
+  clusterRoleName: "kubeocean-syncer"
+  clusterRoleBindingName: "kubeocean-syncer"
+  syncerNamespace: "kubeocean-system"
   
   deployment.yaml: |
     apiVersion: apps/v1
@@ -20,29 +20,29 @@ data:
       name: "{{.DeploymentName}}"
       namespace: "{{.SyncerNamespace}}"
       labels:
-        app.kubernetes.io/name: tapestry-syncer
+        app.kubernetes.io/name: kubeocean-syncer
         app.kubernetes.io/instance: "{{.ClusterBindingName}}"
         app.kubernetes.io/component: syncer
-        app.kubernetes.io/part-of: tapestry
-        app.kubernetes.io/managed-by: tapestry-manager
-        tapestry.io/cluster-binding: "{{.ClusterBindingName}}"
+        app.kubernetes.io/part-of: kubeocean
+        app.kubernetes.io/managed-by: kubeocean-manager
+        kubeocean.io/cluster-binding: "{{.ClusterBindingName}}"
     spec:
       replicas: 2
       selector:
         matchLabels:
-          app.kubernetes.io/name: tapestry-syncer
+          app.kubernetes.io/name: kubeocean-syncer
           app.kubernetes.io/instance: "{{.ClusterBindingName}}"
           app.kubernetes.io/component: syncer
           k8s-app: "{{.DeploymentName}}"
       template:
         metadata:
           labels:
-            app.kubernetes.io/name: tapestry-syncer
+            app.kubernetes.io/name: kubeocean-syncer
             app.kubernetes.io/instance: "{{.ClusterBindingName}}"
             app.kubernetes.io/component: syncer
-            app.kubernetes.io/part-of: tapestry
-            app.kubernetes.io/managed-by: tapestry-manager
-            tapestry.io/cluster-binding: "{{.ClusterBindingName}}"
+            app.kubernetes.io/part-of: kubeocean
+            app.kubernetes.io/managed-by: kubeocean-manager
+            kubeocean.io/cluster-binding: "{{.ClusterBindingName}}"
             k8s-app: "{{.DeploymentName}}"
         spec:
           serviceAccountName: "{{.ServiceAccountName}}"
@@ -52,7 +52,7 @@ data:
               type: RuntimeDefault
           containers:
           - name: syncer
-            image: "ccr.ccs.tencentyun.com/tke-eni-test/tapestry-syncer:latest"
+            image: "ccr.ccs.tencentyun.com/tke-eni-test/kubeocean-syncer:latest"
             args:
             - --leader-elect=true
             - --leader-election-id={{.DeploymentName}}

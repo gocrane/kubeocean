@@ -11,8 +11,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"github.com/TKEColocation/tapestry/pkg/utils"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/utils"
 )
 
 // BottomUpSyncer handles synchronization from physical cluster to virtual cluster
@@ -21,9 +21,9 @@ type BottomUpSyncer struct {
 	Log            logr.Logger
 	ClusterBinding *cloudv1beta1.ClusterBinding
 
-	// Physical cluster manager for controllers (passed from TapestrySyncer)
+	// Physical cluster manager for controllers (passed from KubeoceanSyncer)
 	physicalManager manager.Manager
-	// Virtual cluster manager for ResourceLeasingPolicy controller (passed from TapestrySyncer)
+	// Virtual cluster manager for ResourceLeasingPolicy controller (passed from KubeoceanSyncer)
 	virtualManager manager.Manager
 
 	// Reconciler reference for triggering reconciliation
@@ -35,8 +35,8 @@ func NewBottomUpSyncer(virtualManager manager.Manager, physicalManager manager.M
 	log := ctrl.Log.WithName("bottom-up-syncer").WithValues("cluster", binding.Name)
 
 	return &BottomUpSyncer{
-		virtualManager:  virtualManager,  // Passed from TapestrySyncer
-		physicalManager: physicalManager, // Passed from TapestrySyncer
+		virtualManager:  virtualManager,  // Passed from KubeoceanSyncer
+		physicalManager: physicalManager, // Passed from KubeoceanSyncer
 		Scheme:          scheme,
 		Log:             log,
 		ClusterBinding:  binding,

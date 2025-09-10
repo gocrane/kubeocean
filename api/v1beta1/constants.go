@@ -2,51 +2,51 @@ package v1beta1
 
 const (
 	// Labels
-	LabelManagedBy      = "tapestry.io/managed-by"
-	LabelManagedByValue = "tapestry"
+	LabelManagedBy      = "kubeocean.io/managed-by"
+	LabelManagedByValue = "kubeocean"
 
 	// Pod mapping annotations
-	AnnotationVirtualPodNamespace  = "tapestry.io/virtual-pod-namespace"
-	AnnotationVirtualPodName       = "tapestry.io/virtual-pod-name"
-	AnnotationVirtualPodUID        = "tapestry.io/virtual-pod-uid"
-	AnnotationPhysicalPodNamespace = "tapestry.io/physical-pod-namespace"
-	AnnotationPhysicalPodName      = "tapestry.io/physical-pod-name"
-	AnnotationPhysicalPodUID       = "tapestry.io/physical-pod-uid"
+	AnnotationVirtualPodNamespace  = "kubeocean.io/virtual-pod-namespace"
+	AnnotationVirtualPodName       = "kubeocean.io/virtual-pod-name"
+	AnnotationVirtualPodUID        = "kubeocean.io/virtual-pod-uid"
+	AnnotationPhysicalPodNamespace = "kubeocean.io/physical-pod-namespace"
+	AnnotationPhysicalPodName      = "kubeocean.io/physical-pod-name"
+	AnnotationPhysicalPodUID       = "kubeocean.io/physical-pod-uid"
 
 	// Sync annotations
-	AnnotationLastSyncTime     = "tapestry.io/last-sync-time"
-	AnnotationPoliciesApplied  = "tapestry.io/policies-applied"
-	AnnotationExpectedMetadata = "tapestry.io/expected-metadata"
+	AnnotationLastSyncTime     = "kubeocean.io/last-sync-time"
+	AnnotationPoliciesApplied  = "kubeocean.io/policies-applied"
+	AnnotationExpectedMetadata = "kubeocean.io/expected-metadata"
 
 	// Finalizers
-	VirtualPodFinalizer     = "tapestry.io/virtual-pod"
-	PolicyFinalizerName     = "policy.tapestry.io/finalizer"
-	SyncedResourceFinalizer = "tapestry.io/synced-resource"
+	VirtualPodFinalizer     = "kubeocean.io/virtual-pod"
+	PolicyFinalizerName     = "policy.kubeocean.io/finalizer"
+	SyncedResourceFinalizer = "kubeocean.io/synced-resource"
 
 	// Taints
-	TaintVnodeDefaultTaint         = "tapestry.io/vnode"
-	TaintPhysicalNodeUnschedulable = "tapestry.io/physical-node-unschedulable"
-	TaintOutOfTimeWindows          = "tapestry.io/out-of-time-windows"
+	TaintVnodeDefaultTaint         = "kubeocean.io/vnode"
+	TaintPhysicalNodeUnschedulable = "kubeocean.io/physical-node-unschedulable"
+	TaintOutOfTimeWindows          = "kubeocean.io/out-of-time-windows"
 
 	// Node and CSINode labels
-	LabelClusterBinding    = "tapestry.io/cluster-binding"
-	LabelPhysicalClusterID = "tapestry.io/physical-cluster-id"
-	LabelPhysicalNodeName  = "tapestry.io/physical-node-name"
+	LabelClusterBinding    = "kubeocean.io/cluster-binding"
+	LabelPhysicalClusterID = "kubeocean.io/physical-cluster-id"
+	LabelPhysicalNodeName  = "kubeocean.io/physical-node-name"
 	LabelValueTrue         = "true"
 
 	// Resource mapping labels
-	LabelPhysicalName = "tapestry.io/physical-name"
+	LabelPhysicalName = "kubeocean.io/physical-name"
 
 	// Resource mapping annotations
-	AnnotationPhysicalName      = "tapestry.io/physical-name"
-	AnnotationPhysicalNamespace = "tapestry.io/physical-namespace"
-	AnnotationVirtualName       = "tapestry.io/virtual-name"
-	AnnotationVirtualNamespace  = "tapestry.io/virtual-namespace"
+	AnnotationPhysicalName      = "kubeocean.io/physical-name"
+	AnnotationPhysicalNamespace = "kubeocean.io/physical-namespace"
+	AnnotationVirtualName       = "kubeocean.io/virtual-name"
+	AnnotationVirtualNamespace  = "kubeocean.io/virtual-namespace"
 
 	// PV-related labels
-	LabelUsedByPV = "tapestry.io/used-by-pv"
+	LabelUsedByPV = "kubeocean.io/used-by-pv"
 
 	// Cluster-specific labels and finalizers
-	LabelManagedByClusterIDPrefix = "tapestry.io/synced-by-"
-	FinalizerClusterIDPrefix      = "tapestry.io/finalizer-"
+	LabelManagedByClusterIDPrefix = "kubeocean.io/synced-by-"
+	FinalizerClusterIDPrefix      = "kubeocean.io/finalizer-"
 )

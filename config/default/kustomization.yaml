@@ -1,12 +1,12 @@
-namePrefix: tapestry-
+namePrefix: kubeocean-
 
-namespace: tapestry-system
+namespace: kubeocean-system
 
 commonLabels:
-  app.kubernetes.io/name: tapestry
-  app.kubernetes.io/instance: tapestry-manager
+  app.kubernetes.io/name: kubeocean
+  app.kubernetes.io/instance: kubeocean-manager
   app.kubernetes.io/component: manager
-  app.kubernetes.io/part-of: tapestry
+  app.kubernetes.io/part-of: kubeocean
   app.kubernetes.io/managed-by: kustomize
 
 bases:
@@ -20,5 +20,5 @@ patchesStrategicMerge:
 
 images:
 - name: controller
-  newName: tapestry-manager
+  newName: kubeocean-manager
   newTag: latest

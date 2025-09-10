@@ -29,8 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"github.com/TKEColocation/tapestry/pkg/metrics"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/metrics"
 )
 
 const (
@@ -41,7 +41,7 @@ const (
 	PhaseFailed = "Failed"
 
 	// Default names
-	DefaultSyncerName = "tapestry-syncer"
+	DefaultSyncerName = "kubeocean-syncer"
 )
 
 // SyncerTemplateData holds the data for rendering Syncer templates
@@ -178,10 +178,10 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Create or update Tapestry Syncer
-	if err := r.reconcileTapestrySyncer(ctx, clusterBinding); err != nil {
-		log.Error(err, "Failed to reconcile Tapestry Syncer")
-		r.Recorder.Event(clusterBinding, corev1.EventTypeWarning, "SyncerFailed", fmt.Sprintf("Failed to reconcile Tapestry Syncer: %v", err))
+	// Create or update Kubeocean Syncer
+	if err := r.reconcileKubeoceanSyncer(ctx, clusterBinding); err != nil {
+		log.Error(err, "Failed to reconcile Kubeocean Syncer")
+		r.Recorder.Event(clusterBinding, corev1.EventTypeWarning, "SyncerFailed", fmt.Sprintf("Failed to reconcile Kubeocean Syncer: %v", err))
 
 		// Update status to Failed for other errors
 		clusterBinding.Status.Phase = PhaseFailed
@@ -192,7 +192,7 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		return ctrl.Result{}, err
 	} else {
-		r.updateCondition(clusterBinding, "SyncerReady", metav1.ConditionTrue, "SyncerCreated", "Tapestry Syncer created successfully")
+		r.updateCondition(clusterBinding, "SyncerReady", metav1.ConditionTrue, "SyncerCreated", "Kubeocean Syncer created successfully")
 	}
 
 	// Mark as Ready if validation and syncer creation passes
@@ -201,7 +201,7 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		clusterBinding.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
 		r.updateCondition(clusterBinding, "Ready", metav1.ConditionTrue, "ValidationPassed", "ClusterBinding validation and connectivity check passed")
 		r.updateCondition(clusterBinding, "Connected", metav1.ConditionTrue, "ConnectivityPassed", "Successfully connected to target cluster")
-		r.updateCondition(clusterBinding, "SyncerReady", metav1.ConditionTrue, "SyncerCreated", "Tapestry Syncer created successfully")
+		r.updateCondition(clusterBinding, "SyncerReady", metav1.ConditionTrue, "SyncerCreated", "Kubeocean Syncer created successfully")
 		if err := r.Status().Update(ctx, clusterBinding); err != nil {
 			log.Error(err, "unable to update ClusterBinding status to Ready")
 			return ctrl.Result{}, err
@@ -356,8 +356,8 @@ func (r *ClusterBindingReconciler) updateMetrics(clusterBinding *cloudv1beta1.Cl
 	metrics.ClusterBindingTotal.WithLabelValues(phase).Inc()
 }
 
-// reconcileTapestrySyncer creates or updates the Tapestry Syncer for the ClusterBinding
-func (r *ClusterBindingReconciler) reconcileTapestrySyncer(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) error {
+// reconcileKubeoceanSyncer creates or updates the Kubeocean Syncer for the ClusterBinding
+func (r *ClusterBindingReconciler) reconcileKubeoceanSyncer(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) error {
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding))
 
 	// Load the syncer template from mounted files
@@ -376,16 +376,16 @@ func (r *ClusterBindingReconciler) reconcileTapestrySyncer(ctx context.Context, 
 		return fmt.Errorf("failed to create or update syncer deployment: %w", err)
 	}
 
-	log.Info("Tapestry Syncer reconciled successfully")
+	log.Info("Kubeocean Syncer reconciled successfully")
 	return nil
 }
 
 // loadSyncerTemplate loads the Syncer template from mounted files
 func (r *ClusterBindingReconciler) loadSyncerTemplate() (map[string]string, error) {
 	// Allow overriding template directory via environment variable for tests
-	templateDir := os.Getenv("TAPESTRY_SYNCER_TEMPLATE_DIR")
+	templateDir := os.Getenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR")
 	if templateDir == "" {
-		templateDir = "/etc/tapestry/syncer-template"
+		templateDir = "/etc/kubeocean/syncer-template"
 	}
 
 	// Read all files in the template directory
@@ -444,7 +444,7 @@ func (r *ClusterBindingReconciler) prepareSyncerTemplateData(clusterBinding *clo
 	// Get syncer namespace from template data or use default
 	syncerNamespace := templateData["syncerNamespace"]
 	if syncerNamespace == "" {
-		syncerNamespace = "tapestry-system"
+		syncerNamespace = "kubeocean-system"
 	}
 
 	return &SyncerTemplateData{
@@ -554,19 +554,19 @@ func (r *ClusterBindingReconciler) createOrUpdateResource(ctx context.Context, o
 	return r.Update(ctx, clientObj)
 }
 
-// getSyncerName returns the name for the Tapestry Syncer resources
+// getSyncerName returns the name for the Kubeocean Syncer resources
 func (r *ClusterBindingReconciler) getSyncerName(clusterBinding *cloudv1beta1.ClusterBinding) string {
-	return fmt.Sprintf("tapestry-syncer-%s", clusterBinding.Name)
+	return fmt.Sprintf("kubeocean-syncer-%s", clusterBinding.Name)
 }
 
-// getSyncerLabels returns the labels for the Tapestry Syncer resources
+// getSyncerLabels returns the labels for the Kubeocean Syncer resources
 func (r *ClusterBindingReconciler) getSyncerLabels(clusterBinding *cloudv1beta1.ClusterBinding) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":         "tapestry-syncer",
+		"app.kubernetes.io/name":         "kubeocean-syncer",
 		"app.kubernetes.io/instance":     clusterBinding.Name,
 		"app.kubernetes.io/component":    "syncer",
-		"app.kubernetes.io/part-of":      "tapestry",
-		"app.kubernetes.io/managed-by":   "tapestry-manager",
+		"app.kubernetes.io/part-of":      "kubeocean",
+		"app.kubernetes.io/managed-by":   "kubeocean-manager",
 		cloudv1beta1.LabelClusterBinding: clusterBinding.Name,
 	}
 }
@@ -576,7 +576,7 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(originalClusterBinding))
 	log.Info("Handling ClusterBinding deletion")
 
-	// Delete associated Tapestry Syncer resources with comprehensive cleanup tracking
+	// Delete associated Kubeocean Syncer resources with comprehensive cleanup tracking
 	cleanupStatus, err := r.deleteSyncerResources(ctx, originalClusterBinding)
 	if err != nil {
 		log.Error(err, "Failed to delete syncer resources")
@@ -609,7 +609,7 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 	return ctrl.Result{}, nil
 }
 
-// deleteSyncerResources deletes only the Deployment created for the Tapestry Syncer
+// deleteSyncerResources deletes only the Deployment created for the Kubeocean Syncer
 // RBAC resources (ServiceAccount, Role, RoleBinding) are left intact for reuse
 func (r *ClusterBindingReconciler) deleteSyncerResources(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) (*ResourceCleanupStatus, error) {
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding))
@@ -668,8 +668,8 @@ func (r *ClusterBindingReconciler) deleteResourceWithFallback(ctx context.Contex
 		return deleted, nil
 	}
 
-	// Try default pattern: tapestry-syncer-{clusterbinding-name}
-	defaultName := fmt.Sprintf("tapestry-syncer-%s", clusterBinding.Name)
+	// Try default pattern: kubeocean-syncer-{clusterbinding-name}
+	defaultName := fmt.Sprintf("kubeocean-syncer-%s", clusterBinding.Name)
 	if defaultName != configuredName {
 		log.V(1).Info("Checking if resource exists with default pattern name", "name", defaultName)
 		if deleted, found, err := r.findAndDeleteResource(ctx, createResource(defaultName, namespace), resourceType, defaultName); found {
@@ -685,8 +685,8 @@ func (r *ClusterBindingReconciler) deleteResourceWithFallback(ctx context.Contex
 		log.V(1).Info("Skipping default pattern name as it's same as configured name", "name", defaultName)
 	}
 
-	// Try base default name: tapestry-syncer
-	baseName := "tapestry-syncer"
+	// Try base default name: kubeocean-syncer
+	baseName := "kubeocean-syncer"
 	if baseName != configuredName && baseName != defaultName {
 		log.V(1).Info("Checking if resource exists with base default name", "name", baseName)
 		if deleted, found, err := r.findAndDeleteResource(ctx, createResource(baseName, namespace), resourceType, baseName); found {
@@ -751,7 +751,7 @@ func (r *ClusterBindingReconciler) prepareSyncerTemplateDataWithDefaults(cluster
 		ServiceAccountName:     DefaultSyncerName,
 		ClusterRoleName:        DefaultSyncerName,
 		ClusterRoleBindingName: DefaultSyncerName,
-		SyncerNamespace:        "tapestry-system",
+		SyncerNamespace:        "kubeocean-system",
 	}
 }
 

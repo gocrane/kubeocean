@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
@@ -435,27 +435,27 @@ func TestClusterBindingReconciler_SyncerCreation(t *testing.T) {
 
 	// Test getSyncerName
 	syncerName := reconciler.getSyncerName(clusterBinding)
-	expectedName := "tapestry-syncer-test-binding"
+	expectedName := "kubeocean-syncer-test-binding"
 	assert.Equal(t, expectedName, syncerName)
 
 	// Test getSyncerLabels
 	labels := reconciler.getSyncerLabels(clusterBinding)
 	expectedLabels := map[string]string{
-		"app.kubernetes.io/name":         "tapestry-syncer",
+		"app.kubernetes.io/name":         "kubeocean-syncer",
 		"app.kubernetes.io/instance":     "test-binding",
 		"app.kubernetes.io/component":    "syncer",
-		"app.kubernetes.io/part-of":      "tapestry",
-		"app.kubernetes.io/managed-by":   "tapestry-manager",
+		"app.kubernetes.io/part-of":      "kubeocean",
+		"app.kubernetes.io/managed-by":   "kubeocean-manager",
 		cloudv1beta1.LabelClusterBinding: "test-binding",
 	}
 	assert.Equal(t, expectedLabels, labels)
 
 	// Create test template data
 	templateFiles := map[string]string{
-		"serviceAccountName": "tapestry-syncer",
-		"roleName":           "tapestry-syncer",
-		"roleBindingName":    "tapestry-syncer",
-		"syncerNamespace":    "tapestry-system",
+		"serviceAccountName": "kubeocean-syncer",
+		"roleName":           "kubeocean-syncer",
+		"roleBindingName":    "kubeocean-syncer",
+		"syncerNamespace":    "kubeocean-system",
 		"deployment.yaml": `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -474,15 +474,15 @@ spec:
       serviceAccountName: "{{.ServiceAccountName}}"
       containers:
       - name: syncer
-        image: "tapestry-syncer:latest"`,
+        image: "kubeocean-syncer:latest"`,
 	}
 
 	// Test prepareSyncerTemplateData
 	templateData := reconciler.prepareSyncerTemplateData(clusterBinding, templateFiles)
 	assert.Equal(t, "test-binding", templateData.ClusterBindingName)
 	assert.Equal(t, expectedName, templateData.DeploymentName)
-	assert.Equal(t, "tapestry-syncer", templateData.ServiceAccountName)
-	assert.Equal(t, "tapestry-system", templateData.SyncerNamespace)
+	assert.Equal(t, "kubeocean-syncer", templateData.ServiceAccountName)
+	assert.Equal(t, "kubeocean-system", templateData.SyncerNamespace)
 
 	// Test createSyncerResourceFromTemplate directly
 	err := reconciler.createSyncerResourceFromTemplate(ctx, clusterBinding, templateFiles, templateData, "deployment.yaml")
@@ -496,7 +496,7 @@ spec:
 	assert.Equal(t, int32(2), *createdDeployment.Spec.Replicas)
 
 	// Verify that the deployment uses the shared ServiceAccount
-	assert.Equal(t, "tapestry-syncer", createdDeployment.Spec.Template.Spec.ServiceAccountName)
+	assert.Equal(t, "kubeocean-syncer", createdDeployment.Spec.Template.Spec.ServiceAccountName)
 }
 func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 	scheme := runtime.NewScheme()
@@ -516,24 +516,24 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 			existingResources: []client.Object{
 				&appsv1.Deployment{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer-test-binding",
-						Namespace: "tapestry-system",
+						Name:      "kubeocean-syncer-test-binding",
+						Namespace: "kubeocean-system",
 					},
 				},
 				&corev1.ServiceAccount{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer",
-						Namespace: "tapestry-system",
+						Name:      "kubeocean-syncer",
+						Namespace: "kubeocean-system",
 					},
 				},
 				&rbacv1.ClusterRole{
 					ObjectMeta: metav1.ObjectMeta{
-						Name: "tapestry-syncer",
+						Name: "kubeocean-syncer",
 					},
 				},
 				&rbacv1.ClusterRoleBinding{
 					ObjectMeta: metav1.ObjectMeta{
-						Name: "tapestry-syncer",
+						Name: "kubeocean-syncer",
 					},
 				},
 			},
@@ -556,8 +556,8 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 				// Only deployment exists, others are missing
 				&appsv1.Deployment{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer-test-binding",
-						Namespace: "tapestry-system",
+						Name:      "kubeocean-syncer-test-binding",
+						Namespace: "kubeocean-system",
 					},
 				},
 			},
@@ -580,14 +580,14 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 				// Resources with base default name instead of configured names
 				&appsv1.Deployment{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer", // Base default name
-						Namespace: "tapestry-system",
+						Name:      "kubeocean-syncer", // Base default name
+						Namespace: "kubeocean-system",
 					},
 				},
 				&corev1.ServiceAccount{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer",
-						Namespace: "tapestry-system",
+						Name:      "kubeocean-syncer",
+						Namespace: "kubeocean-system",
 					},
 				},
 			},
@@ -663,24 +663,24 @@ func TestClusterBindingReconciler_handleDeletion(t *testing.T) {
 			existingResources: []client.Object{
 				&appsv1.Deployment{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer-test-binding",
-						Namespace: "tapestry-system",
+						Name:      "kubeocean-syncer-test-binding",
+						Namespace: "kubeocean-system",
 					},
 				},
 				&corev1.ServiceAccount{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "tapestry-syncer",
-						Namespace: "tapestry-system",
+						Name:      "kubeocean-syncer",
+						Namespace: "kubeocean-system",
 					},
 				},
 				&rbacv1.ClusterRole{
 					ObjectMeta: metav1.ObjectMeta{
-						Name: "tapestry-syncer",
+						Name: "kubeocean-syncer",
 					},
 				},
 				&rbacv1.ClusterRoleBinding{
 					ObjectMeta: metav1.ObjectMeta{
-						Name: "tapestry-syncer",
+						Name: "kubeocean-syncer",
 					},
 				},
 			},

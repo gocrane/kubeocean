@@ -9,7 +9,7 @@ var (
 	// ClusterBindingTotal tracks the total number of cluster bindings
 	ClusterBindingTotal = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "tapestry_cluster_bindings_total",
+			Name: "kubeocean_cluster_bindings_total",
 			Help: "Total number of cluster bindings",
 		},
 		[]string{"phase"},
@@ -18,7 +18,7 @@ var (
 	// SyncLatency tracks the latency of synchronization operations
 	SyncLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "tapestry_sync_duration_seconds",
+			Name:    "kubeocean_sync_duration_seconds",
 			Help:    "Duration of synchronization operations",
 			Buckets: prometheus.DefBuckets,
 		},
@@ -28,7 +28,7 @@ var (
 	// SyncErrors tracks synchronization errors
 	SyncErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "tapestry_sync_errors_total",
+			Name: "kubeocean_sync_errors_total",
 			Help: "Total number of synchronization errors",
 		},
 		[]string{"cluster", "operation", "error_type"},
@@ -37,7 +37,7 @@ var (
 	// VirtualNodesTotal tracks the total number of virtual nodes
 	VirtualNodesTotal = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "tapestry_virtual_nodes_total",
+			Name: "kubeocean_virtual_nodes_total",
 			Help: "Total number of virtual nodes",
 		},
 		[]string{"cluster", "status"},
@@ -46,7 +46,7 @@ var (
 	// ResourceUtilization tracks resource utilization
 	ResourceUtilization = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "tapestry_resource_utilization",
+			Name: "kubeocean_resource_utilization",
 			Help: "Resource utilization percentage",
 		},
 		[]string{"cluster", "node", "resource"},
@@ -55,7 +55,7 @@ var (
 	// LeaderElectionStatus tracks leader election status
 	LeaderElectionStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "tapestry_leader_election_status",
+			Name: "kubeocean_leader_election_status",
 			Help: "Leader election status (1 for leader, 0 for follower)",
 		},
 		[]string{"component", "instance"},
@@ -77,5 +77,5 @@ func init() {
 // InitMetrics initializes the metrics system
 func InitMetrics() {
 	// Initialize default metric values
-	LeaderElectionStatus.WithLabelValues("tapestry-manager", "unknown").Set(0)
+	LeaderElectionStatus.WithLabelValues("kubeocean-manager", "unknown").Set(0)
 }

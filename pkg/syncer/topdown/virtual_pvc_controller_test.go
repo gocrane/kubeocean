@@ -16,14 +16,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestVirtualPVCReconciler_Reconcile(t *testing.T) {
 	// Helper function to add clusterID label to virtual PVC
 	addClusterIDLabel := func(pvc *corev1.PersistentVolumeClaim) {
 		if pvc != nil && pvc.Labels != nil {
-			pvc.Labels["tapestry.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
+			pvc.Labels["kubeocean.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
 		}
 	}
 
@@ -50,7 +50,7 @@ func TestVirtualPVCReconciler_Reconcile(t *testing.T) {
 			expectedError:  false,
 		},
 		{
-			name: "PVC not managed by Tapestry",
+			name: "PVC not managed by Kubeocean",
 			virtualPVC: &corev1.PersistentVolumeClaim{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-pvc",
@@ -87,8 +87,8 @@ func TestVirtualPVCReconciler_Reconcile(t *testing.T) {
 					Name:      "test-pvc",
 					Namespace: "default",
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
-						"tapestry.io/synced-by-other-cluster-id": cloudv1beta1.LabelValueTrue,
+						cloudv1beta1.LabelManagedBy:               cloudv1beta1.LabelManagedByValue,
+						"kubeocean.io/synced-by-other-cluster-id": cloudv1beta1.LabelValueTrue,
 					},
 					Annotations: map[string]string{
 						cloudv1beta1.AnnotationPhysicalName: "test-pvc-physical",
@@ -301,7 +301,7 @@ func TestVirtualPVCReconciler_validatePhysicalPVC(t *testing.T) {
 			expectedError: false,
 		},
 		{
-			name: "Physical PVC not managed by Tapestry",
+			name: "Physical PVC not managed by Kubeocean",
 			virtualPVC: &corev1.PersistentVolumeClaim{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pvc",
@@ -320,7 +320,7 @@ func TestVirtualPVCReconciler_validatePhysicalPVC(t *testing.T) {
 				},
 			},
 			expectedError:  true,
-			expectedErrMsg: "physical PVC physical-namespace/test-pvc-physical is not managed by Tapestry",
+			expectedErrMsg: "physical PVC physical-namespace/test-pvc-physical is not managed by Kubeocean",
 		},
 	}
 
@@ -549,7 +549,7 @@ func TestVirtualPVCReconciler_ClusterIDFunctionality(t *testing.T) {
 				Name:      "test-pvc",
 				Namespace: "test-ns",
 				Finalizers: []string{
-					"tapestry.io/finalizer-test-cluster-id",
+					"kubeocean.io/finalizer-test-cluster-id",
 					"other-finalizer",
 				},
 			},
@@ -569,7 +569,7 @@ func TestVirtualPVCReconciler_ClusterIDFunctionality(t *testing.T) {
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-pvc", Namespace: "test-ns"}, updatedPVC)
 		require.NoError(t, err)
 
-		assert.NotContains(t, updatedPVC.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.NotContains(t, updatedPVC.Finalizers, "kubeocean.io/finalizer-test-cluster-id")
 		assert.Contains(t, updatedPVC.Finalizers, "other-finalizer")
 	})
 }

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -48,7 +48,7 @@ var (
 
 func TestE2E(t *testing.T) {
 	gomega.RegisterFailHandler(ginkgo.Fail)
-	ginkgo.RunSpecs(t, "Tapestry E2E Suite")
+	ginkgo.RunSpecs(t, "Kubeocean E2E Suite")
 }
 
 var _ = ginkgo.BeforeSuite(func(ctx context.Context) {

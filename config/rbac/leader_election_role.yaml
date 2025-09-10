@@ -3,13 +3,13 @@ kind: Role
 metadata:
   labels:
     app.kubernetes.io/component: rbac
-    app.kubernetes.io/created-by: tapestry
+    app.kubernetes.io/created-by: kubeocean
     app.kubernetes.io/instance: leader-election-role
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: role
-    app.kubernetes.io/part-of: tapestry
-  name: tapestry-leader-election-role
-  namespace: tapestry-system
+    app.kubernetes.io/part-of: kubeocean
+  name: kubeocean-leader-election-role
+  namespace: kubeocean-system
 rules:
 - apiGroups:
   - ""

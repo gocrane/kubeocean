@@ -1,0 +1,20 @@
+{{- if .Values.features.rbac }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kubeocean-worker.roleBindingName" . }}
+  namespace: {{ include "kubeocean-worker.namespaceName" . }}
+  labels:
+    {{- include "kubeocean-worker.labels" . | nindent 4 }}
+    {{- with .Values.rbac.roleBindingLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "kubeocean-worker.serviceAccountName" . }}
+  namespace: {{ include "kubeocean-worker.namespaceName" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kubeocean-worker.roleName" . }}
+{{- end }}

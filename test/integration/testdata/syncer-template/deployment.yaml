@@ -4,20 +4,20 @@ metadata:
   name: "{{.DeploymentName}}"
   namespace: "{{.SyncerNamespace}}"
   labels:
-    app: tapestry-syncer
+    app: kubeocean-syncer
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: tapestry-syncer
+      app: kubeocean-syncer
   template:
     metadata:
       labels:
-        app: tapestry-syncer
+        app: kubeocean-syncer
     spec:
       serviceAccountName: "{{.ServiceAccountName}}"
       containers:
       - name: syncer
-        image: tapestry-syncer:latest
+        image: kubeocean-syncer:latest
         args: ["--cluster-binding-name", "{{.ClusterBindingName}}"]
 

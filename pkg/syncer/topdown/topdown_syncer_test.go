@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestNewTopDownSyncer(t *testing.T) {

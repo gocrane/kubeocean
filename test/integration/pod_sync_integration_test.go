@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	syncerpkg "github.com/TKEColocation/tapestry/pkg/syncer"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	syncerpkg "github.com/TKEColocation/kubeocean/pkg/syncer"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -180,11 +180,11 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 		}, ginkgo.SpecTimeout(testTimeout))
 
-		ginkgo.It("should not manage pods on non-tapestry virtual nodes", func(ctx context.Context) {
-			ginkgo.By("Creating a non-tapestry virtual node")
-			nonTapestryNode := &corev1.Node{
+		ginkgo.It("should not manage pods on non-kubeocean virtual nodes", func(ctx context.Context) {
+			ginkgo.By("Creating a non-kubeocean virtual node")
+			nonKubeoceanNode := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: fmt.Sprintf("non-tapestry-node-%s", uniqueID),
+					Name: fmt.Sprintf("non-kubeocean-node-%s", uniqueID),
 					Labels: map[string]string{
 						"node-role.kubernetes.io/worker": "",
 					},
@@ -200,10 +200,10 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 					},
 				},
 			}
-			gomega.Expect(k8sVirtual.Create(ctx, nonTapestryNode)).To(gomega.Succeed())
+			gomega.Expect(k8sVirtual.Create(ctx, nonKubeoceanNode)).To(gomega.Succeed())
 
-			ginkgo.By("Creating virtual pod on non-tapestry node")
-			virtualPod := createTestVirtualPod("test-pod-non-tapestry", testPodNamespace, nonTapestryNode.Name)
+			ginkgo.By("Creating virtual pod on non-kubeocean node")
+			virtualPod := createTestVirtualPod("test-pod-non-kubeocean", testPodNamespace, nonKubeoceanNode.Name)
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			ginkgo.By("Verifying no physical pod is created")
@@ -380,7 +380,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 					return false
 				}
 
-				// Check annotations (excluding internal Tapestry annotations)
+				// Check annotations (excluding internal Kubeocean annotations)
 				if updatedVirtualPod.Annotations["test-annotation"] != "test-annotation-value" ||
 					updatedVirtualPod.Annotations["description"] != "test pod for metadata sync" {
 					return false
@@ -1756,7 +1756,7 @@ func setupPodSyncTestEnvironment(ctx context.Context, clusterBindingName, physic
 	ginkgo.By("Setting up pod sync test environment")
 
 	// Create namespace for secrets
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tapestry-system"}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kubeocean-system"}}
 	_ = k8sVirtual.Create(ctx, ns)
 
 	// Create test namespace
@@ -1769,7 +1769,7 @@ func setupPodSyncTestEnvironment(ctx context.Context, clusterBindingName, physic
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-kc", clusterBindingName),
-			Namespace: "tapestry-system",
+			Namespace: "kubeocean-system",
 		},
 		Data: map[string][]byte{"kubeconfig": kc},
 	}
@@ -1817,10 +1817,10 @@ func setupPodSyncTestEnvironment(ctx context.Context, clusterBindingName, physic
 	gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 }
 
-func createAndStartSyncer(ctx context.Context, clusterBindingName string) *syncerpkg.TapestrySyncer {
-	ginkgo.By("Creating and starting TapestrySyncer")
+func createAndStartSyncer(ctx context.Context, clusterBindingName string) *syncerpkg.KubeoceanSyncer {
+	ginkgo.By("Creating and starting KubeoceanSyncer")
 
-	syncer, err := syncerpkg.NewTapestrySyncer(mgrVirtual, k8sVirtual, scheme, clusterBindingName, 100, 150)
+	syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBindingName, 100, 150)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// Start syncer in background
@@ -1828,7 +1828,7 @@ func createAndStartSyncer(ctx context.Context, clusterBindingName string) *synce
 		defer ginkgo.GinkgoRecover()
 		err := syncer.Start(ctx)
 		if err != nil && ctx.Err() == nil {
-			ginkgo.Fail(fmt.Sprintf("TapestrySyncer failed: %v", err))
+			ginkgo.Fail(fmt.Sprintf("KubeoceanSyncer failed: %v", err))
 		}
 	}()
 

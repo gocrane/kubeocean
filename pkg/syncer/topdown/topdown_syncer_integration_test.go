@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 // TestVirtualPodReconciler_Integration tests the VirtualPodReconciler integration
@@ -59,12 +59,12 @@ func TestVirtualPodReconciler_Integration(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-vnode",
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy:         "tapestry",
+						cloudv1beta1.LabelManagedBy:         "kubeocean",
 						cloudv1beta1.LabelPhysicalClusterID: "test-cluster-id",
 						cloudv1beta1.LabelPhysicalNodeName:  "test-physical-node",
 					},
 					Annotations: map[string]string{
-						"tapestry.io/physical-cluster-name": "test-cluster",
+						"kubeocean.io/physical-cluster-name": "test-cluster",
 					},
 				},
 				Spec: corev1.NodeSpec{},
@@ -201,7 +201,7 @@ func testVirtualPodDeletionIntegration(t *testing.T, reconciler *VirtualPodRecon
 				cloudv1beta1.AnnotationVirtualPodUID:       string(virtualPod.UID),
 			},
 			Labels: map[string]string{
-				"tapestry.io/managed-by": "tapestry",
+				"kubeocean.io/managed-by": "kubeocean",
 			},
 		},
 		Spec: corev1.PodSpec{

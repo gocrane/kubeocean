@@ -1,15 +1,15 @@
-# Tapestry Manager 组件文档
+# Kubeocean Manager 组件文档
 
-## 1. Tapestry Manager 组件介绍
+## 1. Kubeocean Manager 组件介绍
 
 ### 1.1 组件概述
 
-Tapestry Manager 是 Tapestry 系统的中央控制平面组件，负责管理物理集群与虚拟算力集群之间的绑定关系。它是整个系统的核心管理组件，通过 Kubernetes Controller 模式实现集群资源的自动化管理。
+Kubeocean Manager 是 Kubeocean 系统的中央控制平面组件，负责管理物理集群与虚拟算力集群之间的绑定关系。它是整个系统的核心管理组件，通过 Kubernetes Controller 模式实现集群资源的自动化管理。
 
 ### 1.2 主要职责和功能
 
 - **集群绑定管理**: 监听和管理 ClusterBinding 资源的生命周期，包括创建、更新和删除操作
-- **Syncer 实例管理**: 为每个 ClusterBinding 自动创建和管理对应的 Tapestry Syncer 实例，包括 Deployment 的自动化部署
+- **Syncer 实例管理**: 为每个 ClusterBinding 自动创建和管理对应的 Kubeocean Syncer 实例，包括 Deployment 的自动化部署
 - **连接性验证**: 验证物理集群的连接性和权限，检查 kubeconfig 的有效性和目标集群的可达性
 - **状态管理**: 维护 ClusterBinding 的详细状态和条件，实时监控和更新状态信息
 - **资源清理**: 处理 ClusterBinding 删除时的资源清理工作，确保资源的完整清理
@@ -27,14 +27,14 @@ Tapestry Manager 是 Tapestry 系统的中央控制平面组件，负责管理�
 
 ### 2.1 模块概述
 
-ClusterBindingReconciler 是 Tapestry Manager 的核心控制器，负责处理 ClusterBinding 资源的完整生命周期管理。它实现了 Kubernetes Controller 模式，通过 watch 机制监听 ClusterBinding 资源的变化并执行相应的协调操作。
+ClusterBindingReconciler 是 Kubeocean Manager 的核心控制器，负责处理 ClusterBinding 资源的完整生命周期管理。它实现了 Kubernetes Controller 模式，通过 watch 机制监听 ClusterBinding 资源的变化并执行相应的协调操作。
 
 ### 2.2 主要职责和功能
 
 - **资源协调**: 确保 ClusterBinding 的期望状态与实际状态一致，处理资源的创建、更新和删除
 - **验证检查**: 验证 ClusterBinding 配置的有效性和完整性，包括必填字段和格式验证
 - **连接测试**: 测试与目标物理集群的连接性，验证 kubeconfig Secret 的存在性和有效性
-- **Syncer 管理**: 创建、更新和管理 Tapestry Syncer 实例，使用模板渲染 Kubernetes 资源
+- **Syncer 管理**: 创建、更新和管理 Kubeocean Syncer 实例，使用模板渲染 Kubernetes 资源
 - **状态更新**: 维护 ClusterBinding 的状态和条件信息，实时反映资源状态
 - **资源清理**: 处理 ClusterBinding 删除时的清理工作，确保资源的完整清理
 - **事件记录**: 记录所有操作的关键事件，提供操作审计和故障排查
@@ -68,7 +68,7 @@ flowchart TD
     W -->|否| X[更新状态为 Failed]
     X --> Y[记录连接失败事件]
     Y --> Z[返回错误]
-    W -->|是| AA[调用 reconcileTapestrySyncer]
+    W -->|是| AA[调用 reconcileKubeoceanSyncer]
     AA --> BB{Syncer 创建成功?}
     BB -->|否| CC[更新状态为 Failed]
     CC --> DD[记录 Syncer 失败事件]
@@ -82,11 +82,11 @@ flowchart TD
     KK --> LL[结束]
 ```
 
-## 4. reconcileTapestrySyncer 主要工作流程
+## 4. reconcileKubeoceanSyncer 主要工作流程
 
 ```mermaid
 flowchart TD
-    A[开始 reconcileTapestrySyncer] --> B[加载 Syncer 模板]
+    A[开始 reconcileKubeoceanSyncer] --> B[加载 Syncer 模板]
     B --> C{模板加载成功?}
     C -->|否| D[返回模板加载错误]
     C -->|是| E[准备模板数据]
@@ -190,4 +190,4 @@ ClusterBindingReconciler 实现了严格的配置验证机制，确保 ClusterBi
 
 这种清理策略既确保了资源的完整清理，又避免了不必要的资源删除，提高了系统的稳定性。
 
-这些实现细节确保了 Tapestry Manager 的可靠性、安全性和可维护性，为整个 Tapestry 系统提供了坚实的管理基础。
+这些实现细节确保了 Kubeocean Manager 的可靠性、安全性和可维护性，为整个 Kubeocean 系统提供了坚实的管理基础。

@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 // PhysicalCSINodeReconciler reconciles CSINode objects from physical cluster
@@ -123,7 +123,7 @@ func (r *PhysicalCSINodeReconciler) handleCSINodeDeletion(ctx context.Context, p
 	return r.deleteVirtualCSINode(ctx, virtualNodeName)
 }
 
-// deleteVirtualCSINode deletes virtual CSINode if it exists and is managed by tapestry
+// deleteVirtualCSINode deletes virtual CSINode if it exists and is managed by kubeocean
 func (r *PhysicalCSINodeReconciler) deleteVirtualCSINode(ctx context.Context, virtualNodeName string) (ctrl.Result, error) {
 	log := r.Log.WithValues("virtualNode", virtualNodeName)
 
@@ -139,9 +139,9 @@ func (r *PhysicalCSINodeReconciler) deleteVirtualCSINode(ctx context.Context, vi
 		return ctrl.Result{}, err
 	}
 
-	// Check if managed by tapestry
+	// Check if managed by kubeocean
 	if virtualCSINode.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		log.V(1).Info("Virtual CSINode is not managed by tapestry, skipping deletion")
+		log.V(1).Info("Virtual CSINode is not managed by kubeocean, skipping deletion")
 		return ctrl.Result{}, nil
 	}
 
@@ -187,9 +187,9 @@ func (r *PhysicalCSINodeReconciler) createOrUpdateVirtualCSINode(ctx context.Con
 		return fmt.Errorf("failed to get virtual CSINode: %w", err)
 	} else {
 		// CSINode exists, update it
-		// Check if managed by tapestry
+		// Check if managed by kubeocean
 		if existingCSINode.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-			logger.V(1).Info("Virtual CSINode is not managed by tapestry, skipping update")
+			logger.V(1).Info("Virtual CSINode is not managed by kubeocean, skipping update")
 			return nil
 		}
 
@@ -218,7 +218,7 @@ func (r *PhysicalCSINodeReconciler) buildVirtualCSINodeLabels(physicalCSINode *s
 		labels = make(map[string]string)
 	}
 
-	// Add Tapestry-specific labels
+	// Add Kubeocean-specific labels
 	labels[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
 	labels[cloudv1beta1.LabelClusterBinding] = r.ClusterBindingName
 	labels[cloudv1beta1.LabelPhysicalClusterID] = r.getClusterID()
@@ -236,12 +236,12 @@ func (r *PhysicalCSINodeReconciler) buildVirtualCSINodeAnnotations(physicalCSINo
 		annotations = make(map[string]string)
 	}
 
-	// Add Tapestry-specific annotations
+	// Add Kubeocean-specific annotations
 	annotations[cloudv1beta1.AnnotationLastSyncTime] = time.Now().Format(time.RFC3339)
 
 	// Add physical CSINode metadata
 	annotations[cloudv1beta1.LabelPhysicalNodeName] = physicalCSINode.Name
-	annotations["tapestry.io/physical-csinode-uid"] = string(physicalCSINode.UID)
+	annotations["kubeocean.io/physical-csinode-uid"] = string(physicalCSINode.UID)
 
 	r.Log.V(1).Info("Built virtual CSINode annotations", "physicalCSINode", physicalCSINode.Name, "annotations", annotations)
 
@@ -300,9 +300,9 @@ func (r *PhysicalCSINodeReconciler) TriggerReconciliation(csiNodeName string) er
 func (r *PhysicalCSINodeReconciler) handleVirtualNodeEvent(node *corev1.Node, eventType string) {
 	log := r.Log.WithValues("virtualNode", node.Name, "eventType", eventType)
 
-	// Check if this is a tapestry-managed node
+	// Check if this is a kubeocean-managed node
 	if node.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		log.V(1).Info("Virtual node not managed by tapestry, skipping")
+		log.V(1).Info("Virtual node not managed by kubeocean, skipping")
 		return
 	}
 
@@ -334,9 +334,9 @@ func (r *PhysicalCSINodeReconciler) handleVirtualNodeEvent(node *corev1.Node, ev
 func (r *PhysicalCSINodeReconciler) handleVirtualCSINodeEvent(csinode *storagev1.CSINode, eventType string) {
 	log := r.Log.WithValues("virtualCSINode", csinode.Name, "eventType", eventType)
 
-	// Check if this is a tapestry-managed node
+	// Check if this is a kubeocean-managed node
 	if csinode.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		log.V(1).Info("Virtual CSINode not managed by tapestry, skipping")
+		log.V(1).Info("Virtual CSINode not managed by kubeocean, skipping")
 		return
 	}
 

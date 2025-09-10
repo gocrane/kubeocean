@@ -14,11 +14,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"github.com/TKEColocation/tapestry/pkg/syncer/bottomup"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup"
 )
 
-// ClusterBindingReconciler reconciles ClusterBinding objects for this specific TapestrySyncer
+// ClusterBindingReconciler reconciles ClusterBinding objects for this specific KubeoceanSyncer
 type ClusterBindingReconciler struct {
 	client.Client
 	Log                     logr.Logger
@@ -97,7 +97,7 @@ func (r *ClusterBindingReconciler) hasDisableNodeDefaultTaintChanged(newBinding 
 func (r *ClusterBindingReconciler) handleClusterBindingDeletion(_ context.Context) (ctrl.Result, error) {
 	r.Log.Info("Handling ClusterBinding deletion")
 
-	// Signal the TapestrySyncer to stop
+	// Signal the KubeoceanSyncer to stop
 	if r.BottomUpSyncer != nil {
 		// Trigger cleanup of all virtual nodes
 		r.Log.Info("Triggering cleanup of all virtual nodes")
@@ -226,7 +226,7 @@ func (r *ClusterBindingReconciler) unionAndDeduplicateNodes(oldNodes, newNodes [
 
 // SetupWithManager sets up the controller with the Manager
 func (r *ClusterBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Use unique controller name to avoid conflicts when multiple TapestrySyncer instances are running
+	// Use unique controller name to avoid conflicts when multiple KubeoceanSyncer instances are running
 	controllerName := fmt.Sprintf("clusterbinding-%s", r.ClusterBindingName)
 
 	return ctrl.NewControllerManagedBy(mgr).

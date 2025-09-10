@@ -15,8 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"github.com/TKEColocation/tapestry/pkg/syncer/bottomup"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup"
 )
 
 // setupTestEnvironment creates a test environment for ClusterBindingReconciler tests

@@ -1,15 +1,15 @@
-# Tapestry
+# Kubeocean
 
-Tapestry 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kubernetes 集群的闲置计算资源，形成统一的虚拟算力集群。
+Kubeocean 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kubernetes 集群的闲置计算资源，形成统一的虚拟算力集群。
 
 ![alt text](docs/images/image.png)
 
 ## 架构概述
 
-Tapestry 包含两个主要组件：
+Kubeocean 包含两个主要组件：
 
-- **Tapestry Manager**: 管理 ClusterBinding 资源，负责创建和管理 Tapestry Syncer 实例
-- **Tapestry Syncer**: 负责特定物理集群与虚拟集群之间的双向同步
+- **Kubeocean Manager**: 管理 ClusterBinding 资源，负责创建和管理 Kubeocean Syncer 实例
+- **Kubeocean Syncer**: 负责特定物理集群与虚拟集群之间的双向同步
 
 ## 环境要求
 
@@ -26,13 +26,13 @@ Tapestry 包含两个主要组件：
 
 **在业务集群中：**
 
-1. 创建权限 `helm install tapestry-worker charts/tapestry-worker`
-2. 获取凭证 `bash hack/kubeconfig.sh tapestry-syncer tapestry-worker /tmp/kubeconfig.buz.1`
+1. 创建权限 `helm install kubeocean-worker charts/kubeocean-worker`
+2. 获取凭证 `bash hack/kubeconfig.sh kubeocean-syncer kubeocean-worker /tmp/kubeconfig.buz.1`
 
 **在算力集群中：**
 
-1. 安装tapestry组件 `helm install tapestry charts/tapestry`
-2. 设置凭证 `kubectl create secret generic -n tapestry-system worker-cluster-kubeconfig --from-file=kubeconfig=/tmp/kubeconfig.buz.1`
+1. 安装kubeocean组件 `helm install kubeocean charts/kubeocean`
+2. 设置凭证 `kubectl create secret generic -n kubeocean-system worker-cluster-kubeconfig --from-file=kubeconfig=/tmp/kubeconfig.buz.1`
 3. 创建ClusterBinding和ResourceLeasingPolicy `kubectl create -f examples/`
 
 ### 构建项目
@@ -42,8 +42,8 @@ Tapestry 包含两个主要组件：
 make build
 
 # 或者直接使用 go build
-go build -o bin/tapestry-manager cmd/tapestry-manager/main.go
-go build -o bin/tapestry-syncer cmd/tapestry-syncer/main.go
+go build -o bin/kubeocean-manager cmd/kubeocean-manager/main.go
+go build -o bin/kubeocean-syncer cmd/kubeocean-syncer/main.go
 
 # 构建 Docker 镜像
 make docker-build

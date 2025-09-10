@@ -11,8 +11,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"github.com/TKEColocation/tapestry/pkg/syncer/topdown/token"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/token"
 )
 
 // TopDownSyncer handles synchronization from virtual cluster to physical cluster
@@ -22,11 +22,11 @@ type TopDownSyncer struct {
 	Log            logr.Logger
 	ClusterBinding *cloudv1beta1.ClusterBinding
 
-	// Virtual cluster manager for VirtualPod controller (passed from TapestrySyncer)
+	// Virtual cluster manager for VirtualPod controller (passed from KubeoceanSyncer)
 	virtualManager manager.Manager
-	// Physical cluster manager for creating physical pods (passed from TapestrySyncer)
+	// Physical cluster manager for creating physical pods (passed from KubeoceanSyncer)
 	physicalManager manager.Manager
-	// Physical cluster config for direct k8s client (passed from TapestrySyncer)
+	// Physical cluster config for direct k8s client (passed from KubeoceanSyncer)
 	physicalConfig *rest.Config
 
 	// Controllers
@@ -42,9 +42,9 @@ func NewTopDownSyncer(virtualManager manager.Manager, physicalManager manager.Ma
 	log := ctrl.Log.WithName("top-down-syncer").WithValues("cluster", binding.Name)
 
 	return &TopDownSyncer{
-		virtualManager:  virtualManager,  // Passed from TapestrySyncer
-		physicalManager: physicalManager, // Passed from TapestrySyncer
-		physicalConfig:  physicalConfig,  // Passed from TapestrySyncer for direct k8s client
+		virtualManager:  virtualManager,  // Passed from KubeoceanSyncer
+		physicalManager: physicalManager, // Passed from KubeoceanSyncer
+		physicalConfig:  physicalConfig,  // Passed from KubeoceanSyncer for direct k8s client
 		Scheme:          scheme,
 		Log:             log,
 		ClusterBinding:  binding,

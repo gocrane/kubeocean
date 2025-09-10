@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 const (
@@ -44,7 +44,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 	// Helper function to add clusterID label to virtual Secret
 	addClusterIDLabel := func(secret *corev1.Secret) {
 		if secret != nil && secret.Labels != nil {
-			secret.Labels["tapestry.io/synced-by-test-cluster-id"] = testClusterIDValue
+			secret.Labels["kubeocean.io/synced-by-test-cluster-id"] = testClusterIDValue
 		}
 	}
 
@@ -62,7 +62,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name: "virtual secret not managed by tapestry",
+			name: "virtual secret not managed by kubeocean",
 			virtualSecret: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-secret",
@@ -86,8 +86,8 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 					Name:      "test-secret",
 					Namespace: testVirtualNamespace,
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
-						"tapestry.io/synced-by-other-cluster-id": testClusterIDValue,
+						cloudv1beta1.LabelManagedBy:               cloudv1beta1.LabelManagedByValue,
+						"kubeocean.io/synced-by-other-cluster-id": testClusterIDValue,
 					},
 					Annotations: map[string]string{
 						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
@@ -518,7 +518,7 @@ func TestVirtualSecretReconciler_ClusterIDFunctionality(t *testing.T) {
 				Name:      "test-secret",
 				Namespace: "test-ns",
 				Finalizers: []string{
-					"tapestry.io/finalizer-test-cluster-id",
+					"kubeocean.io/finalizer-test-cluster-id",
 					"other-finalizer",
 				},
 			},
@@ -538,7 +538,7 @@ func TestVirtualSecretReconciler_ClusterIDFunctionality(t *testing.T) {
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-secret", Namespace: "test-ns"}, updatedSecret)
 		require.NoError(t, err)
 
-		assert.NotContains(t, updatedSecret.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.NotContains(t, updatedSecret.Finalizers, "kubeocean.io/finalizer-test-cluster-id")
 		assert.Contains(t, updatedSecret.Finalizers, "other-finalizer")
 	})
 }
@@ -577,8 +577,8 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 				Name:      "test-secret",
 				Namespace: "test-ns",
 				Labels: map[string]string{
-					cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-					"tapestry.io/synced-by-test-cluster-id": testClusterIDValue,
+					cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
+					"kubeocean.io/synced-by-test-cluster-id": testClusterIDValue,
 				},
 				Annotations: map[string]string{
 					cloudv1beta1.AnnotationPhysicalName: "physical-secret",
@@ -592,8 +592,8 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 				Name:      "test-secret-other",
 				Namespace: "test-ns",
 				Labels: map[string]string{
-					cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
-					"tapestry.io/synced-by-other-cluster-id": testClusterIDValue,
+					cloudv1beta1.LabelManagedBy:               cloudv1beta1.LabelManagedByValue,
+					"kubeocean.io/synced-by-other-cluster-id": testClusterIDValue,
 				},
 				Annotations: map[string]string{
 					cloudv1beta1.AnnotationPhysicalName: "physical-secret-other",
@@ -615,10 +615,10 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 			},
 		}
 
-		// Test secret not managed by tapestry
-		secretNotManagedByTapestry := &corev1.Secret{
+		// Test secret not managed by kubeocean
+		secretNotManagedByKubeocean := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-secret-not-tapestry",
+				Name:      "test-secret-not-kubeocean",
 				Namespace: "test-ns",
 				Labels: map[string]string{
 					"app": "test",
@@ -632,8 +632,8 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 				Name:      "test-secret-no-physical",
 				Namespace: "test-ns",
 				Labels: map[string]string{
-					cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-					"tapestry.io/synced-by-test-cluster-id": testClusterIDValue,
+					cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
+					"kubeocean.io/synced-by-test-cluster-id": testClusterIDValue,
 				},
 			},
 		}
@@ -642,7 +642,7 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 		predicateFunc := func(obj client.Object) bool {
 			secret := obj.(*corev1.Secret)
 
-			// Only sync secrets managed by Tapestry
+			// Only sync secrets managed by Kubeocean
 			if secret.Labels == nil || secret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
 				return false
 			}
@@ -661,7 +661,7 @@ func TestVirtualSecretReconciler_WithEventFilter(t *testing.T) {
 		assert.True(t, predicateFunc(secretManagedByThisCluster), "Secret managed by this cluster should be accepted")
 		assert.False(t, predicateFunc(secretManagedByOtherCluster), "Secret managed by other cluster should be rejected")
 		assert.False(t, predicateFunc(secretWithoutClusterID), "Secret without clusterID label should be rejected")
-		assert.False(t, predicateFunc(secretNotManagedByTapestry), "Secret not managed by tapestry should be rejected")
+		assert.False(t, predicateFunc(secretNotManagedByKubeocean), "Secret not managed by kubeocean should be rejected")
 		assert.False(t, predicateFunc(secretWithoutPhysicalName), "Secret without physical name should be rejected")
 	})
 }

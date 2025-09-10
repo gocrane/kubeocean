@@ -1,0 +1,7 @@
+apiVersion: v2
+name: kubeocean-worker
+description: A Helm chart for Kubeocean Worker - Physical cluster RBAC resources for Kubeocean Syncer
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0"

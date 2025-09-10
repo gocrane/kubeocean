@@ -1,4 +1,4 @@
-module github.com/TKEColocation/tapestry
+module github.com/TKEColocation/kubeocean
 
 go 1.24.3
 

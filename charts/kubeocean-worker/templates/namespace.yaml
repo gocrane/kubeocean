@@ -1,0 +1,11 @@
+{{- if .Values.features.namespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "kubeocean-worker.namespaceName" . }}
+  labels:
+    {{- include "kubeocean-worker.labels" . | nindent 4 }}
+    {{- with .Values.namespace.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

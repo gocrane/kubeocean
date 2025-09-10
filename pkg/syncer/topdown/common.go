@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 // SyncResourceOpt contains options for resource synchronization
@@ -86,7 +86,7 @@ func BuildPhysicalResourceLabels(virtualObj client.Object) map[string]string {
 		labels[k] = v
 	}
 
-	// Add Tapestry managed-by label
+	// Add Kubeocean managed-by label
 	labels[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
 
 	return labels
@@ -109,7 +109,7 @@ func BuildPhysicalResourceLabelsWithClusterID(virtualObj client.Object, clusterI
 func BuildPhysicalResourceAnnotations(virtualObj client.Object) map[string]string {
 	annotations := make(map[string]string)
 
-	// Copy all annotations from virtual resource (excluding Tapestry internal ones)
+	// Copy all annotations from virtual resource (excluding Kubeocean internal ones)
 	for k, v := range virtualObj.GetAnnotations() {
 		if k != cloudv1beta1.AnnotationPhysicalPodNamespace &&
 			k != cloudv1beta1.AnnotationPhysicalPodName &&

@@ -4,12 +4,12 @@
 
 ### 1.1 组件概述
 
-BottomUp Syncer 是 Tapestry 系统的核心同步组件之一，负责从物理集群到虚拟算力集群的资源同步。它实现了 Kubernetes Controller 模式，通过监听物理集群的资源变化，将相关信息同步到虚拟集群中，为虚拟算力集群提供实时的资源状态信息。
+BottomUp Syncer 是 Kubeocean 系统的核心同步组件之一，负责从物理集群到虚拟算力集群的资源同步。它实现了 Kubernetes Controller 模式，通过监听物理集群的资源变化，将相关信息同步到虚拟集群中，为虚拟算力集群提供实时的资源状态信息。
 
 ### 1.2 主要职责和功能
 
 - **物理节点同步**: 监听物理集群节点变化，根据 ResourceLeasingPolicy 计算可抽取资源，创建和更新虚拟节点
-- **Pod 状态同步**: 监控物理集群中 Tapestry 管理的 Pod 状态变化，同步状态到虚拟集群
+- **Pod 状态同步**: 监控物理集群中 Kubeocean 管理的 Pod 状态变化，同步状态到虚拟集群
 - **CSI 节点同步**: 同步物理集群的 CSI 节点信息到虚拟集群，确保存储功能的可用性
 - **资源策略管理**: 监听 ResourceLeasingPolicy 变化，触发节点重新评估和资源计算
 - **租约管理**: 为每个虚拟节点创建和管理租约，确保节点的活跃状态
@@ -38,14 +38,14 @@ BottomUp Syncer 是 Tapestry 系统的核心同步组件之一，负责从物理
 **职责**: 物理 Pod 控制器，负责 Pod 状态同步
 
 **主要功能**:
-- 监听物理集群 Pod 状态变化，只处理 Tapestry 管理的 Pod
+- 监听物理集群 Pod 状态变化，只处理 Kubeocean 管理的 Pod
 - 验证物理 Pod 的必需注解和标签
 - 同步 Pod 状态到对应的虚拟 Pod
 - 处理 Pod 删除和状态更新
 - 维护物理 Pod 和虚拟 Pod 的映射关系
 
 **关键特性**:
-- 只同步 Tapestry 管理的 Pod，避免干扰其他工作负载
+- 只同步 Kubeocean 管理的 Pod，避免干扰其他工作负载
 - 双向映射验证，确保数据一致性
 - 优雅的状态同步和错误处理
 
@@ -300,7 +300,7 @@ flowchart TD
 flowchart TD
     A[开始 Reconcile] --> B{物理 Pod 存在?}
     B -->|否| C[结束]
-    B -->|是| D{是 Tapestry 管理的 Pod?}
+    B -->|是| D{是 Kubeocean 管理的 Pod?}
     D -->|否| C
     D -->|是| E{有必需注解?}
     E -->|否| F[删除物理 Pod]
@@ -344,7 +344,7 @@ PhysicalNodeReconciler 实现了智能的资源计算机制，根据 ResourceLea
 
 PhysicalPodReconciler 实现了精确的 Pod 状态同步：
 
-- **过滤机制**: 只处理带有 Tapestry 管理标签的 Pod
+- **过滤机制**: 只处理带有 Kubeocean 管理标签的 Pod
 - **注解验证**: 验证物理 Pod 包含必需的虚拟 Pod 映射注解
 - **双向验证**: 确保虚拟 Pod 的注解正确指向当前物理 Pod
 - **状态同步**: 将物理 Pod 的状态信息同步到虚拟 Pod

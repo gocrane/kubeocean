@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 )
 
@@ -81,12 +81,12 @@ func createTestVirtualNode(name, clusterName, clusterID, physicalNodeName string
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 			Labels: map[string]string{
-				cloudv1beta1.LabelManagedBy:         "tapestry",
+				cloudv1beta1.LabelManagedBy:         "kubeocean",
 				cloudv1beta1.LabelPhysicalClusterID: clusterID,
 				cloudv1beta1.LabelPhysicalNodeName:  physicalNodeName,
 			},
 			Annotations: map[string]string{
-				"tapestry.io/physical-cluster-name": clusterName,
+				"kubeocean.io/physical-cluster-name": clusterName,
 			},
 		},
 		Spec: corev1.NodeSpec{},
@@ -738,7 +738,7 @@ func TestVirtualPodReconciler_BuildPhysicalPodAnnotations(t *testing.T) {
 	assert.Equal(t, "virtual-pod", annotations[cloudv1beta1.AnnotationVirtualPodName])
 	assert.Equal(t, "virtual-uid-123", annotations[cloudv1beta1.AnnotationVirtualPodUID])
 
-	// Should exclude Tapestry internal annotations
+	// Should exclude Kubeocean internal annotations
 	assert.NotContains(t, annotations, cloudv1beta1.AnnotationPhysicalPodNamespace)
 	assert.NotContains(t, annotations, cloudv1beta1.AnnotationPhysicalPodName)
 	assert.NotContains(t, annotations, cloudv1beta1.AnnotationLastSyncTime)
@@ -2860,7 +2860,7 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-pod", Namespace: "test-ns"}, updatedPod)
 		require.NoError(t, err)
 
-		expectedClusterIDLabel := "tapestry.io/synced-by-test-cluster-id"
+		expectedClusterIDLabel := "kubeocean.io/synced-by-test-cluster-id"
 		assert.Equal(t, cloudv1beta1.LabelValueTrue, updatedPod.Labels[expectedClusterIDLabel])
 		assert.Equal(t, cloudv1beta1.LabelManagedByValue, updatedPod.Labels[cloudv1beta1.LabelManagedBy])
 
@@ -2868,7 +2868,7 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 		assert.False(t, reconciler.hasSyncedResourceFinalizer(virtualPod))
 
 		reconciler.addSyncedResourceFinalizer(virtualPod)
-		expectedFinalizer := "tapestry.io/finalizer-test-cluster-id"
+		expectedFinalizer := "kubeocean.io/finalizer-test-cluster-id"
 		assert.True(t, reconciler.hasSyncedResourceFinalizer(virtualPod))
 
 		// Verify the finalizer is actually added
@@ -4750,8 +4750,8 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 			physicalNamespace: "physical-ns",
 			syncResourceOpt:   nil,
 			expectedLabels: map[string]string{
-				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-				"tapestry.io/synced-by-test-cluster-id": cloudv1beta1.LabelValueTrue,
+				cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
+				"kubeocean.io/synced-by-test-cluster-id": cloudv1beta1.LabelValueTrue,
 			},
 			expectedAnnotations: map[string]string{
 				cloudv1beta1.AnnotationPhysicalName:      "physical-pod",
@@ -4777,9 +4777,9 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 			physicalNamespace: "physical-ns",
 			syncResourceOpt:   nil,
 			expectedLabels: map[string]string{
-				"app":                                   "test",
-				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-				"tapestry.io/synced-by-test-cluster-id": cloudv1beta1.LabelValueTrue,
+				"app":                                    "test",
+				cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
+				"kubeocean.io/synced-by-test-cluster-id": cloudv1beta1.LabelValueTrue,
 			},
 			expectedAnnotations: map[string]string{
 				"existing":                               "annotation",
@@ -4802,9 +4802,9 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 				IsPVRefSecret: true,
 			},
 			expectedLabels: map[string]string{
-				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-				"tapestry.io/synced-by-test-cluster-id": cloudv1beta1.LabelValueTrue,
-				cloudv1beta1.LabelUsedByPV:              cloudv1beta1.LabelValueTrue,
+				cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
+				"kubeocean.io/synced-by-test-cluster-id": cloudv1beta1.LabelValueTrue,
+				cloudv1beta1.LabelUsedByPV:               cloudv1beta1.LabelValueTrue,
 			},
 			expectedAnnotations: map[string]string{
 				cloudv1beta1.AnnotationPhysicalName:      "physical-pod",
@@ -4915,7 +4915,7 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 
 			// Verify finalizer is added (except for the skip update case)
 			if tt.name != "pod with matching existing annotations - should skip update" {
-				expectedFinalizer := "tapestry.io/finalizer-test-cluster-id"
+				expectedFinalizer := "kubeocean.io/finalizer-test-cluster-id"
 				assert.Contains(t, updatedPod.Finalizers, expectedFinalizer)
 			}
 		})

@@ -1,0 +1,67 @@
+# Example values for kubeocean with client rate limiting configuration
+# This file demonstrates how to configure the new Kubernetes client QPS and Burst parameters
+
+# Global configuration
+global:
+  imageRegistry: "ccr.ccs.tencentyun.com/tke-eni-test"
+  imagePullPolicy: IfNotPresent
+
+# Manager configuration with client rate limiting
+manager:
+  enabled: true
+  image:
+    repository: kubeocean-manager
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 2
+  
+  # Kubernetes client configuration
+  kubeClient:
+    qps: 100      # QPS for kubernetes client (0 means no limit)
+    burst: 200    # Burst for kubernetes client (0 means no limit)
+  
+  # Other configurations...
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Syncer configuration with separate client rate limiting
+syncer:
+  enabled: true
+  image:
+    repository: kubeocean-syncer
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 2
+  
+  # Kubernetes client configuration for both virtual and physical clusters
+  kubeClient:
+    virtual:
+      qps: 50     # QPS for virtual kubernetes client (0 means no limit)
+      burst: 100  # Burst for virtual kubernetes client (0 means no limit)
+    physical:
+      qps: 75     # QPS for physical kubernetes client (0 means no limit)
+      burst: 150  # Burst for physical kubernetes client (0 means no limit)
+  
+  # Other configurations...
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Namespace configuration
+namespace:
+  create: true
+  name: kubeocean-system
+
+# Logging configuration
+logging:
+  level: info
+  format: json

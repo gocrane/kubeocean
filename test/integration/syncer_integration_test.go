@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	syncerpkg "github.com/TKEColocation/tapestry/pkg/syncer"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	syncerpkg "github.com/TKEColocation/kubeocean/pkg/syncer"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -15,8 +15,8 @@ import (
 )
 
 var _ = ginkgo.Describe("Syncer E2E Tests", func() {
-	ginkgo.Describe("TapestrySyncer Initialization", func() {
-		ginkgo.It("should create TapestrySyncer instance successfully", func(ctx context.Context) {
+	ginkgo.Describe("KubeoceanSyncer Initialization", func() {
+		ginkgo.It("should create KubeoceanSyncer instance successfully", func(ctx context.Context) {
 			// Create namespace for secrets
 			ns := testSystemNamespace
 			_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
@@ -52,15 +52,15 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 			})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			// Create TapestrySyncer instance
-			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
+			// Create KubeoceanSyncer instance
+			syncer, err := syncerpkg.NewKubeoceanSyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(syncer).NotTo(gomega.BeNil())
 
 			// Verify syncer properties
 			gomega.Expect(syncer.GetClusterBinding()).To(gomega.BeNil()) // Not loaded yet
 
-			ginkgo.By("TapestrySyncer instance created successfully")
+			ginkgo.By("KubeoceanSyncer instance created successfully")
 		}, ginkgo.SpecTimeout(30*time.Second))
 
 		ginkgo.It("should load ClusterBinding successfully", func(ctx context.Context) {
@@ -97,8 +97,8 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 			})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			// Create TapestrySyncer and start it briefly to load ClusterBinding
-			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
+			// Create KubeoceanSyncer and start it briefly to load ClusterBinding
+			syncer, err := syncerpkg.NewKubeoceanSyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Start syncer in background for a short time to trigger loading
@@ -134,8 +134,8 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 			})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			// Try to create TapestrySyncer with non-existent ClusterBinding
-			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, "non-existent-binding", 100, 150)
+			// Try to create KubeoceanSyncer with non-existent ClusterBinding
+			syncer, err := syncerpkg.NewKubeoceanSyncer(testMgr, k8sVirtual, scheme, "non-existent-binding", 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(syncer).NotTo(gomega.BeNil())
 
@@ -182,8 +182,8 @@ var _ = ginkgo.Describe("Syncer E2E Tests", func() {
 			})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			// Create TapestrySyncer
-			syncer, err := syncerpkg.NewTapestrySyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
+			// Create KubeoceanSyncer
+			syncer, err := syncerpkg.NewKubeoceanSyncer(testMgr, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Start syncer - should fail when trying to setup physical cluster connection

@@ -29,8 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"github.com/TKEColocation/tapestry/pkg/utils"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/utils"
 )
 
 const (
@@ -45,10 +45,10 @@ const (
 	NodeInstanceTypeVNode     = "vnode"
 
 	// Taint keys for node deletion
-	TaintKeyVirtualNodeDeleting = "tapestry.io/vnode-deleting"
+	TaintKeyVirtualNodeDeleting = "kubeocean.io/vnode-deleting"
 
 	// Annotation keys for deletion tracking
-	AnnotationDeletionTaintTime = "tapestry.io/deletion-taint-time"
+	AnnotationDeletionTaintTime = "kubeocean.io/deletion-taint-time"
 )
 
 // ExpectedNodeMetadata represents the expected metadata for a virtual node
@@ -285,7 +285,7 @@ func (r *PhysicalNodeReconciler) checkPodsOnVirtualNode(ctx context.Context, vir
 
 	// Check for pods in Pending or Running state
 	for _, pod := range podList.Items {
-		if pod.Namespace == "tapestry-system" || pod.Namespace == "kube-system" {
+		if pod.Namespace == "kubeocean-system" || pod.Namespace == "kube-system" {
 			logger.V(1).Info("skip system pod on virtual node", "pod", pod.Name, "namespace", pod.Namespace, "phase", pod.Status.Phase)
 			continue
 		}
@@ -562,7 +562,7 @@ func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context,
 			continue
 		}
 		if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
-			r.Log.V(1).Info("Skipping pod that is managed by Tapestry", "pod", pod.Namespace+"/"+pod.Name)
+			r.Log.V(1).Info("Skipping pod that is managed by Kubeocean", "pod", pod.Namespace+"/"+pod.Name)
 			continue
 		}
 
@@ -1235,11 +1235,11 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physica
 		labels = make(map[string]string)
 	}
 
-	// Add Tapestry-specific labels
+	// Add Kubeocean-specific labels
 	labels[cloudv1beta1.LabelClusterBinding] = r.ClusterBindingName
 	labels[cloudv1beta1.LabelPhysicalClusterID] = r.getClusterID()
 	labels[cloudv1beta1.LabelPhysicalNodeName] = physicalNode.Name
-	labels[cloudv1beta1.LabelManagedBy] = "tapestry"
+	labels[cloudv1beta1.LabelManagedBy] = "kubeocean"
 	labels[LabelVirtualNodeType] = VirtualNodeTypeValue
 	labels[NodeInstanceTypeLabel] = NodeInstanceTypeVNode
 	labels[NodeInstanceTypeLabelBeta] = NodeInstanceTypeVNode
@@ -1258,12 +1258,12 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 		annotations = make(map[string]string)
 	}
 
-	// Add Tapestry-specific annotations
+	// Add Kubeocean-specific annotations
 	annotations[cloudv1beta1.AnnotationLastSyncTime] = time.Now().Format(time.RFC3339)
 
 	// Add physical node metadata
 	annotations[cloudv1beta1.LabelPhysicalNodeName] = physicalNode.Name
-	annotations["tapestry.io/physical-node-uid"] = string(physicalNode.UID)
+	annotations["kubeocean.io/physical-node-uid"] = string(physicalNode.UID)
 
 	// Add policy information
 	if len(policies) > 0 {
@@ -1286,7 +1286,7 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 		}
 
 		annotations[cloudv1beta1.AnnotationPoliciesApplied] = strings.Join(policyNames, ",")
-		annotations["tapestry.io/policy-details"] = strings.Join(policyDetails, ";")
+		annotations["kubeocean.io/policy-details"] = strings.Join(policyDetails, ";")
 	} else {
 		annotations[cloudv1beta1.AnnotationPoliciesApplied] = ""
 	}
@@ -1297,7 +1297,7 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 }
 
 // transformTaints transforms physical node taints to virtual node taints
-// Specifically converts node.kubernetes.io/unschedulable to tapestry.io/physical-node-unschedulable
+// Specifically converts node.kubernetes.io/unschedulable to kubeocean.io/physical-node-unschedulable
 // Optionally adds the default virtual node taint based on disableNodeDefaultTaint setting
 // Also adds out-of-time-windows taint based on policy if node is outside time windows
 func (r *PhysicalNodeReconciler) transformTaints(logger logr.Logger, physicalTaints []corev1.Taint, disableNodeDefaultTaint bool, policy *cloudv1beta1.ResourceLeasingPolicy) []corev1.Taint {
@@ -1308,7 +1308,7 @@ func (r *PhysicalNodeReconciler) transformTaints(logger logr.Logger, physicalTai
 			// Delete out-of-time-windows taint
 			continue
 		}
-		// Transform node.kubernetes.io/unschedulable to tapestry.io/physical-node-unschedulable
+		// Transform node.kubernetes.io/unschedulable to kubeocean.io/physical-node-unschedulable
 		if taint.Key == "node.kubernetes.io/unschedulable" {
 			transformedTaint := corev1.Taint{
 				Key:    cloudv1beta1.TaintPhysicalNodeUnschedulable,
@@ -1576,9 +1576,9 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 func (r *PhysicalNodeReconciler) handleVirtualNodeEvent(node *corev1.Node, eventType string) {
 	log := r.Log.WithValues("virtualNode", node.Name, "eventType", eventType)
 
-	// Check if this is a tapestry-managed node
+	// Check if this is a kubeocean-managed node
 	if node.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		log.V(1).Info("Virtual node not managed by tapestry, skipping")
+		log.V(1).Info("Virtual node not managed by kubeocean, skipping")
 		return
 	}
 

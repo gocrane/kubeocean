@@ -19,7 +19,7 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestBottomUpSyncer_Integration(t *testing.T) {
@@ -101,7 +101,7 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 			ClusterID: "test-cluster",
 			SecretRef: corev1.SecretReference{
 				Name:      "test-kubeconfig",
-				Namespace: "tapestry-system",
+				Namespace: "kubeocean-system",
 			},
 		},
 	}

@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 // VirtualPVReconciler reconciles PersistentVolume objects from virtual cluster
@@ -47,9 +47,9 @@ func (r *VirtualPVReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// 2. Check if PV is managed by Tapestry
+	// 2. Check if PV is managed by Kubeocean
 	if virtualPV.Labels == nil || virtualPV.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		logger.V(1).Info("PV not managed by Tapestry, skipping")
+		logger.V(1).Info("PV not managed by Kubeocean, skipping")
 		return ctrl.Result{}, nil
 	}
 
@@ -88,9 +88,9 @@ func (r *VirtualPVReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.handleVirtualPVDeletion(ctx, virtualPV, physicalName, physicalPVExists, physicalPV)
 	}
 
-	// 6. If physical PV doesn't exist, do nothing (PVs are not created by Tapestry)
+	// 6. If physical PV doesn't exist, do nothing (PVs are not created by Kubeocean)
 	if !physicalPVExists {
-		logger.V(1).Info("Physical PV doesn't exist, but PVs are not created by Tapestry, doing nothing")
+		logger.V(1).Info("Physical PV doesn't exist, but PVs are not created by Kubeocean, doing nothing")
 		return ctrl.Result{}, nil
 	}
 
@@ -170,7 +170,7 @@ func (r *VirtualPVReconciler) SetupWithManager(virtualManager, physicalManager c
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 			pv := obj.(*corev1.PersistentVolume)
 
-			// Only sync PVs managed by Tapestry
+			// Only sync PVs managed by Kubeocean
 			if pv.Labels == nil || pv.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
 				return false
 			}
@@ -187,11 +187,11 @@ func (r *VirtualPVReconciler) SetupWithManager(virtualManager, physicalManager c
 		Complete(r)
 }
 
-// validatePhysicalPV validates that the physical PV is correctly managed by Tapestry
+// validatePhysicalPV validates that the physical PV is correctly managed by Kubeocean
 func (r *VirtualPVReconciler) validatePhysicalPV(virtualPV *corev1.PersistentVolume, physicalPV *corev1.PersistentVolume) error {
-	// Check if physical PV is managed by Tapestry
+	// Check if physical PV is managed by Kubeocean
 	if physicalPV.Labels == nil || physicalPV.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		return fmt.Errorf("physical PV %s is not managed by Tapestry", physicalPV.Name)
+		return fmt.Errorf("physical PV %s is not managed by Kubeocean", physicalPV.Name)
 	}
 
 	// Check if physical PV's virtual name annotation points to the current virtual PV

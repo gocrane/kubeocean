@@ -1,8 +1,8 @@
-# Tapestry 设计文档
+# Kubeocean 设计文档
 
 ## Overview
 
-Tapestry 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kubernetes 集群的闲置计算资源，形成统一的虚拟算力集群。系统采用控制器模式，实现资源的动态抽取、虚拟节点管理和工作负载调度。
+Kubeocean 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kubernetes 集群的闲置计算资源，形成统一的虚拟算力集群。系统采用控制器模式，实现资源的动态抽取、虚拟节点管理和工作负载调度。
 
 ## Architecture
 
@@ -12,18 +12,18 @@ Tapestry 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kube
 flowchart TD
     subgraph TOP["算力集群 (Virtual Cluster)"]
         VC[Virtual Cluster API Server]
-        subgraph "Tapestry Manager"
+        subgraph "Kubeocean Manager"
             CB[ClusterBinding Controller]
         end
     end
     
     subgraph MIDDLE["同步层 (Syncer Layer)"]
-        subgraph "Tapestry Syncer 1"
+        subgraph "Kubeocean Syncer 1"
             BUS1[Bottom-up Syncer]
             TDS1[Top-down Syncer]
         end
         
-        subgraph "Tapestry Syncer 2"
+        subgraph "Kubeocean Syncer 2"
             BUS2[Bottom-up Syncer]
             TDS2[Top-down Syncer]
         end
@@ -59,21 +59,21 @@ flowchart TD
 
 ### 核心组件
 
-#### Tapestry Manager
+#### Kubeocean Manager
 
 **职责:**
 - 监听 ClusterBinding 和 ResourceLeasingPolicy 资源变化
-- 自动创建和管理 Tapestry Syncer 组件
+- 自动创建和管理 Kubeocean Syncer 组件
 - 通过 leader election 机制确保高可用性
 - 负责集群绑定的生命周期管理
 
 **ClusterBinding Controller 子模块:**
 - 处理 ClusterBinding 资源的 CRUD 操作
 - 验证集群连接性和权限
-- 为每个 ClusterBinding 创建对应的 Tapestry Syncer 实例
+- 为每个 ClusterBinding 创建对应的 Kubeocean Syncer 实例
 - 管理 Syncer 的配置和状态
 
-#### Tapestry Syncer
+#### Kubeocean Syncer
 
 **职责:**
 - 每个实例专门负责一个物理集群的同步工作
@@ -98,7 +98,7 @@ flowchart TD
 
 ## Components and Interfaces
 
-### Tapestry Controller
+### Kubeocean Controller
 
 **职责:**
 - 通过 leader election 机制确保多副本部署时只有一个活跃实例
@@ -116,8 +116,8 @@ flowchart TD
 **接口:**
 
 ```go
-// Tapestry Manager 接口
-type TapestryManager interface {
+// Kubeocean Manager 接口
+type KubeoceanManager interface {
     Run(ctx context.Context) error
     IsLeader() bool
 }
@@ -129,8 +129,8 @@ type ClusterBindingController interface {
     UpdateSyncerConfig(binding *v1beta1.ClusterBinding) error
 }
 
-// Tapestry Syncer 接口
-type TapestrySyncer interface {
+// Kubeocean Syncer 接口
+type KubeoceanSyncer interface {
     Run(ctx context.Context) error
     IsLeader() bool
     GetClusterBinding() *v1beta1.ClusterBinding
@@ -339,7 +339,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: cluster-1-kubeconfig
-  namespace: tapestry-system
+  namespace: kubeocean-system
 type: Opaque
 data:
   kubeconfig: <base64-encoded-kubeconfig>
@@ -361,12 +361,12 @@ kind: Node
 metadata:
   name: vnode-worker-abc123
   labels:
-    tapestry.io/cluster-id: "cluster-1"
-    tapestry.io/physical-node: "worker-node-1"
-    tapestry.io/node-type: "virtual"
+    kubeocean.io/cluster-id: "cluster-1"
+    kubeocean.io/physical-node: "worker-node-1"
+    kubeocean.io/node-type: "virtual"
   annotations:
-    tapestry.io/cluster-binding: "cluster-1-binding"
-    tapestry.io/resource-policy: "policy-1,policy-2"
+    kubeocean.io/cluster-binding: "cluster-1-binding"
+    kubeocean.io/resource-policy: "policy-1,policy-2"
 spec:
   # 基于物理节点和策略计算的可用资源
 status:
@@ -491,7 +491,7 @@ func (s *IdempotentSyncer) SyncResource(resource interface{}) error {
 
 ### 资源隔离
 
-1. **命名空间隔离**: 使用专用命名空间运行 Tapestry 组件
+1. **命名空间隔离**: 使用专用命名空间运行 Kubeocean 组件
 2. **资源配额**: 限制虚拟集群的资源使用
 3. **网络策略**: 控制组件间的网络访问
 
@@ -501,21 +501,21 @@ func (s *IdempotentSyncer) SyncResource(resource interface{}) error {
 
 #### 分布式架构优势
 
-1. **专用同步**: 每个 Tapestry Syncer 专门负责一个物理集群，避免资源竞争
+1. **专用同步**: 每个 Kubeocean Syncer 专门负责一个物理集群，避免资源竞争
 2. **故障隔离**: 单个 Syncer 故障不影响其他集群的同步
 3. **独立扩展**: 每个 Syncer 支持多副本部署和独立的 leader election
 4. **负载分散**: 避免单点压力，提高系统整体性能
 
 #### 高可用性设计
 
-1. **Tapestry Manager 高可用**: 支持多副本部署，通过 leader election 确保唯一活跃实例
-2. **Tapestry Syncer 高可用**: 每个 Syncer 支持多副本，独立的 leader election 机制
+1. **Kubeocean Manager 高可用**: 支持多副本部署，通过 leader election 确保唯一活跃实例
+2. **Kubeocean Syncer 高可用**: 每个 Syncer 支持多副本，独立的 leader election 机制
 3. **故障自愈**: Manager 检测到 Syncer 故障时自动重新创建
 4. **配置同步**: 所有副本共享相同的 ClusterBinding 配置
 
 #### 自动化管理
 
-1. **自动创建**: ClusterBinding Controller 自动为每个集群创建对应的 Tapestry Syncer
+1. **自动创建**: ClusterBinding Controller 自动为每个集群创建对应的 Kubeocean Syncer
 2. **配置更新**: ClusterBinding 变更时自动更新对应 Syncer 的配置
 3. **生命周期管理**: 自动处理 Syncer 的创建、更新、删除操作
 4. **健康检查**: 定期检查 Syncer 状态并进行故障恢复
@@ -533,12 +533,12 @@ func (s *IdempotentSyncer) SyncResource(resource interface{}) error {
 
 #### 标准部署架构
 
-**Tapestry Manager 部署:**
+**Kubeocean Manager 部署:**
 - 推荐 3 副本部署确保高可用性
 - 使用 leader election 确保只有一个活跃实例
 - 部署在虚拟集群的控制平面节点
 
-**Tapestry Syncer 部署:**
+**Kubeocean Syncer 部署:**
 - 每个物理集群对应一个 Syncer 实例
 - 每个 Syncer 推荐 2-3 副本部署
 - 可以部署在虚拟集群或独立的管理集群中

@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 // VirtualPVCReconciler reconciles PersistentVolumeClaim objects from virtual cluster
@@ -47,9 +47,9 @@ func (r *VirtualPVCReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	// 2. Check if PVC is managed by Tapestry
+	// 2. Check if PVC is managed by Kubeocean
 	if virtualPVC.Labels == nil || virtualPVC.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		logger.V(1).Info("PVC not managed by Tapestry, skipping")
+		logger.V(1).Info("PVC not managed by Kubeocean, skipping")
 		return ctrl.Result{}, nil
 	}
 
@@ -88,9 +88,9 @@ func (r *VirtualPVCReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.handleVirtualPVCDeletion(ctx, virtualPVC, physicalName, physicalPVCExists, physicalPVC)
 	}
 
-	// 6. If physical PVC doesn't exist, do nothing (PVCs are not created by Tapestry)
+	// 6. If physical PVC doesn't exist, do nothing (PVCs are not created by Kubeocean)
 	if !physicalPVCExists {
-		logger.V(1).Info("Physical PVC doesn't exist, but PVCs are not created by Tapestry, doing nothing")
+		logger.V(1).Info("Physical PVC doesn't exist, but PVCs are not created by Kubeocean, doing nothing")
 		return ctrl.Result{}, nil
 	}
 
@@ -174,7 +174,7 @@ func (r *VirtualPVCReconciler) SetupWithManager(virtualManager, physicalManager 
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 			pvc := obj.(*corev1.PersistentVolumeClaim)
 
-			// Only sync PVCs managed by Tapestry
+			// Only sync PVCs managed by Kubeocean
 			if pvc.Labels == nil || pvc.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
 				return false
 			}
@@ -191,11 +191,11 @@ func (r *VirtualPVCReconciler) SetupWithManager(virtualManager, physicalManager 
 		Complete(r)
 }
 
-// validatePhysicalPVC validates that the physical PVC is correctly managed by Tapestry
+// validatePhysicalPVC validates that the physical PVC is correctly managed by Kubeocean
 func (r *VirtualPVCReconciler) validatePhysicalPVC(virtualPVC *corev1.PersistentVolumeClaim, physicalPVC *corev1.PersistentVolumeClaim) error {
-	// Check if physical PVC is managed by Tapestry
+	// Check if physical PVC is managed by Kubeocean
 	if physicalPVC.Labels == nil || physicalPVC.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		return fmt.Errorf("physical PVC %s/%s is not managed by Tapestry", physicalPVC.Namespace, physicalPVC.Name)
+		return fmt.Errorf("physical PVC %s/%s is not managed by Kubeocean", physicalPVC.Namespace, physicalPVC.Name)
 	}
 
 	// Check if physical PVC's virtual name annotation points to the current virtual PVC

@@ -27,8 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	"github.com/TKEColocation/tapestry/pkg/syncer/topdown/token"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/token"
 	authenticationv1 "k8s.io/api/authentication/v1"
 )
 
@@ -76,7 +76,7 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	// 2. Check if pod is scheduled on a tapestry-managed virtual node
+	// 2. Check if pod is scheduled on a kubeocean-managed virtual node
 	if virtualPod.Spec.NodeName == "" {
 		logger.V(1).Info("Virtual pod not scheduled yet, doing nothing")
 		return ctrl.Result{}, nil
@@ -250,16 +250,16 @@ func (r *VirtualPodReconciler) shouldManageVirtualPod(ctx context.Context, virtu
 		return false, "", fmt.Errorf("failed to get virtual node %s: %w", virtualNodeName, err)
 	}
 
-	// Check if it's a tapestry-managed virtual node
+	// Check if it's a kubeocean-managed virtual node
 	managedBy := virtualNode.Labels[cloudv1beta1.LabelManagedBy]
-	if managedBy != "tapestry" {
-		logger.V(1).Info("Virtual node not managed by tapestry", "virtualNodeName", virtualNodeName, "managedBy", managedBy)
+	if managedBy != "kubeocean" {
+		logger.V(1).Info("Virtual node not managed by kubeocean", "virtualNodeName", virtualNodeName, "managedBy", managedBy)
 		return false, "", nil
 	}
 
 	// Check if the virtual node belongs to current cluster binding
 	// Check by physical-cluster-name annotation (if exists) or physical-cluster-id label
-	physicalClusterName := virtualNode.Annotations["tapestry.io/physical-cluster-name"]
+	physicalClusterName := virtualNode.Annotations["kubeocean.io/physical-cluster-name"]
 	physicalClusterID := virtualNode.Labels[cloudv1beta1.LabelPhysicalClusterID]
 
 	currentClusterName := r.ClusterBinding.Name
@@ -511,7 +511,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodLabels(virtualPod *corev1.Pod) ma
 		labels[k] = v
 	}
 
-	// Add Tapestry managed-by label
+	// Add Kubeocean managed-by label
 	labels[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
 
 	return labels
@@ -521,7 +521,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodLabels(virtualPod *corev1.Pod) ma
 func (r *VirtualPodReconciler) buildPhysicalPodAnnotations(virtualPod *corev1.Pod) map[string]string {
 	annotations := make(map[string]string)
 
-	// Copy all annotations from virtual pod (excluding Tapestry internal ones)
+	// Copy all annotations from virtual pod (excluding Kubeocean internal ones)
 	for k, v := range virtualPod.Annotations {
 		if k != cloudv1beta1.AnnotationPhysicalPodNamespace &&
 			k != cloudv1beta1.AnnotationPhysicalPodName &&
@@ -551,11 +551,11 @@ func (r *VirtualPodReconciler) replaceDownwardAPIFieldPaths(items []corev1.Downw
 	for i := range items {
 		item := &items[i]
 		if item.FieldRef != nil {
-			// Replace metadata.namespace fieldPath with tapestry.io/virtual-pod-namespace annotation
+			// Replace metadata.namespace fieldPath with kubeocean.io/virtual-pod-namespace annotation
 			if item.FieldRef.FieldPath == metadataNamespaceFieldPath {
 				item.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace)
 			}
-			// Replace metadata.name fieldPath with tapestry.io/virtual-pod-name annotation
+			// Replace metadata.name fieldPath with kubeocean.io/virtual-pod-name annotation
 			if item.FieldRef.FieldPath == metadataNameFieldPath {
 				item.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
 			}
@@ -569,11 +569,11 @@ func (r *VirtualPodReconciler) replaceContainerDownwardAPIFieldPaths(envVars []c
 	for i := range envVars {
 		envVar := &envVars[i]
 		if envVar.ValueFrom != nil && envVar.ValueFrom.FieldRef != nil {
-			// Replace metadata.namespace fieldPath with tapestry.io/virtual-pod-namespace annotation
+			// Replace metadata.namespace fieldPath with kubeocean.io/virtual-pod-namespace annotation
 			if envVar.ValueFrom.FieldRef.FieldPath == metadataNamespaceFieldPath {
 				envVar.ValueFrom.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace)
 			}
-			// Replace metadata.name fieldPath with tapestry.io/virtual-pod-name annotation
+			// Replace metadata.name fieldPath with kubeocean.io/virtual-pod-name annotation
 			if envVar.ValueFrom.FieldRef.FieldPath == metadataNameFieldPath {
 				envVar.ValueFrom.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
 			}
@@ -862,7 +862,7 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 	r.clusterID = r.ClusterBinding.Spec.ClusterID
 
 	// Set up EventRecorder
-	r.EventRecorder = virtualManager.GetEventRecorderFor(fmt.Sprintf("tapestry-syncer-%s", r.ClusterBinding.Name))
+	r.EventRecorder = virtualManager.GetEventRecorderFor(fmt.Sprintf("kubeocean-syncer-%s", r.ClusterBinding.Name))
 
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualpod-%s", r.ClusterBinding.Name)
@@ -922,7 +922,7 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 // handlePhysicalPodEvent handles physical pod create/update/delete events
 // and enqueues the corresponding virtual pod for reconciliation
 func (r *VirtualPodReconciler) handlePhysicalPodEvent(pod *corev1.Pod, eventType string) {
-	// Filter physical pods: only care about pods with tapestry.io/managed-by=tapestry label
+	// Filter physical pods: only care about pods with kubeocean.io/managed-by=kubeocean label
 	if pod.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
 		return
 	}
@@ -974,7 +974,7 @@ func isSystemPod(pod *corev1.Pod) bool {
 		"kube-system",
 		"kube-public",
 		"kube-node-lease",
-		"tapestry-system",
+		"kubeocean-system",
 	}
 
 	for _, ns := range systemNamespaces {
@@ -1670,14 +1670,14 @@ func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, virt
 			Name:      physicalSecretName,
 			Namespace: physicalNamespace,
 			Labels: map[string]string{
-				cloudv1beta1.LabelManagedBy:         cloudv1beta1.LabelManagedByValue,
-				"tapestry.io/service-account-token": "true",
+				cloudv1beta1.LabelManagedBy:          cloudv1beta1.LabelManagedByValue,
+				"kubeocean.io/service-account-token": "true",
 			},
 			Annotations: map[string]string{
 				cloudv1beta1.AnnotationVirtualPodName:      virtualPod.Name,
 				cloudv1beta1.AnnotationVirtualPodNamespace: virtualPod.Namespace,
 				cloudv1beta1.AnnotationVirtualPodUID:       string(virtualPod.UID),
-				"tapestry.io/service-account":              virtualPod.Spec.ServiceAccountName,
+				"kubeocean.io/service-account":             virtualPod.Spec.ServiceAccountName,
 			},
 		},
 		Type: corev1.SecretTypeOpaque,

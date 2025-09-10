@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestPhysicalCSINodeReconciler_validateVirtualNodeLabels(t *testing.T) {
@@ -183,7 +183,7 @@ func TestPhysicalCSINodeReconciler_buildVirtualCSINodeAnnotations(t *testing.T) 
 
 	assert.Contains(t, annotations, cloudv1beta1.AnnotationLastSyncTime)
 	assert.Equal(t, "physical-node-1", annotations[cloudv1beta1.LabelPhysicalNodeName])
-	assert.Equal(t, "test-uid", annotations["tapestry.io/physical-csinode-uid"])
+	assert.Equal(t, "test-uid", annotations["kubeocean.io/physical-csinode-uid"])
 	assert.Equal(t, "existing-value", annotations["existing-annotation"])
 }
 
@@ -201,7 +201,7 @@ func TestPhysicalCSINodeReconciler_handleVirtualNodeEvent(t *testing.T) {
 		expectedError bool
 	}{
 		{
-			name: "valid tapestry-managed node - add event",
+			name: "valid kubeocean-managed node - add event",
 			virtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "vnode-test-cluster-physical-node-1",
@@ -217,7 +217,7 @@ func TestPhysicalCSINodeReconciler_handleVirtualNodeEvent(t *testing.T) {
 			expectedError: false,
 		},
 		{
-			name: "valid tapestry-managed node - delete event",
+			name: "valid kubeocean-managed node - delete event",
 			virtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "vnode-test-cluster-physical-node-1",
@@ -233,7 +233,7 @@ func TestPhysicalCSINodeReconciler_handleVirtualNodeEvent(t *testing.T) {
 			expectedError: false,
 		},
 		{
-			name: "node not managed by tapestry",
+			name: "node not managed by kubeocean",
 			virtualNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "vnode-test-cluster-physical-node-1",
@@ -330,7 +330,7 @@ func TestPhysicalCSINodeReconciler_handleVirtualCSINodeEvent(t *testing.T) {
 		expectedError  bool
 	}{
 		{
-			name: "valid tapestry-managed CSINode - add event",
+			name: "valid kubeocean-managed CSINode - add event",
 			virtualCSINode: &storagev1.CSINode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "vnode-test-cluster-physical-node-1",
@@ -346,7 +346,7 @@ func TestPhysicalCSINodeReconciler_handleVirtualCSINodeEvent(t *testing.T) {
 			expectedError: false,
 		},
 		{
-			name: "CSINode not managed by tapestry",
+			name: "CSINode not managed by kubeocean",
 			virtualCSINode: &storagev1.CSINode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "vnode-test-cluster-physical-node-1",
@@ -492,7 +492,7 @@ func TestPhysicalCSINodeReconciler_CreateVirtualCSINode(t *testing.T) {
 	// Verify annotations
 	assert.Contains(t, virtualCSINode.Annotations, cloudv1beta1.AnnotationLastSyncTime)
 	assert.Equal(t, "physical-node-1", virtualCSINode.Annotations[cloudv1beta1.LabelPhysicalNodeName])
-	assert.Equal(t, "physical-uid-123", virtualCSINode.Annotations["tapestry.io/physical-csinode-uid"])
+	assert.Equal(t, "physical-uid-123", virtualCSINode.Annotations["kubeocean.io/physical-csinode-uid"])
 	assert.Equal(t, "existing-value", virtualCSINode.Annotations["existing-annotation"])
 
 	// Verify spec
@@ -567,7 +567,7 @@ func TestPhysicalCSINodeReconciler_UpdateVirtualCSINode(t *testing.T) {
 	err = reconciler.VirtualClient.Get(context.Background(), client.ObjectKey{Name: "vnode-test-cluster-physical-node-1"}, virtualCSINode)
 	require.NoError(t, err)
 
-	// Verify labels were updated - should include tapestry labels
+	// Verify labels were updated - should include kubeocean labels
 	expectedLabels := map[string]string{
 		cloudv1beta1.LabelManagedBy:         cloudv1beta1.LabelManagedByValue,
 		cloudv1beta1.LabelClusterBinding:    "test-binding",
@@ -576,21 +576,21 @@ func TestPhysicalCSINodeReconciler_UpdateVirtualCSINode(t *testing.T) {
 	}
 	assert.Equal(t, expectedLabels, virtualCSINode.Labels)
 
-	// Verify annotations were updated - should include tapestry annotations
+	// Verify annotations were updated - should include kubeocean annotations
 	assert.Contains(t, virtualCSINode.Annotations, cloudv1beta1.AnnotationLastSyncTime)
 	// Note: The update logic may not be working as expected due to reflect.DeepEqual comparison
-	// For now, we just verify the CSINode still exists and has tapestry labels
+	// For now, we just verify the CSINode still exists and has kubeocean labels
 	assert.Equal(t, expectedLabels, virtualCSINode.Labels)
 }
 
-func TestPhysicalCSINodeReconciler_UpdateNonTapestryManagedCSINode(t *testing.T) {
+func TestPhysicalCSINodeReconciler_UpdateNonKubeoceanManagedCSINode(t *testing.T) {
 	// Setup scheme
 	s := scheme.Scheme
 	_ = storagev1.AddToScheme(s)
 	_ = corev1.AddToScheme(s)
 	_ = cloudv1beta1.AddToScheme(s)
 
-	// Create existing virtual CSINode not managed by tapestry
+	// Create existing virtual CSINode not managed by kubeocean
 	existingVirtualCSINode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "vnode-test-cluster-physical-node-1",
@@ -637,7 +637,7 @@ func TestPhysicalCSINodeReconciler_UpdateNonTapestryManagedCSINode(t *testing.T)
 		},
 	}
 
-	// Test updating non-tapestry managed virtual CSINode
+	// Test updating non-kubeocean managed virtual CSINode
 	err := reconciler.createOrUpdateVirtualCSINode(context.Background(), physicalCSINode, "vnode-test-cluster-physical-node-1")
 	require.NoError(t, err)
 
@@ -662,7 +662,7 @@ func TestPhysicalCSINodeReconciler_DeleteVirtualCSINode(t *testing.T) {
 	_ = corev1.AddToScheme(s)
 	_ = cloudv1beta1.AddToScheme(s)
 
-	// Create existing virtual CSINode managed by tapestry
+	// Create existing virtual CSINode managed by kubeocean
 	existingVirtualCSINode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "vnode-test-cluster-physical-node-1",
@@ -707,14 +707,14 @@ func TestPhysicalCSINodeReconciler_DeleteVirtualCSINode(t *testing.T) {
 	assert.True(t, errors.IsNotFound(err))
 }
 
-func TestPhysicalCSINodeReconciler_DeleteNonTapestryManagedCSINode(t *testing.T) {
+func TestPhysicalCSINodeReconciler_DeleteNonKubeoceanManagedCSINode(t *testing.T) {
 	// Setup scheme
 	s := scheme.Scheme
 	_ = storagev1.AddToScheme(s)
 	_ = corev1.AddToScheme(s)
 	_ = cloudv1beta1.AddToScheme(s)
 
-	// Create existing virtual CSINode not managed by tapestry
+	// Create existing virtual CSINode not managed by kubeocean
 	existingVirtualCSINode := &storagev1.CSINode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "vnode-test-cluster-physical-node-1",
@@ -745,7 +745,7 @@ func TestPhysicalCSINodeReconciler_DeleteNonTapestryManagedCSINode(t *testing.T)
 		Log:           logr.Discard(),
 	}
 
-	// Test deleting non-tapestry managed virtual CSINode
+	// Test deleting non-kubeocean managed virtual CSINode
 	result, err := reconciler.deleteVirtualCSINode(context.Background(), "vnode-test-cluster-physical-node-1")
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -858,7 +858,7 @@ func TestPhysicalCSINodeReconciler_Reconcile(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "vnode-test-cluster-id-test-node",
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy:         "tapestry",
+						cloudv1beta1.LabelManagedBy:         "kubeocean",
 						cloudv1beta1.LabelClusterBinding:    "test-cluster",
 						cloudv1beta1.LabelPhysicalClusterID: "test-cluster-id",
 						cloudv1beta1.LabelPhysicalNodeName:  "test-node",
@@ -980,7 +980,7 @@ func TestPhysicalCSINodeReconciler_processCSINode(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "vnode-test-cluster-id-test-node",
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: "tapestry",
+						cloudv1beta1.LabelManagedBy: "kubeocean",
 					},
 				},
 			},
@@ -1000,7 +1000,7 @@ func TestPhysicalCSINodeReconciler_processCSINode(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "vnode-test-cluster-id-test-node",
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy:         "tapestry",
+						cloudv1beta1.LabelManagedBy:         "kubeocean",
 						cloudv1beta1.LabelClusterBinding:    "wrong-cluster",
 						cloudv1beta1.LabelPhysicalClusterID: "test-cluster-id",
 						cloudv1beta1.LabelPhysicalNodeName:  "test-node",
@@ -1031,7 +1031,7 @@ func TestPhysicalCSINodeReconciler_processCSINode(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "vnode-test-cluster-id-test-node",
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy:         "tapestry",
+						cloudv1beta1.LabelManagedBy:         "kubeocean",
 						cloudv1beta1.LabelClusterBinding:    "test-cluster",
 						cloudv1beta1.LabelPhysicalClusterID: "test-cluster-id",
 						cloudv1beta1.LabelPhysicalNodeName:  "test-node",
@@ -1106,7 +1106,7 @@ func TestPhysicalCSINodeReconciler_deleteVirtualCSINode_ErrorPaths(t *testing.T)
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "vnode-test-cluster-id-test-node",
 				Labels: map[string]string{
-					cloudv1beta1.LabelManagedBy: "tapestry",
+					cloudv1beta1.LabelManagedBy: "kubeocean",
 				},
 			},
 		}
@@ -1205,7 +1205,7 @@ func TestPhysicalCSINodeReconciler_createOrUpdateVirtualCSINode_ErrorPaths(t *te
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "vnode-test-cluster-id-test-node",
 				Labels: map[string]string{
-					cloudv1beta1.LabelManagedBy: "tapestry",
+					cloudv1beta1.LabelManagedBy: "kubeocean",
 				},
 			},
 		}
@@ -1355,7 +1355,7 @@ func TestPhysicalCSINodeReconciler_Reconcile_MoreErrors(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "vnode-test-cluster-id-test-node",
 				Labels: map[string]string{
-					cloudv1beta1.LabelManagedBy:         "tapestry",
+					cloudv1beta1.LabelManagedBy:         "kubeocean",
 					cloudv1beta1.LabelClusterBinding:    "test-cluster",
 					cloudv1beta1.LabelPhysicalClusterID: "test-cluster-id",
 					cloudv1beta1.LabelPhysicalNodeName:  "test-node",

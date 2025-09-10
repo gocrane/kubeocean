@@ -1,8 +1,8 @@
-# Tapestry Syncer 模板架构
+# Kubeocean Syncer 模板架构
 
 ## 概述
 
-Tapestry Syncer 的部署已重构为使用基于模板的方法，并采用共享的 RBAC 资源。这种设计提供了更好的灵活性、可维护性和资源效率。
+Kubeocean Syncer 的部署已重构为使用基于模板的方法，并采用共享的 RBAC 资源。这种设计提供了更好的灵活性、可维护性和资源效率。
 
 ## 架构组件
 
@@ -10,15 +10,15 @@ Tapestry Syncer 的部署已重构为使用基于模板的方法，并采用共�
 
 以下 RBAC 资源在所有 Syncer 实例之间共享，并与 manager 一起部署：
 
-- **ServiceAccount**: `tapestry-syncer`，位于 `tapestry-system` 命名空间
-- **Role**: `tapestry-syncer`，具有 nodes、pods、services 等权限
+- **ServiceAccount**: `kubeocean-syncer`，位于 `kubeocean-system` 命名空间
+- **Role**: `kubeocean-syncer`，具有 nodes、pods、services 等权限
 - **RoleBinding**: 将 ServiceAccount 链接到 Role
 
 这些资源在 `config/syncer/rbac.yaml` 中定义，与 manager 一起部署一次。
 
 ### 2. ConfigMap 模板
 
-`tapestry-syncer-template` ConfigMap 包含：
+`kubeocean-syncer-template` ConfigMap 包含：
 
 - **配置信息**: 共享 RBAC 资源的名称
 - **Deployment 模板**: 用于创建 Syncer Deployment 的 YAML 模板
@@ -54,9 +54,9 @@ ConfigMap 与 manager 一起部署，并由 ClusterBinding Controller 引用。
 
 ConfigMap 直接挂载到 Manager 容器中，无需额外参数：
 
-- **挂载路径**: `/etc/tapestry/syncer-template`
-- **ConfigMap 名称**: `tapestry-syncer-template`
-- **命名空间**: `tapestry-system`
+- **挂载路径**: `/etc/kubeocean/syncer-template`
+- **ConfigMap 名称**: `kubeocean-syncer-template`
+- **命名空间**: `kubeocean-system`
 
 ### ConfigMap 结构
 
@@ -64,13 +64,13 @@ ConfigMap 直接挂载到 Manager 容器中，无需额外参数：
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: tapestry-syncer-template
-  namespace: tapestry-system
+  name: kubeocean-syncer-template
+  namespace: kubeocean-system
 data:
-  serviceAccountName: "tapestry-syncer"
-  roleName: "tapestry-syncer"
-  roleBindingName: "tapestry-syncer"
-  syncerNamespace: "tapestry-system"
+  serviceAccountName: "kubeocean-syncer"
+  roleName: "kubeocean-syncer"
+  roleBindingName: "kubeocean-syncer"
+  syncerNamespace: "kubeocean-system"
   
   deployment.yaml: |
     apiVersion: apps/v1
@@ -131,7 +131,7 @@ data:
 检查 ConfigMap 内容：
 
 ```bash
-kubectl get configmap tapestry-syncer-template -n tapestry-system -o yaml
+kubectl get configmap kubeocean-syncer-template -n kubeocean-system -o yaml
 ```
 
 ## 未来增强

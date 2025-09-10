@@ -1,4 +1,4 @@
-# Tapestry 项目规则
+# Kubeocean 项目规则
 
 ## 1. 代码风格规范
 
@@ -18,8 +18,8 @@
 
 ### 分层架构
 
-- **Tapestry Manager**: 管理层，负责 ClusterBinding 和 ResourceLeasingPolicy 生命周期
-- **Tapestry Syncer**: 同步层，每个物理集群对应一个独立实例
+- **Kubeocean Manager**: 管理层，负责 ClusterBinding 和 ResourceLeasingPolicy 生命周期
+- **Kubeocean Syncer**: 同步层，每个物理集群对应一个独立实例
 - **Bottom-up Syncer**: 物理集群 → 虚拟集群状态同步
 - **Top-down Syncer**: 虚拟集群 → 物理集群资源同步
 
@@ -84,11 +84,11 @@ make test-int-focus FOCUS="Virtual Node Resource Tests"
 
 ### 标签和注解规范
 
-- **标签前缀**: `tapestry.io/`
+- **标签前缀**: `kubeocean.io/`
 - **关键标签**:
-  - `tapestry.io/managed-by`: 标识 Tapestry 管理的资源
-  - `tapestry.io/cluster-id`: 物理集群标识
-  - `tapestry.io/physical-node-name`: 物理节点名称映射
+  - `kubeocean.io/managed-by`: 标识 Kubeocean 管理的资源
+  - `kubeocean.io/cluster-id`: 物理集群标识
+  - `kubeocean.io/physical-node-name`: 物理节点名称映射
 
 ### 常量管理
 
@@ -147,8 +147,8 @@ log.Info("Creating virtual node",
 
 ### 镜像规范
 
-- **Manager 镜像**: `ccr.ccs.tencentyun.com/tke-eni-test/tapestry-manager`
-- **Syncer 镜像**: `ccr.ccs.tencentyun.com/tke-eni-test/tapestry-syncer`
+- **Manager 镜像**: `ccr.ccs.tencentyun.com/tke-eni-test/kubeocean-manager`
+- **Syncer 镜像**: `ccr.ccs.tencentyun.com/tke-eni-test/kubeocean-syncer`
 - 使用多阶段构建减少镜像大小
 - 非 root 用户运行，安全约束
 

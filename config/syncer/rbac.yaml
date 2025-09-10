@@ -2,23 +2,23 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: tapestry-syncer
-  namespace: tapestry-system
+  name: kubeocean-syncer
+  namespace: kubeocean-system
   labels:
-    app.kubernetes.io/name: tapestry-syncer
+    app.kubernetes.io/name: kubeocean-syncer
     app.kubernetes.io/component: syncer
-    app.kubernetes.io/part-of: tapestry
-    app.kubernetes.io/managed-by: tapestry-manager
+    app.kubernetes.io/part-of: kubeocean
+    app.kubernetes.io/managed-by: kubeocean-manager
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: tapestry-syncer
+  name: kubeocean-syncer
   labels:
-    app.kubernetes.io/name: tapestry-syncer
+    app.kubernetes.io/name: kubeocean-syncer
     app.kubernetes.io/component: syncer
-    app.kubernetes.io/part-of: tapestry
-    app.kubernetes.io/managed-by: tapestry-manager
+    app.kubernetes.io/part-of: kubeocean
+    app.kubernetes.io/managed-by: kubeocean-manager
 rules:
 - apiGroups: [""]
   resources: ["events"]
@@ -51,17 +51,17 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: tapestry-syncer
+  name: kubeocean-syncer
   labels:
-    app.kubernetes.io/name: tapestry-syncer
+    app.kubernetes.io/name: kubeocean-syncer
     app.kubernetes.io/component: syncer
-    app.kubernetes.io/part-of: tapestry
-    app.kubernetes.io/managed-by: tapestry-manager
+    app.kubernetes.io/part-of: kubeocean
+    app.kubernetes.io/managed-by: kubeocean-manager
 subjects:
 - kind: ServiceAccount
-  name: tapestry-syncer
-  namespace: tapestry-system
+  name: kubeocean-syncer
+  namespace: kubeocean-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: tapestry-syncer
+  name: kubeocean-syncer

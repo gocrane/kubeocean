@@ -17,7 +17,7 @@ PhysicalCSINodeReconciler 模块实现了从物理集群 CSINode 到虚拟集群
 - 确保 CSINode 同步的准确性
 
 ### 3. 标签和注解管理
-- 自动添加 Tapestry 管理标签
+- 自动添加 Kubeocean 管理标签
 - 记录同步时间和物理集群信息
 - 支持 UID 验证的安全删除
 
@@ -50,23 +50,23 @@ PhysicalCSINodeReconciler
 3. **删除流程**
    - PhysicalNodeReconciler 删除虚拟节点
    - 调用 PhysicalCSINodeReconciler.DeleteVirtualCSINode()
-   - 验证 CSINode 是否由 Tapestry 管理
+   - 验证 CSINode 是否由 Kubeocean 管理
    - 安全删除虚拟 CSINode
 
 ## 标签和注解
 
 ### 标签
-- `tapestry.io/managed-by`: 标识由 Tapestry 管理
-- `tapestry.io/cluster-binding`: 集群绑定名称
-- `tapestry.io/physical-cluster-id`: 物理集群 ID
-- `tapestry.io/physical-node-name`: 物理节点名称
+- `kubeocean.io/managed-by`: 标识由 Kubeocean 管理
+- `kubeocean.io/cluster-binding`: 集群绑定名称
+- `kubeocean.io/physical-cluster-id`: 物理集群 ID
+- `kubeocean.io/physical-node-name`: 物理节点名称
 
 > **注意**: 这些标签常量定义在 `api/v1beta1/constants.go` 中，确保在整个项目中保持一致性。
 
 ### 注解
-- `tapestry.io/last-sync-time`: 最后同步时间
-- `tapestry.io/physical-cluster-name`: 物理集群名称
-- `tapestry.io/physical-csinode-uid`: 物理 CSINode UID
+- `kubeocean.io/last-sync-time`: 最后同步时间
+- `kubeocean.io/physical-cluster-name`: 物理集群名称
+- `kubeocean.io/physical-csinode-uid`: 物理 CSINode UID
 
 ## 配置
 
@@ -75,7 +75,7 @@ PhysicalCSINodeReconciler
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: tapestry-csinode-controller
+  name: kubeocean-csinode-controller
 rules:
 - apiGroups: ["storage.k8s.io"]
   resources: ["csinodes"]
@@ -123,14 +123,14 @@ kind: CSINode
 metadata:
   name: vnode-worker-node-1
   labels:
-    tapestry.io/managed-by: tapestry
-    tapestry.io/cluster-binding: my-cluster
-    tapestry.io/physical-cluster-id: cluster-1
-    tapestry.io/physical-node-name: worker-node-1
+    kubeocean.io/managed-by: kubeocean
+    kubeocean.io/cluster-binding: my-cluster
+    kubeocean.io/physical-cluster-id: cluster-1
+    kubeocean.io/physical-node-name: worker-node-1
   annotations:
-    tapestry.io/last-sync-time: "2025-08-22T10:41:06Z"
-    tapestry.io/physical-cluster-name: my-cluster
-    tapestry.io/physical-csinode-uid: "12345678-1234-1234-1234-123456789abc"
+    kubeocean.io/last-sync-time: "2025-08-22T10:41:06Z"
+    kubeocean.io/physical-cluster-name: my-cluster
+    kubeocean.io/physical-csinode-uid: "12345678-1234-1234-1234-123456789abc"
 spec:
   drivers:
   - name: csi-driver
@@ -152,7 +152,7 @@ spec:
    - 确认网络连接正常
 
 3. **删除失败**
-   - 检查 CSINode 是否由 Tapestry 管理
+   - 检查 CSINode 是否由 Kubeocean 管理
    - 验证 UID 匹配
    - 查看删除权限
 

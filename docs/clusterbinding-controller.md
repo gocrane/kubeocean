@@ -2,7 +2,7 @@
 
 ## 概述
 
-ClusterBinding Controller 是 Tapestry Manager 的核心组件之一，负责管理物理 Kubernetes 集群的绑定和连接验证。本文档描述了任务列表第4步的完整实现。
+ClusterBinding Controller 是 Kubeocean Manager 的核心组件之一，负责管理物理 Kubernetes 集群的绑定和连接验证。本文档描述了任务列表第4步的完整实现。
 
 ## 功能特性
 
@@ -135,7 +135,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: my-cluster-kubeconfig
-  namespace: tapestry-system
+  namespace: kubeocean-system
 type: Opaque
 data:
   kubeconfig: <base64-encoded-kubeconfig>
@@ -148,11 +148,11 @@ apiVersion: cloud.tencent.com/v1beta1
 kind: ClusterBinding
 metadata:
   name: my-cluster-binding
-  namespace: tapestry-system
+  namespace: kubeocean-system
 spec:
   secretRef:
     name: my-cluster-kubeconfig
-    namespace: tapestry-system
+    namespace: kubeocean-system
   mountNamespace: "my-virtual-cluster"
   nodeSelector:
     node-type: worker
@@ -254,5 +254,5 @@ kubectl describe clusterbinding <name>
 kubectl get events --field-selector involvedObject.name=<clusterbinding-name>
 
 # 查看控制器日志
-kubectl logs -n tapestry-system deployment/tapestry-manager
+kubectl logs -n kubeocean-system deployment/kubeocean-manager
 ```

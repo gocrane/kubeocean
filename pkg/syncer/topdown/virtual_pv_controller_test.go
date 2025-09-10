@@ -16,14 +16,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestVirtualPVReconciler_Reconcile(t *testing.T) {
 	// Helper function to add clusterID label to virtual PV
 	addClusterIDLabel := func(pv *corev1.PersistentVolume) {
 		if pv != nil && pv.Labels != nil {
-			pv.Labels["tapestry.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
+			pv.Labels["kubeocean.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
 		}
 	}
 
@@ -50,7 +50,7 @@ func TestVirtualPVReconciler_Reconcile(t *testing.T) {
 			expectedError:  false,
 		},
 		{
-			name: "PV not managed by Tapestry",
+			name: "PV not managed by Kubeocean",
 			virtualPV: &corev1.PersistentVolume{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pv",
@@ -88,8 +88,8 @@ func TestVirtualPVReconciler_Reconcile(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pv",
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
-						"tapestry.io/synced-by-other-cluster-id": "true",
+						cloudv1beta1.LabelManagedBy:               cloudv1beta1.LabelManagedByValue,
+						"kubeocean.io/synced-by-other-cluster-id": "true",
 					},
 					Annotations: map[string]string{
 						cloudv1beta1.AnnotationPhysicalName: "test-pv-physical",
@@ -556,7 +556,7 @@ func TestVirtualPVReconciler_validatePhysicalPV(t *testing.T) {
 			expectedError: false,
 		},
 		{
-			name: "Physical PV not managed by Tapestry",
+			name: "Physical PV not managed by Kubeocean",
 			virtualPV: &corev1.PersistentVolume{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pv",
@@ -574,7 +574,7 @@ func TestVirtualPVReconciler_validatePhysicalPV(t *testing.T) {
 				},
 			},
 			expectedError: true,
-			errorContains: "is not managed by Tapestry",
+			errorContains: "is not managed by Kubeocean",
 		},
 		{
 			name: "Physical PV virtual name annotation doesn't match",
@@ -797,7 +797,7 @@ func TestVirtualPVReconciler_ClusterIDFunctionality(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-pv",
 				Finalizers: []string{
-					"tapestry.io/finalizer-test-cluster-id",
+					"kubeocean.io/finalizer-test-cluster-id",
 					"other-finalizer",
 				},
 			},
@@ -817,7 +817,7 @@ func TestVirtualPVReconciler_ClusterIDFunctionality(t *testing.T) {
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-pv"}, updatedPV)
 		require.NoError(t, err)
 
-		assert.NotContains(t, updatedPV.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.NotContains(t, updatedPV.Finalizers, "kubeocean.io/finalizer-test-cluster-id")
 		assert.Contains(t, updatedPV.Finalizers, "other-finalizer")
 	})
 }

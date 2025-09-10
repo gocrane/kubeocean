@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 // VirtualConfigMapReconciler reconciles ConfigMap objects from virtual cluster
@@ -48,9 +48,9 @@ func (r *VirtualConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// 2. Check if configmap is managed by Tapestry
+	// 2. Check if configmap is managed by Kubeocean
 	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		logger.V(1).Info("ConfigMap not managed by Tapestry, skipping")
+		logger.V(1).Info("ConfigMap not managed by Kubeocean, skipping")
 		return ctrl.Result{}, nil
 	}
 
@@ -198,11 +198,11 @@ func (r *VirtualConfigMapReconciler) updatePhysicalConfigMapIfNeeded(ctx context
 	return ctrl.Result{}, nil
 }
 
-// validatePhysicalConfigMap validates that the physical configmap is correctly managed by Tapestry
+// validatePhysicalConfigMap validates that the physical configmap is correctly managed by Kubeocean
 func (r *VirtualConfigMapReconciler) validatePhysicalConfigMap(virtualConfigMap *corev1.ConfigMap, physicalConfigMap *corev1.ConfigMap) error {
-	// Check if physical configmap is managed by Tapestry
+	// Check if physical configmap is managed by Kubeocean
 	if physicalConfigMap.Labels == nil || physicalConfigMap.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		return fmt.Errorf("physical ConfigMap %s/%s is not managed by Tapestry", physicalConfigMap.Namespace, physicalConfigMap.Name)
+		return fmt.Errorf("physical ConfigMap %s/%s is not managed by Kubeocean", physicalConfigMap.Namespace, physicalConfigMap.Name)
 	}
 
 	// Check if physical configmap's virtual name annotation points to the current virtual configmap
@@ -236,7 +236,7 @@ func (r *VirtualConfigMapReconciler) SetupWithManager(virtualManager, physicalMa
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 			configMap := obj.(*corev1.ConfigMap)
 
-			// Only sync configmaps managed by Tapestry
+			// Only sync configmaps managed by Kubeocean
 			if configMap.Labels == nil || configMap.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
 				return false
 			}

@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
-	controllerpkg "github.com/TKEColocation/tapestry/pkg/controller"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	controllerpkg "github.com/TKEColocation/kubeocean/pkg/controller"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -22,7 +22,7 @@ import (
 
 const (
 	// testSystemNamespace is the namespace used for system resources in tests
-	testSystemNamespace = "tapestry-system"
+	testSystemNamespace = "kubeocean-system"
 )
 
 var _ = ginkgo.Describe("Manager E2E Tests", func() {
@@ -77,7 +77,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 
 		// 1) 最初应加上 finalizer（自动二次 reconcile）
 
-		// 2) 直接进入后续流程；由于缺少 /etc/tapestry/syncer-template 模板，Syncer 创建会失败，Phase 变为 Failed
+		// 2) 直接进入后续流程；由于缺少 /etc/kubeocean/syncer-template 模板，Syncer 创建会失败，Phase 变为 Failed
 		type readyCheck struct {
 			HasFinalizer bool
 			Phase        string
@@ -96,7 +96,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 
 	ginkgo.It("ClusterBindingReconciler：成功部署 syncer（注入模板目录）", func(ctx context.Context) {
 		// 设置测试模板目录环境变量（以 test/e2e 为工作目录）
-		_ = os.Setenv("TAPESTRY_SYNCER_TEMPLATE_DIR", "testdata/syncer-template")
+		_ = os.Setenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR", "testdata/syncer-template")
 
 		// 注册 controller（一次）并启动 manager
 		reconciler := &controllerpkg.ClusterBindingReconciler{
@@ -134,10 +134,10 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}, 20*time.Second, 300*time.Millisecond).Should(gomega.Equal("Ready"))
 
 		// 额外校验：Deployment 已创建且 ownerReference 指向该 ClusterBinding
-		expectedDepName := "tapestry-syncer-" + cb.Name
+		expectedDepName := "kubeocean-syncer-" + cb.Name
 		var dep appsv1.Deployment
 		gomega.Eventually(func() bool {
-			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "tapestry-system", Name: expectedDepName}, &dep)
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedDepName}, &dep)
 			return err == nil
 		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
 		gomega.Expect(dep.OwnerReferences).NotTo(gomega.BeEmpty())

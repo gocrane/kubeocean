@@ -1,4 +1,4 @@
-# Tapestry 核心规则
+# Kubeocean 核心规则
 
 ## 代码规范
 
@@ -23,7 +23,7 @@
 ## 资源规范
 
 1. **CRD**: `cloud.tencent.com/v1beta1`，复数命名
-2. **标签前缀**: `tapestry.io/`，关键标签 `managed-by`、`cluster-id`
+2. **标签前缀**: `kubeocean.io/`，关键标签 `managed-by`、`cluster-id`
 3. **常量集中**: `api/v1beta1/constants.go`
 4. **状态管理**: Phase + Conditions + Events
 

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: kubeocean
+description: A Helm chart for Kubeocean - Kubernetes Compute Cluster Project
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0"

@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestCheckPhysicalResourceExists(t *testing.T) {
@@ -313,7 +313,7 @@ func TestBuildPhysicalResourceAnnotations(t *testing.T) {
 			},
 		},
 		{
-			name: "Secret with Tapestry internal annotations",
+			name: "Secret with Kubeocean internal annotations",
 			virtualObj: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-secret",
@@ -365,7 +365,7 @@ func TestBuildPhysicalResourceAnnotations(t *testing.T) {
 			},
 		},
 		{
-			name: "ConfigMap with all Tapestry internal annotations",
+			name: "ConfigMap with all Kubeocean internal annotations",
 			virtualObj: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
@@ -885,7 +885,7 @@ func TestRemoveSyncedResourceFinalizerWithClusterID(t *testing.T) {
 				Name:      "test-secret",
 				Namespace: "test-ns",
 				Finalizers: []string{
-					"tapestry.io/finalizer-test-cluster-id",
+					"kubeocean.io/finalizer-test-cluster-id",
 					"other-finalizer",
 				},
 			},
@@ -904,7 +904,7 @@ func TestRemoveSyncedResourceFinalizerWithClusterID(t *testing.T) {
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-secret", Namespace: "test-ns"}, updatedSecret)
 		require.NoError(t, err)
 
-		assert.NotContains(t, updatedSecret.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.NotContains(t, updatedSecret.Finalizers, "kubeocean.io/finalizer-test-cluster-id")
 		assert.Contains(t, updatedSecret.Finalizers, "other-finalizer")
 	})
 
@@ -950,7 +950,7 @@ func TestRemoveSyncedResourceFinalizerWithClusterID(t *testing.T) {
 				Name:      "test-secret",
 				Namespace: "test-ns",
 				Finalizers: []string{
-					"tapestry.io/finalizer-different-cluster-id",
+					"kubeocean.io/finalizer-different-cluster-id",
 					"other-finalizer",
 				},
 			},
@@ -969,7 +969,7 @@ func TestRemoveSyncedResourceFinalizerWithClusterID(t *testing.T) {
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-secret", Namespace: "test-ns"}, updatedSecret)
 		require.NoError(t, err)
 
-		assert.Contains(t, updatedSecret.Finalizers, "tapestry.io/finalizer-different-cluster-id")
+		assert.Contains(t, updatedSecret.Finalizers, "kubeocean.io/finalizer-different-cluster-id")
 		assert.Contains(t, updatedSecret.Finalizers, "other-finalizer")
 		assert.Len(t, updatedSecret.Finalizers, 2)
 	})
@@ -984,7 +984,7 @@ func TestRemoveSyncedResourceFinalizerWithClusterID(t *testing.T) {
 				Name:      "test-secret",
 				Namespace: "test-ns",
 				Finalizers: []string{
-					"tapestry.io/finalizer-test-cluster-id",
+					"kubeocean.io/finalizer-test-cluster-id",
 				},
 			},
 		}
@@ -1002,7 +1002,7 @@ func TestRemoveSyncedResourceFinalizerWithClusterID(t *testing.T) {
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-secret", Namespace: "test-ns"}, updatedSecret)
 		require.NoError(t, err)
 
-		assert.NotContains(t, updatedSecret.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.NotContains(t, updatedSecret.Finalizers, "kubeocean.io/finalizer-test-cluster-id")
 	})
 }
 
@@ -1016,22 +1016,22 @@ func TestGetManagedByClusterIDLabel(t *testing.T) {
 		{
 			name:      "normal cluster ID",
 			clusterID: "test-cluster-id",
-			expected:  "tapestry.io/synced-by-test-cluster-id",
+			expected:  "kubeocean.io/synced-by-test-cluster-id",
 		},
 		{
 			name:      "empty cluster ID",
 			clusterID: "",
-			expected:  "tapestry.io/synced-by-",
+			expected:  "kubeocean.io/synced-by-",
 		},
 		{
 			name:      "special characters in cluster ID",
 			clusterID: "test-cluster-123",
-			expected:  "tapestry.io/synced-by-test-cluster-123",
+			expected:  "kubeocean.io/synced-by-test-cluster-123",
 		},
 		{
 			name:      "long cluster ID",
 			clusterID: "very-long-cluster-id-24",
-			expected:  "tapestry.io/synced-by-very-long-cluster-id-24",
+			expected:  "kubeocean.io/synced-by-very-long-cluster-id-24",
 		},
 	}
 

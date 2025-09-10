@@ -1,4 +1,4 @@
-# Tapestry 开发指南
+# Kubeocean 开发指南
 
 ## 快速开始
 
@@ -209,7 +209,7 @@ make run-syncer
 ### 日志调试
 ```bash
 # 开启调试日志
-./tapestry-manager --zap-devel --zap-log-level=debug
+./kubeocean-manager --zap-devel --zap-log-level=debug
 
 # 查看特定资源事件
 kubectl get events --field-selector involvedObject.kind=ClusterBinding

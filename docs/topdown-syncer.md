@@ -2,7 +2,7 @@
 
 ## 1. 模块概述
 
-TopDown Syncer 是 Tapestry 系统的核心组件之一，负责将虚拟集群中的资源同步到物理集群。它实现了从虚拟集群到物理集群的向下同步（Top-down synchronization），确保虚拟集群中创建的资源能够正确地映射和部署到物理集群中。
+TopDown Syncer 是 Kubeocean 系统的核心组件之一，负责将虚拟集群中的资源同步到物理集群。它实现了从虚拟集群到物理集群的向下同步（Top-down synchronization），确保虚拟集群中创建的资源能够正确地映射和部署到物理集群中。
 
 ### 主要职责和功能
 
@@ -222,7 +222,7 @@ flowchart TD
     A[开始 Reconcile] --> B[获取虚拟 Secret]
     B --> C{虚拟 Secret 存在?}
     C -->|否| D[结束]
-    C -->|是| E{由 Tapestry 管理?}
+    C -->|是| E{由 Kubeocean 管理?}
     E -->|否| D
     E -->|是| F{属于当前集群?}
     F -->|否| D
@@ -270,41 +270,41 @@ TopDown Syncer 实现了精确的资源映射机制，通过注解、标签、fi
 #### 5.1.1 Pod 映射机制
 
 **虚拟 Pod 注解**:
-- `tapestry.io/physical-pod-namespace`: 物理 Pod 的命名空间
-- `tapestry.io/physical-pod-name`: 物理 Pod 的名称
-- `tapestry.io/physical-pod-uid`: 物理 Pod 的 UID
-- `tapestry.io/last-sync-time`: 最后同步时间
+- `kubeocean.io/physical-pod-namespace`: 物理 Pod 的命名空间
+- `kubeocean.io/physical-pod-name`: 物理 Pod 的名称
+- `kubeocean.io/physical-pod-uid`: 物理 Pod 的 UID
+- `kubeocean.io/last-sync-time`: 最后同步时间
 
 **物理 Pod 注解**:
-- `tapestry.io/virtual-pod-namespace`: 虚拟 Pod 的命名空间
-- `tapestry.io/virtual-pod-name`: 虚拟 Pod 的名称
-- `tapestry.io/virtual-pod-uid`: 虚拟 Pod 的 UID
+- `kubeocean.io/virtual-pod-namespace`: 虚拟 Pod 的命名空间
+- `kubeocean.io/virtual-pod-name`: 虚拟 Pod 的名称
+- `kubeocean.io/virtual-pod-uid`: 虚拟 Pod 的 UID
 
 **物理 Pod 标签**:
-- `tapestry.io/managed-by`: 设置为 "tapestry"，标识由 Tapestry 管理
+- `kubeocean.io/managed-by`: 设置为 "kubeocean"，标识由 Kubeocean 管理
 - 复制虚拟 Pod 的所有标签
 
 #### 5.1.2 依赖资源映射机制
 
 **虚拟资源注解**:
-- `tapestry.io/physical-name`: 物理资源的名称
-- `tapestry.io/physical-namespace`: 物理资源的命名空间
+- `kubeocean.io/physical-name`: 物理资源的名称
+- `kubeocean.io/physical-namespace`: 物理资源的命名空间
 
 **虚拟资源标签**:
-- `tapestry.io/managed-by`: 设置为 "tapestry"
-- `tapestry.io/synced-by-{clusterID}`: 标识由特定集群同步
-- `tapestry.io/used-by-pv`: 如果 secret 资源被 PV 使用，设置为 "true"
+- `kubeocean.io/managed-by`: 设置为 "kubeocean"
+- `kubeocean.io/synced-by-{clusterID}`: 标识由特定集群同步
+- `kubeocean.io/used-by-pv`: 如果 secret 资源被 PV 使用，设置为 "true"
 
 **物理资源注解**:
-- `tapestry.io/virtual-name`: 虚拟资源的名称
-- `tapestry.io/virtual-namespace`: 虚拟资源的命名空间
+- `kubeocean.io/virtual-name`: 虚拟资源的名称
+- `kubeocean.io/virtual-namespace`: 虚拟资源的命名空间
 
 **物理资源标签**:
-- `tapestry.io/managed-by`: 设置为 "tapestry"
+- `kubeocean.io/managed-by`: 设置为 "kubeocean"
 - 复制虚拟资源的所有标签
 
 **Finalizer 机制**:
-- 虚拟资源: `tapestry.io/finalizer-{clusterID}` - 确保资源删除时清理物理资源
+- 虚拟资源: `kubeocean.io/finalizer-{clusterID}` - 确保资源删除时清理物理资源
 - 物理资源: 不添加 finalizer，由 Kubernetes 原生机制管理
 
 #### 5.1.3 名称映射规则

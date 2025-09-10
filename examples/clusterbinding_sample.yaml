@@ -2,10 +2,10 @@ apiVersion: cloud.tencent.com/v1beta1
 kind: ClusterBinding
 metadata:
   name: example-cluster
-  namespace: tapestry-system
+  namespace: kubeocean-system
 spec:
   clusterID: cls-example
-  mountNamespace: tapestry-worker
+  mountNamespace: kubeocean-worker
   nodeSelector:
     nodeSelectorTerms:
     - matchExpressions:
@@ -15,4 +15,4 @@ spec:
         - worker
   secretRef:
     name: worker-cluster-kubeconfig
-    namespace: tapestry-system
+    namespace: kubeocean-system

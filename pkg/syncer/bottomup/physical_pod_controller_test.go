@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
@@ -37,7 +37,7 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 		expectDelete bool
 	}{
 		{
-			name: "tapestry managed pod with valid annotations and virtual pod",
+			name: "kubeocean managed pod with valid annotations and virtual pod",
 			physicalPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "physical-pod-1",
@@ -75,12 +75,12 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 			expectDelete: false,
 		},
 		{
-			name: "non-tapestry managed pod",
+			name: "non-kubeocean managed pod",
 			physicalPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "regular-pod",
 					Namespace: "regular-ns",
-					// No Tapestry labels
+					// No Kubeocean labels
 				},
 				Status: corev1.PodStatus{
 					Phase: corev1.PodRunning,
@@ -92,7 +92,7 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 			expectDelete: false,
 		},
 		{
-			name: "tapestry managed pod missing required annotations",
+			name: "kubeocean managed pod missing required annotations",
 			physicalPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "physical-pod-2",
@@ -112,7 +112,7 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 			expectDelete: true,
 		},
 		{
-			name: "tapestry managed pod with non-existent virtual pod",
+			name: "kubeocean managed pod with non-existent virtual pod",
 			physicalPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "physical-pod-3",
@@ -136,7 +136,7 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 			expectDelete: true,
 		},
 		{
-			name: "tapestry managed pod with UID mismatch",
+			name: "kubeocean managed pod with UID mismatch",
 			physicalPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "physical-pod-4",
@@ -173,7 +173,7 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 			expectDelete: true,
 		},
 		{
-			name: "tapestry managed pod with virtual pod pointing to different physical pod",
+			name: "kubeocean managed pod with virtual pod pointing to different physical pod",
 			physicalPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "physical-pod-5",
@@ -298,7 +298,7 @@ func TestPhysicalPodReconciler_Reconcile(t *testing.T) {
 	}
 }
 
-func TestPhysicalPodReconciler_IsTapestryManagedPod(t *testing.T) {
+func TestPhysicalPodReconciler_IsKubeoceanManagedPod(t *testing.T) {
 	reconciler := &PhysicalPodReconciler{
 		Log: ctrl.Log.WithName("test"),
 	}
@@ -309,7 +309,7 @@ func TestPhysicalPodReconciler_IsTapestryManagedPod(t *testing.T) {
 		expected bool
 	}{
 		{
-			name: "pod with tapestry managed-by label",
+			name: "pod with kubeocean managed-by label",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
@@ -352,7 +352,7 @@ func TestPhysicalPodReconciler_IsTapestryManagedPod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := reconciler.isTapestryManagedPod(tt.pod)
+			result := reconciler.isKubeoceanManagedPod(tt.pod)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

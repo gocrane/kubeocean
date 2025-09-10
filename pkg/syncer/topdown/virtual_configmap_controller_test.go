@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
@@ -37,7 +37,7 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 	// Helper function to add clusterID label to virtual ConfigMap
 	addClusterIDLabel := func(configMap *corev1.ConfigMap) {
 		if configMap != nil && configMap.Labels != nil {
-			configMap.Labels["tapestry.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
+			configMap.Labels["kubeocean.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
 		}
 	}
 
@@ -55,7 +55,7 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name: "virtual configmap not managed by tapestry",
+			name: "virtual configmap not managed by kubeocean",
 			virtualConfigMap: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
@@ -78,8 +78,8 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 					Name:      "test-config",
 					Namespace: "virtual-ns",
 					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy:              cloudv1beta1.LabelManagedByValue,
-						"tapestry.io/synced-by-other-cluster-id": cloudv1beta1.LabelValueTrue,
+						cloudv1beta1.LabelManagedBy:               cloudv1beta1.LabelManagedByValue,
+						"kubeocean.io/synced-by-other-cluster-id": cloudv1beta1.LabelValueTrue,
 					},
 					Annotations: map[string]string{
 						cloudv1beta1.AnnotationPhysicalName: "physical-config",
@@ -496,7 +496,7 @@ func TestVirtualConfigMapReconciler_ClusterIDFunctionality(t *testing.T) {
 				Name:      "test-config",
 				Namespace: "test-ns",
 				Finalizers: []string{
-					"tapestry.io/finalizer-test-cluster-id",
+					"kubeocean.io/finalizer-test-cluster-id",
 					"other-finalizer",
 				},
 			},
@@ -516,7 +516,7 @@ func TestVirtualConfigMapReconciler_ClusterIDFunctionality(t *testing.T) {
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-config", Namespace: "test-ns"}, updatedConfigMap)
 		require.NoError(t, err)
 
-		assert.NotContains(t, updatedConfigMap.Finalizers, "tapestry.io/finalizer-test-cluster-id")
+		assert.NotContains(t, updatedConfigMap.Finalizers, "kubeocean.io/finalizer-test-cluster-id")
 		assert.Contains(t, updatedConfigMap.Finalizers, "other-finalizer")
 	})
 }

@@ -1,8 +1,8 @@
-# Tapestry 架构文档
+# Kubeocean 架构文档
 
 ## 1. Overview
 
-Tapestry 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kubernetes 集群的闲置计算资源，形成统一的虚拟算力集群。系统采用控制器模式，实现资源的动态抽取、虚拟节点管理和工作负载调度。
+Kubeocean 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kubernetes 集群的闲置计算资源，形成统一的虚拟算力集群。系统采用控制器模式，实现资源的动态抽取、虚拟节点管理和工作负载调度。
 
 ### 核心特性
 
@@ -26,17 +26,17 @@ Tapestry 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kube
 flowchart TD
     subgraph VC["虚拟算力集群 (Virtual Compute Cluster)"]
         VCS[Virtual Cluster API Server]
-        subgraph TM["Tapestry Manager"]
+        subgraph TM["Kubeocean Manager"]
             CBC[ClusterBinding Controller]
         end
         
         subgraph SL["同步层 (Syncer Layer)"]
-            subgraph TS1["Tapestry Syncer 1"]
+            subgraph TS1["Kubeocean Syncer 1"]
                 BUS1[BottomUp Syncer]
                 TDS1[TopDown Syncer]
             end
             
-            subgraph TS2["Tapestry Syncer 2"]
+            subgraph TS2["Kubeocean Syncer 2"]
                 BUS2[BottomUp Syncer]
                 TDS2[TopDown Syncer]
             end
@@ -67,18 +67,18 @@ flowchart TD
 
 ## 3. 组件介绍
 
-### 3.1 Tapestry Manager
+### 3.1 Kubeocean Manager
 
 **主要职责**: 中央控制平面组件，负责管理集群绑定
 
 **核心功能**:
 - 监听 ClusterBinding 资源变化
-- 自动创建和管理 Tapestry Syncer 组件
+- 自动创建和管理 Kubeocean Syncer 组件
 - 负责集群绑定的生命周期管理
 
 **部署方式**: 支持多副本部署
 
-### 3.2 Tapestry Syncer
+### 3.2 Kubeocean Syncer
 
 **主要职责**: 负责特定物理集群与虚拟集群之间的双向同步
 
@@ -92,7 +92,7 @@ flowchart TD
 
 ## 4. 子模块详细说明
 
-### 4.1 Tapestry Manager 子模块
+### 4.1 Kubeocean Manager 子模块
 
 #### 4.1.1 ClusterBinding Controller
 
@@ -101,7 +101,7 @@ flowchart TD
 **主要功能**:
 - 处理 ClusterBinding 资源的 CRUD 操作
 - 验证集群连接性和权限
-- 为每个 ClusterBinding 创建对应的 Tapestry Syncer 实例
+- 为每个 ClusterBinding 创建对应的 Kubeocean Syncer 实例
 - 管理 Syncer 的配置和状态
 - 处理集群绑定的生命周期管理
 
@@ -112,7 +112,7 @@ flowchart TD
 
 
 
-### 4.2 Tapestry Syncer 子模块
+### 4.2 Kubeocean Syncer 子模块
 
 #### 4.2.1 BottomUp Syncer
 
@@ -149,11 +149,11 @@ flowchart TD
 **主要功能**:
 - 监听物理集群 Pod 状态变化
 - 同步 Pod 状态到虚拟集群
-- 验证 Pod 的 Tapestry 管理标签
+- 验证 Pod 的 Kubeocean 管理标签
 - 处理 Pod 删除和状态更新
 
 **关键特性**:
-- 只同步 Tapestry 管理的 Pod
+- 只同步 Kubeocean 管理的 Pod
 - 确保状态同步的幂等性
 - 处理 Pod 删除的优雅处理
 
@@ -308,23 +308,23 @@ flowchart TD
 ### 4.4 关键标签和注解
 
 #### 4.4.1 管理标签
-- `tapestry.io/managed-by`: 标识 Tapestry 管理的资源
-- `tapestry.io/cluster-binding`: 关联的集群绑定
-- `tapestry.io/physical-cluster-id`: 物理集群 ID
-- `tapestry.io/physical-node-name`: 物理节点名称
+- `kubeocean.io/managed-by`: 标识 Kubeocean 管理的资源
+- `kubeocean.io/cluster-binding`: 关联的集群绑定
+- `kubeocean.io/physical-cluster-id`: 物理集群 ID
+- `kubeocean.io/physical-node-name`: 物理节点名称
 
 #### 4.4.2 映射注解
-- `tapestry.io/physical-pod-namespace`: 物理 Pod 命名空间
-- `tapestry.io/physical-pod-name`: 物理 Pod 名称
-- `tapestry.io/physical-pod-uid`: 物理 Pod UID
-- `tapestry.io/virtual-pod-namespace`: 虚拟 Pod 命名空间
-- `tapestry.io/virtual-pod-name`: 虚拟 Pod 名称
-- `tapestry.io/virtual-pod-uid`: 虚拟 Pod UID
+- `kubeocean.io/physical-pod-namespace`: 物理 Pod 命名空间
+- `kubeocean.io/physical-pod-name`: 物理 Pod 名称
+- `kubeocean.io/physical-pod-uid`: 物理 Pod UID
+- `kubeocean.io/virtual-pod-namespace`: 虚拟 Pod 命名空间
+- `kubeocean.io/virtual-pod-name`: 虚拟 Pod 名称
+- `kubeocean.io/virtual-pod-uid`: 虚拟 Pod UID
 
 #### 4.4.3 同步注解
-- `tapestry.io/last-sync-time`: 最后同步时间
-- `tapestry.io/policies-applied`: 应用的策略列表
-- `tapestry.io/expected-metadata`: 期望的元数据
+- `kubeocean.io/last-sync-time`: 最后同步时间
+- `kubeocean.io/policies-applied`: 应用的策略列表
+- `kubeocean.io/expected-metadata`: 期望的元数据
 
 ### 4.5 高可用性设计
 
@@ -339,7 +339,7 @@ flowchart TD
 - 提供详细的错误信息和重试机制
 
 #### 4.5.3 高可用部署
-- Tapestry Manager 支持多副本部署
+- Kubeocean Manager 支持多副本部署
 - 每个 Syncer 支持多副本部署
 - 支持组件的自动扩缩容
 

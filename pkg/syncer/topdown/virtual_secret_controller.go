@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 // VirtualSecretReconciler reconciles Secret objects from virtual cluster
@@ -48,9 +48,9 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// 2. Check if secret is managed by Tapestry
+	// 2. Check if secret is managed by Kubeocean
 	if virtualSecret.Labels == nil || virtualSecret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		logger.V(1).Info("Secret not managed by Tapestry, skipping")
+		logger.V(1).Info("Secret not managed by Kubeocean, skipping")
 		return ctrl.Result{}, nil
 	}
 
@@ -206,11 +206,11 @@ func (r *VirtualSecretReconciler) updatePhysicalSecretIfNeeded(ctx context.Conte
 	return ctrl.Result{}, nil
 }
 
-// validatePhysicalSecret validates that the physical secret is correctly managed by Tapestry
+// validatePhysicalSecret validates that the physical secret is correctly managed by Kubeocean
 func (r *VirtualSecretReconciler) validatePhysicalSecret(virtualSecret *corev1.Secret, physicalSecret *corev1.Secret) error {
-	// Check if physical secret is managed by Tapestry
+	// Check if physical secret is managed by Kubeocean
 	if physicalSecret.Labels == nil || physicalSecret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		return fmt.Errorf("physical Secret %s/%s is not managed by Tapestry", physicalSecret.Namespace, physicalSecret.Name)
+		return fmt.Errorf("physical Secret %s/%s is not managed by Kubeocean", physicalSecret.Namespace, physicalSecret.Name)
 	}
 
 	// Check if physical secret's virtual name annotation points to the current virtual secret
@@ -244,7 +244,7 @@ func (r *VirtualSecretReconciler) SetupWithManager(virtualManager, physicalManag
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 			secret := obj.(*corev1.Secret)
 
-			// Only sync secrets managed by Tapestry
+			// Only sync secrets managed by Kubeocean
 			if secret.Labels == nil || secret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
 				return false
 			}

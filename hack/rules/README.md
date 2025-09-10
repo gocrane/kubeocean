@@ -1,6 +1,6 @@
-# Tapestry 项目规则
+# Kubeocean 项目规则
 
-本目录包含 Tapestry 项目的核心开发规则和指南。
+本目录包含 Kubeocean 项目的核心开发规则和指南。
 
 ## 文档结构
 

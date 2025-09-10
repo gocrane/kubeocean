@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	cloudv1beta1 "github.com/TKEColocation/tapestry/api/v1beta1"
+	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
 // PhysicalPodReconciler reconciles Pod objects from physical cluster
@@ -51,9 +51,9 @@ func (r *PhysicalPodReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	// Check if this is a Tapestry-managed pod (has managed-by label)
-	if !r.isTapestryManagedPod(physicalPod) {
-		// Not a Tapestry pod, ignore
+	// Check if this is a Kubeocean-managed pod (has managed-by label)
+	if !r.isKubeoceanManagedPod(physicalPod) {
+		// Not a Kubeocean pod, ignore
 		return ctrl.Result{}, nil
 	}
 
@@ -85,9 +85,9 @@ func (r *PhysicalPodReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return r.syncPhysicalPodToVirtual(ctx, physicalPod, virtualPod)
 }
 
-// isTapestryManagedPod checks if a pod is managed by Tapestry
-func (r *PhysicalPodReconciler) isTapestryManagedPod(pod *corev1.Pod) bool {
-	// Check for Tapestry managed-by label
+// isKubeoceanManagedPod checks if a pod is managed by Kubeocean
+func (r *PhysicalPodReconciler) isKubeoceanManagedPod(pod *corev1.Pod) bool {
+	// Check for Kubeocean managed-by label
 	if pod.Labels == nil {
 		return false
 	}
@@ -227,9 +227,9 @@ func (r *PhysicalPodReconciler) buildSyncPod(physicalPod, virtualPod *corev1.Pod
 		syncPod.Labels[k] = v
 	}
 
-	// Replace annotations (excluding Tapestry internal annotations)
+	// Replace annotations (excluding Kubeocean internal annotations)
 	syncPod.Annotations = make(map[string]string)
-	// Copy annotations from physical pod (excluding Tapestry internal ones)
+	// Copy annotations from physical pod (excluding Kubeocean internal ones)
 	for k, v := range physicalPod.Annotations {
 		if k != cloudv1beta1.AnnotationVirtualPodNamespace && k != cloudv1beta1.AnnotationVirtualPodName && k != cloudv1beta1.AnnotationVirtualPodUID &&
 			k != cloudv1beta1.AnnotationPhysicalPodNamespace && k != cloudv1beta1.AnnotationPhysicalPodName && k != cloudv1beta1.AnnotationPhysicalPodUID {
@@ -285,13 +285,13 @@ func (r *PhysicalPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Generate unique controller name using cluster binding name
 	uniqueControllerName := fmt.Sprintf("pod-%s", r.ClusterBinding.Name)
 
-	// Create predicate to only watch Tapestry-managed pods
-	tapestryPodPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+	// Create predicate to only watch Kubeocean-managed pods
+	kubeoceanPodPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		pod, ok := obj.(*corev1.Pod)
 		if !ok {
 			return false
 		}
-		return r.isTapestryManagedPod(pod)
+		return r.isKubeoceanManagedPod(pod)
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
@@ -300,6 +300,6 @@ func (r *PhysicalPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 100, // Higher concurrency for pod status sync
 		}).
-		WithEventFilter(tapestryPodPredicate).
+		WithEventFilter(kubeoceanPodPredicate).
 		Complete(r)
 }
