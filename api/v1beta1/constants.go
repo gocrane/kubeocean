@@ -12,6 +12,7 @@ const (
 	AnnotationPhysicalPodNamespace = "kubeocean.io/physical-pod-namespace"
 	AnnotationPhysicalPodName      = "kubeocean.io/physical-pod-name"
 	AnnotationPhysicalPodUID       = "kubeocean.io/physical-pod-uid"
+	AnnotationVirtualNodeName      = "kubeocean.io/virtual-node-name"
 
 	// Sync annotations
 	AnnotationLastSyncTime     = "kubeocean.io/last-sync-time"

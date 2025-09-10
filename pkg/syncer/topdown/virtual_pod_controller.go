@@ -536,6 +536,9 @@ func (r *VirtualPodReconciler) buildPhysicalPodAnnotations(virtualPod *corev1.Po
 	annotations[cloudv1beta1.AnnotationVirtualPodName] = virtualPod.Name
 	annotations[cloudv1beta1.AnnotationVirtualPodUID] = string(virtualPod.UID)
 
+	// Add virtual node name annotation
+	annotations[cloudv1beta1.AnnotationVirtualNodeName] = virtualPod.Spec.NodeName
+
 	return annotations
 }
 
@@ -543,9 +546,10 @@ const (
 	// Field path constants for DownwardAPI
 	metadataNamespaceFieldPath = "metadata.namespace"
 	metadataNameFieldPath      = "metadata.name"
+	specNodeNameFieldPath      = "spec.nodeName"
 )
 
-// replaceDownwardAPIFieldPaths replaces metadata.namespace and metadata.name fieldPath
+// replaceDownwardAPIFieldPaths replaces metadata.namespace, metadata.name and spec.nodeName fieldPath
 // with annotation references in DownwardAPI items
 func (r *VirtualPodReconciler) replaceDownwardAPIFieldPaths(items []corev1.DownwardAPIVolumeFile) {
 	for i := range items {
@@ -559,11 +563,15 @@ func (r *VirtualPodReconciler) replaceDownwardAPIFieldPaths(items []corev1.Downw
 			if item.FieldRef.FieldPath == metadataNameFieldPath {
 				item.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
 			}
+			// Replace spec.nodeName fieldPath with kubeocean.io/virtual-node-name annotation
+			if item.FieldRef.FieldPath == specNodeNameFieldPath {
+				item.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName)
+			}
 		}
 	}
 }
 
-// replaceContainerDownwardAPIFieldPaths replaces metadata.namespace and metadata.name fieldPath
+// replaceContainerDownwardAPIFieldPaths replaces metadata.namespace, metadata.name and spec.nodeName fieldPath
 // with annotation references in container environment variables
 func (r *VirtualPodReconciler) replaceContainerDownwardAPIFieldPaths(envVars []corev1.EnvVar) {
 	for i := range envVars {
@@ -576,6 +584,10 @@ func (r *VirtualPodReconciler) replaceContainerDownwardAPIFieldPaths(envVars []c
 			// Replace metadata.name fieldPath with kubeocean.io/virtual-pod-name annotation
 			if envVar.ValueFrom.FieldRef.FieldPath == metadataNameFieldPath {
 				envVar.ValueFrom.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
+			}
+			// Replace spec.nodeName fieldPath with kubeocean.io/virtual-node-name annotation
+			if envVar.ValueFrom.FieldRef.FieldPath == specNodeNameFieldPath {
+				envVar.ValueFrom.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName)
 			}
 		}
 	}
