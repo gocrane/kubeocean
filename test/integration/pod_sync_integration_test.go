@@ -31,6 +31,8 @@ const (
 	// Kubernetes service environment variable names
 	kubernetesServiceHostConst = "KUBERNETES_SERVICE_HOST"
 	kubernetesServicePortConst = "KUBERNETES_SERVICE_PORT"
+	hostnameEnvVarConst        = "HOSTNAME"
+	nodenameEnvVarConst        = "NODENAME"
 )
 
 var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
@@ -690,6 +692,33 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(kubernetesServicePort).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_PORT should be injected")
 			gomega.Expect(kubernetesServicePort.Value).To(gomega.Equal("443"))
 
+			// Verify NODENAME environment variable FieldPath replacement
+			ginkgo.By("Verifying NODENAME environment variable FieldPath replacement")
+			var nodenameEnvVar *corev1.EnvVar
+			for i := range mainContainer.Env {
+				if mainContainer.Env[i].Name == nodenameEnvVarConst {
+					nodenameEnvVar = &mainContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(nodenameEnvVar).ToNot(gomega.BeNil(), "NODENAME environment variable should exist")
+			gomega.Expect(nodenameEnvVar.ValueFrom).ToNot(gomega.BeNil(), "NODENAME should have ValueFrom")
+			gomega.Expect(nodenameEnvVar.ValueFrom.FieldRef).ToNot(gomega.BeNil(), "NODENAME should have FieldRef")
+			gomega.Expect(nodenameEnvVar.ValueFrom.FieldRef.FieldPath).To(gomega.Equal(fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName)), "NODENAME FieldPath should be replaced with annotation reference")
+
+			// Verify HOSTNAME environment variable injection
+			ginkgo.By("Verifying HOSTNAME environment variable injection")
+			var hostnameEnvVar *corev1.EnvVar
+			for i := range mainContainer.Env {
+				if mainContainer.Env[i].Name == hostnameEnvVarConst {
+					hostnameEnvVar = &mainContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(hostnameEnvVar).ToNot(gomega.BeNil(), "HOSTNAME environment variable should be injected")
+			gomega.Expect(hostnameEnvVar.Value).To(gomega.Equal(virtualPod.Name), "HOSTNAME should be set to virtual pod name")
+			gomega.Expect(hostnameEnvVar.ValueFrom).To(gomega.BeNil(), "HOSTNAME should not have ValueFrom")
+
 			// Verify environment variable injection for init containers
 			ginkgo.By("Verifying environment variable injection for init containers")
 			gomega.Expect(physicalPod.Spec.InitContainers).To(gomega.HaveLen(1))
@@ -709,6 +738,33 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(initKubernetesServiceHost.Value).To(gomega.Equal("10.0.0.1"))
 			gomega.Expect(initKubernetesServicePort).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_PORT should be injected in init container")
 			gomega.Expect(initKubernetesServicePort.Value).To(gomega.Equal("443"))
+
+			// Verify NODENAME environment variable FieldPath replacement in init container
+			ginkgo.By("Verifying NODENAME environment variable FieldPath replacement in init container")
+			var initNodenameEnvVar *corev1.EnvVar
+			for i := range initContainer.Env {
+				if initContainer.Env[i].Name == nodenameEnvVarConst {
+					initNodenameEnvVar = &initContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(initNodenameEnvVar).ToNot(gomega.BeNil(), "NODENAME environment variable should exist in init container")
+			gomega.Expect(initNodenameEnvVar.ValueFrom).ToNot(gomega.BeNil(), "NODENAME should have ValueFrom in init container")
+			gomega.Expect(initNodenameEnvVar.ValueFrom.FieldRef).ToNot(gomega.BeNil(), "NODENAME should have FieldRef in init container")
+			gomega.Expect(initNodenameEnvVar.ValueFrom.FieldRef.FieldPath).To(gomega.Equal(fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName)), "NODENAME FieldPath should be replaced with annotation reference in init container")
+
+			// Verify HOSTNAME environment variable injection in init container
+			ginkgo.By("Verifying HOSTNAME environment variable injection in init container")
+			var initHostnameEnvVar *corev1.EnvVar
+			for i := range initContainer.Env {
+				if initContainer.Env[i].Name == hostnameEnvVarConst {
+					initHostnameEnvVar = &initContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(initHostnameEnvVar).ToNot(gomega.BeNil(), "HOSTNAME environment variable should be injected in init container")
+			gomega.Expect(initHostnameEnvVar.Value).To(gomega.Equal(virtualPod.Name), "HOSTNAME should be set to virtual pod name in init container")
+			gomega.Expect(initHostnameEnvVar.ValueFrom).To(gomega.BeNil(), "HOSTNAME should not have ValueFrom in init container")
 
 			// Verify DNS configuration
 			ginkgo.By("Verifying DNS configuration")
@@ -1598,6 +1654,33 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(kubernetesServicePort).ToNot(gomega.BeNil(), "KUBERNETES_SERVICE_PORT should be injected")
 			gomega.Expect(kubernetesServicePort.Value).To(gomega.Equal("443"))
 
+			// Verify NODENAME environment variable FieldPath replacement
+			ginkgo.By("Verifying NODENAME environment variable FieldPath replacement")
+			var nodenameEnvVar *corev1.EnvVar
+			for i := range mainContainer.Env {
+				if mainContainer.Env[i].Name == nodenameEnvVarConst {
+					nodenameEnvVar = &mainContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(nodenameEnvVar).ToNot(gomega.BeNil(), "NODENAME environment variable should exist")
+			gomega.Expect(nodenameEnvVar.ValueFrom).ToNot(gomega.BeNil(), "NODENAME should have ValueFrom")
+			gomega.Expect(nodenameEnvVar.ValueFrom.FieldRef).ToNot(gomega.BeNil(), "NODENAME should have FieldRef")
+			gomega.Expect(nodenameEnvVar.ValueFrom.FieldRef.FieldPath).To(gomega.Equal(fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName)), "NODENAME FieldPath should be replaced with annotation reference")
+
+			// Verify HOSTNAME environment variable injection
+			ginkgo.By("Verifying HOSTNAME environment variable injection")
+			var hostnameEnvVar *corev1.EnvVar
+			for i := range mainContainer.Env {
+				if mainContainer.Env[i].Name == hostnameEnvVarConst {
+					hostnameEnvVar = &mainContainer.Env[i]
+					break
+				}
+			}
+			gomega.Expect(hostnameEnvVar).ToNot(gomega.BeNil(), "HOSTNAME environment variable should be injected")
+			gomega.Expect(hostnameEnvVar.Value).To(gomega.Equal(virtualPod.Name), "HOSTNAME should be set to virtual pod name")
+			gomega.Expect(hostnameEnvVar.ValueFrom).To(gomega.BeNil(), "HOSTNAME should not have ValueFrom")
+
 			// Verify DNS configuration
 			ginkgo.By("Verifying DNS configuration")
 			// Since virtual pod doesn't specify DNSPolicy, it defaults to ClusterFirst, which should be changed to None
@@ -2107,6 +2190,14 @@ func createTestVirtualPodWithResources(name, namespace, nodeName, configMapName,
 								},
 							},
 						},
+						{
+							Name: "NODENAME",
+							ValueFrom: &corev1.EnvVarSource{
+								FieldRef: &corev1.ObjectFieldSelector{
+									FieldPath: "spec.nodeName",
+								},
+							},
+						},
 					},
 				},
 			},
@@ -2139,6 +2230,14 @@ func createTestVirtualPodWithResources(name, namespace, nodeName, configMapName,
 									Name: secretName,
 								},
 								Key: "username",
+							},
+						},
+					},
+					{
+						Name: "NODENAME",
+						ValueFrom: &corev1.EnvVarSource{
+							FieldRef: &corev1.ObjectFieldSelector{
+								FieldPath: "spec.nodeName",
 							},
 						},
 					},
@@ -2242,6 +2341,16 @@ func createTestVirtualPodWithServiceAccount(name, namespace, nodeName, serviceAc
 					Requests: corev1.ResourceList{
 						corev1.ResourceCPU:    resource.MustParse("100m"),
 						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+				},
+				Env: []corev1.EnvVar{
+					{
+						Name: "NODENAME",
+						ValueFrom: &corev1.EnvVarSource{
+							FieldRef: &corev1.ObjectFieldSelector{
+								FieldPath: "spec.nodeName",
+							},
+						},
 					},
 				},
 			}},

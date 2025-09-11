@@ -36,6 +36,8 @@ const (
 	// Kubernetes service environment variable names
 	KubernetesServiceHost = "KUBERNETES_SERVICE_HOST"
 	KubernetesServicePort = "KUBERNETES_SERVICE_PORT"
+	// Hostname environment variable name
+	HostnameEnvVar = "HOSTNAME"
 )
 
 // VirtualPodReconciler reconciles Pod objects from virtual cluster
@@ -622,7 +624,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	}
 
 	// Add hostAliases and inject environment variables
-	if err := r.addHostAliasesAndEnvVars(ctx, &spec); err != nil {
+	if err := r.addHostAliasesAndEnvVars(ctx, &spec, virtualPod.Name); err != nil {
 		return spec, err
 	}
 
@@ -766,7 +768,7 @@ func (r *VirtualPodReconciler) replaceImagePullSecretNames(spec *corev1.PodSpec,
 }
 
 // addHostAliasesAndEnvVars adds hostAliases and injects environment variables
-func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spec *corev1.PodSpec) error {
+func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spec *corev1.PodSpec, virtualPodName string) error {
 	// Add hostAliases for kubernetes.default.svc and get IP/port for environment variables
 	kubernetesIntranetIP, kubernetesIntranetPort, err := r.getKubernetesIntranetIPAndPort(ctx)
 	if err != nil {
@@ -783,12 +785,16 @@ func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spe
 	for i := range spec.Containers {
 		container := &spec.Containers[i]
 		r.injectKubernetesServiceEnvVars(container, kubernetesIntranetIP, kubernetesIntranetPort)
+		// Inject HOSTNAME environment variable with virtual pod name
+		r.injectHostnameEnvVar(container, virtualPodName)
 	}
 
 	// Inject KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables to all init containers
 	for i := range spec.InitContainers {
 		container := &spec.InitContainers[i]
 		r.injectKubernetesServiceEnvVars(container, kubernetesIntranetIP, kubernetesIntranetPort)
+		// Inject HOSTNAME environment variable with virtual pod name
+		r.injectHostnameEnvVar(container, virtualPodName)
 	}
 	return nil
 }
@@ -1954,6 +1960,31 @@ func (r *VirtualPodReconciler) injectKubernetesServiceEnvVars(container *corev1.
 		container.Env = append(container.Env, corev1.EnvVar{
 			Name:  KubernetesServicePort,
 			Value: port,
+		})
+	}
+}
+
+// injectHostnameEnvVar injects HOSTNAME environment variable into the container's environment variables,
+// setting the value to the virtual pod name, overriding any existing values
+func (r *VirtualPodReconciler) injectHostnameEnvVar(container *corev1.Container, virtualPodName string) {
+	// Track if we found and updated existing HOSTNAME environment variable
+	hostnameFound := false
+
+	// First pass: update existing HOSTNAME environment variable if it exists
+	for i := range container.Env {
+		if container.Env[i].Name == HostnameEnvVar {
+			container.Env[i].Value = virtualPodName
+			container.Env[i].ValueFrom = nil // Clear ValueFrom if it exists
+			hostnameFound = true
+			break
+		}
+	}
+
+	// Second pass: append missing HOSTNAME environment variable
+	if !hostnameFound {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  HostnameEnvVar,
+			Value: virtualPodName,
 		})
 	}
 }

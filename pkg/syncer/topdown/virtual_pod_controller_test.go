@@ -712,36 +712,604 @@ func TestVirtualPodReconciler_BuildPhysicalPodAnnotations(t *testing.T) {
 		PhysicalK8sClient: fake.NewSimpleClientset(),
 	}
 
-	virtualPod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "virtual-pod",
-			Namespace: "virtual-ns",
-			UID:       "virtual-uid-123",
-			Annotations: map[string]string{
-				"app.kubernetes.io/version":                 "1.0.0",
-				"deployment.kubernetes.io/revision":         "1",
-				cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
-				cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
-				cloudv1beta1.AnnotationLastSyncTime:         "2023-01-01T00:00:00Z",
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		expectedValues map[string]string
+	}{
+		{
+			name: "pod_with_node_name_should_include_virtual_node_name_annotation",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					UID:       "virtual-uid-123",
+					Annotations: map[string]string{
+						"app.kubernetes.io/version":                 "1.0.0",
+						"deployment.kubernetes.io/revision":         "1",
+						cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+						cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
+						cloudv1beta1.AnnotationLastSyncTime:         "2023-01-01T00:00:00Z",
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "virtual-node-123",
+				},
+			},
+			expectedValues: map[string]string{
+				"app.kubernetes.io/version":                "1.0.0",
+				"deployment.kubernetes.io/revision":        "1",
+				cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+				cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+				cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid-123",
+				cloudv1beta1.AnnotationVirtualNodeName:     "virtual-node-123",
+			},
+		},
+		{
+			name: "pod_without_node_name_should_include_virtual_node_name_annotation_with_empty_value",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					UID:       "virtual-uid-123",
+					Annotations: map[string]string{
+						"app.kubernetes.io/version": "1.0.0",
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "",
+				},
+			},
+			expectedValues: map[string]string{
+				"app.kubernetes.io/version":                "1.0.0",
+				cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+				cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+				cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid-123",
+				cloudv1beta1.AnnotationVirtualNodeName:     "",
+			},
+		},
+		{
+			name: "pod_with_special_characters_in_node_name",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					UID:       "virtual-uid-123",
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "virtual-node-123-abc.def",
+				},
+			},
+			expectedValues: map[string]string{
+				cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+				cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+				cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid-123",
+				cloudv1beta1.AnnotationVirtualNodeName:     "virtual-node-123-abc.def",
 			},
 		},
 	}
 
-	annotations := reconciler.buildPhysicalPodAnnotations(virtualPod)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			annotations := reconciler.buildPhysicalPodAnnotations(tt.virtualPod)
 
-	// Should include regular annotations
-	assert.Equal(t, "1.0.0", annotations["app.kubernetes.io/version"])
-	assert.Equal(t, "1", annotations["deployment.kubernetes.io/revision"])
+			// Verify expected annotations are present
+			for key, expectedValue := range tt.expectedValues {
+				actualValue, exists := annotations[key]
+				assert.True(t, exists, "Annotation %s should exist", key)
+				assert.Equal(t, expectedValue, actualValue, "Annotation %s should have correct value", key)
+			}
 
-	// Should include virtual pod mapping
-	assert.Equal(t, "virtual-ns", annotations[cloudv1beta1.AnnotationVirtualPodNamespace])
-	assert.Equal(t, "virtual-pod", annotations[cloudv1beta1.AnnotationVirtualPodName])
-	assert.Equal(t, "virtual-uid-123", annotations[cloudv1beta1.AnnotationVirtualPodUID])
+			// Should exclude Kubeocean internal annotations
+			assert.NotContains(t, annotations, cloudv1beta1.AnnotationPhysicalPodNamespace)
+			assert.NotContains(t, annotations, cloudv1beta1.AnnotationPhysicalPodName)
+			assert.NotContains(t, annotations, cloudv1beta1.AnnotationLastSyncTime)
 
-	// Should exclude Kubeocean internal annotations
-	assert.NotContains(t, annotations, cloudv1beta1.AnnotationPhysicalPodNamespace)
-	assert.NotContains(t, annotations, cloudv1beta1.AnnotationPhysicalPodName)
-	assert.NotContains(t, annotations, cloudv1beta1.AnnotationLastSyncTime)
+			// Verify virtual node name annotation is always present
+			assert.Contains(t, annotations, cloudv1beta1.AnnotationVirtualNodeName, "Should always include virtual node name annotation")
+			assert.Equal(t, tt.virtualPod.Spec.NodeName, annotations[cloudv1beta1.AnnotationVirtualNodeName], "Virtual node name should match pod spec node name")
+		})
+	}
+}
+
+// TestVirtualPodReconciler_ReplaceDownwardAPIFieldPaths tests the replaceDownwardAPIFieldPaths function
+func TestVirtualPodReconciler_ReplaceDownwardAPIFieldPaths(t *testing.T) {
+	reconciler := &VirtualPodReconciler{
+		Log: ctrl.Log.WithName("test"),
+	}
+
+	tests := []struct {
+		name          string
+		items         []corev1.DownwardAPIVolumeFile
+		expectedItems []corev1.DownwardAPIVolumeFile
+	}{
+		{
+			name: "replace_metadata_namespace_fieldpath",
+			items: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "namespace.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.namespace",
+					},
+				},
+			},
+			expectedItems: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "namespace.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace),
+					},
+				},
+			},
+		},
+		{
+			name: "replace_metadata_name_fieldpath",
+			items: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "name.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.name",
+					},
+				},
+			},
+			expectedItems: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "name.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName),
+					},
+				},
+			},
+		},
+		{
+			name: "replace_spec_nodename_fieldpath",
+			items: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "nodename.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "spec.nodeName",
+					},
+				},
+			},
+			expectedItems: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "nodename.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName),
+					},
+				},
+			},
+		},
+		{
+			name: "replace_multiple_fieldpaths",
+			items: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "namespace.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.namespace",
+					},
+				},
+				{
+					Path: "name.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.name",
+					},
+				},
+				{
+					Path: "nodename.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "spec.nodeName",
+					},
+				},
+			},
+			expectedItems: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "namespace.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace),
+					},
+				},
+				{
+					Path: "name.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName),
+					},
+				},
+				{
+					Path: "nodename.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName),
+					},
+				},
+			},
+		},
+		{
+			name: "leave_other_fieldpaths_unchanged",
+			items: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "namespace.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.namespace",
+					},
+				},
+				{
+					Path: "uid.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.uid",
+					},
+				},
+				{
+					Path: "labels.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.labels",
+					},
+				},
+			},
+			expectedItems: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "namespace.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace),
+					},
+				},
+				{
+					Path: "uid.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.uid",
+					},
+				},
+				{
+					Path: "labels.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.labels",
+					},
+				},
+			},
+		},
+		{
+			name: "handle_items_without_fieldref",
+			items: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "namespace.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.namespace",
+					},
+				},
+				{
+					Path: "config.txt",
+					ResourceFieldRef: &corev1.ResourceFieldSelector{
+						Resource: "requests.cpu",
+					},
+				},
+			},
+			expectedItems: []corev1.DownwardAPIVolumeFile{
+				{
+					Path: "namespace.txt",
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace),
+					},
+				},
+				{
+					Path: "config.txt",
+					ResourceFieldRef: &corev1.ResourceFieldSelector{
+						Resource: "requests.cpu",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a copy of the items to avoid modifying the original
+			items := make([]corev1.DownwardAPIVolumeFile, len(tt.items))
+			copy(items, tt.items)
+
+			// Call the function
+			reconciler.replaceDownwardAPIFieldPaths(items)
+
+			// Verify the results
+			assert.Equal(t, len(tt.expectedItems), len(items), "Number of items should match")
+			for i, expectedItem := range tt.expectedItems {
+				assert.Equal(t, expectedItem.Path, items[i].Path, "Item %d path should match", i)
+				if expectedItem.FieldRef != nil {
+					assert.NotNil(t, items[i].FieldRef, "Item %d should have FieldRef", i)
+					assert.Equal(t, expectedItem.FieldRef.FieldPath, items[i].FieldRef.FieldPath, "Item %d FieldPath should match", i)
+				} else {
+					assert.Nil(t, items[i].FieldRef, "Item %d should not have FieldRef", i)
+				}
+				if expectedItem.ResourceFieldRef != nil {
+					assert.NotNil(t, items[i].ResourceFieldRef, "Item %d should have ResourceFieldRef", i)
+					assert.Equal(t, expectedItem.ResourceFieldRef.Resource, items[i].ResourceFieldRef.Resource, "Item %d Resource should match", i)
+				} else {
+					assert.Nil(t, items[i].ResourceFieldRef, "Item %d should not have ResourceFieldRef", i)
+				}
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_ReplaceContainerDownwardAPIFieldPaths tests the replaceContainerDownwardAPIFieldPaths function
+func TestVirtualPodReconciler_ReplaceContainerDownwardAPIFieldPaths(t *testing.T) {
+	reconciler := &VirtualPodReconciler{
+		Log: ctrl.Log.WithName("test"),
+	}
+
+	tests := []struct {
+		name            string
+		envVars         []corev1.EnvVar
+		expectedEnvVars []corev1.EnvVar
+	}{
+		{
+			name: "replace_metadata_namespace_fieldpath",
+			envVars: []corev1.EnvVar{
+				{
+					Name: "POD_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.namespace",
+						},
+					},
+				},
+			},
+			expectedEnvVars: []corev1.EnvVar{
+				{
+					Name: "POD_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "replace_metadata_name_fieldpath",
+			envVars: []corev1.EnvVar{
+				{
+					Name: "POD_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.name",
+						},
+					},
+				},
+			},
+			expectedEnvVars: []corev1.EnvVar{
+				{
+					Name: "POD_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "replace_spec_nodename_fieldpath",
+			envVars: []corev1.EnvVar{
+				{
+					Name: "NODE_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "spec.nodeName",
+						},
+					},
+				},
+			},
+			expectedEnvVars: []corev1.EnvVar{
+				{
+					Name: "NODE_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "replace_multiple_fieldpaths",
+			envVars: []corev1.EnvVar{
+				{
+					Name: "POD_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.namespace",
+						},
+					},
+				},
+				{
+					Name: "POD_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.name",
+						},
+					},
+				},
+				{
+					Name: "NODE_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "spec.nodeName",
+						},
+					},
+				},
+			},
+			expectedEnvVars: []corev1.EnvVar{
+				{
+					Name: "POD_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace),
+						},
+					},
+				},
+				{
+					Name: "POD_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName),
+						},
+					},
+				},
+				{
+					Name: "NODE_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "leave_other_fieldpaths_unchanged",
+			envVars: []corev1.EnvVar{
+				{
+					Name: "POD_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.namespace",
+						},
+					},
+				},
+				{
+					Name: "POD_UID",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.uid",
+						},
+					},
+				},
+				{
+					Name: "POD_LABELS",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels",
+						},
+					},
+				},
+			},
+			expectedEnvVars: []corev1.EnvVar{
+				{
+					Name: "POD_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace),
+						},
+					},
+				},
+				{
+					Name: "POD_UID",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.uid",
+						},
+					},
+				},
+				{
+					Name: "POD_LABELS",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.labels",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "handle_envvars_without_valuefrom",
+			envVars: []corev1.EnvVar{
+				{
+					Name:  "STATIC_VAR",
+					Value: "static_value",
+				},
+				{
+					Name: "POD_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.namespace",
+						},
+					},
+				},
+				{
+					Name: "CONFIG_MAP_VAR",
+					ValueFrom: &corev1.EnvVarSource{
+						ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "my-config",
+							},
+							Key: "my-key",
+						},
+					},
+				},
+			},
+			expectedEnvVars: []corev1.EnvVar{
+				{
+					Name:  "STATIC_VAR",
+					Value: "static_value",
+				},
+				{
+					Name: "POD_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodNamespace),
+						},
+					},
+				},
+				{
+					Name: "CONFIG_MAP_VAR",
+					ValueFrom: &corev1.EnvVarSource{
+						ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "my-config",
+							},
+							Key: "my-key",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a copy of the env vars to avoid modifying the original
+			envVars := make([]corev1.EnvVar, len(tt.envVars))
+			copy(envVars, tt.envVars)
+
+			// Call the function
+			reconciler.replaceContainerDownwardAPIFieldPaths(envVars)
+
+			// Verify the results
+			assert.Equal(t, len(tt.expectedEnvVars), len(envVars), "Number of env vars should match")
+			for i, expectedEnvVar := range tt.expectedEnvVars {
+				assert.Equal(t, expectedEnvVar.Name, envVars[i].Name, "EnvVar %d name should match", i)
+				assert.Equal(t, expectedEnvVar.Value, envVars[i].Value, "EnvVar %d value should match", i)
+
+				if expectedEnvVar.ValueFrom != nil {
+					assert.NotNil(t, envVars[i].ValueFrom, "EnvVar %d should have ValueFrom", i)
+					if expectedEnvVar.ValueFrom.FieldRef != nil {
+						assert.NotNil(t, envVars[i].ValueFrom.FieldRef, "EnvVar %d should have FieldRef", i)
+						assert.Equal(t, expectedEnvVar.ValueFrom.FieldRef.FieldPath, envVars[i].ValueFrom.FieldRef.FieldPath, "EnvVar %d FieldPath should match", i)
+					} else {
+						assert.Nil(t, envVars[i].ValueFrom.FieldRef, "EnvVar %d should not have FieldRef", i)
+					}
+					if expectedEnvVar.ValueFrom.ConfigMapKeyRef != nil {
+						assert.NotNil(t, envVars[i].ValueFrom.ConfigMapKeyRef, "EnvVar %d should have ConfigMapKeyRef", i)
+						assert.Equal(t, expectedEnvVar.ValueFrom.ConfigMapKeyRef.Name, envVars[i].ValueFrom.ConfigMapKeyRef.Name, "EnvVar %d ConfigMapKeyRef name should match", i)
+						assert.Equal(t, expectedEnvVar.ValueFrom.ConfigMapKeyRef.Key, envVars[i].ValueFrom.ConfigMapKeyRef.Key, "EnvVar %d ConfigMapKeyRef key should match", i)
+					} else {
+						assert.Nil(t, envVars[i].ValueFrom.ConfigMapKeyRef, "EnvVar %d should not have ConfigMapKeyRef", i)
+					}
+				} else {
+					assert.Nil(t, envVars[i].ValueFrom, "EnvVar %d should not have ValueFrom", i)
+				}
+			}
+		})
+	}
 }
 
 func TestVirtualPodReconciler_IsSystemPod(t *testing.T) {
@@ -4374,6 +4942,165 @@ func TestVirtualPodReconciler_InjectKubernetesServiceEnvVars(t *testing.T) {
 	}
 }
 
+// TestVirtualPodReconciler_InjectHostnameEnvVar tests the injectHostnameEnvVar function
+func TestVirtualPodReconciler_InjectHostnameEnvVar(t *testing.T) {
+	reconciler := &VirtualPodReconciler{
+		Log: ctrl.Log.WithName("test"),
+	}
+
+	tests := []struct {
+		name                string
+		container           *corev1.Container
+		virtualPodName      string
+		expectedEnvVars     map[string]string
+		expectedEnvVarCount int
+	}{
+		{
+			name: "inject_hostname_to_empty_container",
+			container: &corev1.Container{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Env:   []corev1.EnvVar{},
+			},
+			virtualPodName: "test-pod-123",
+			expectedEnvVars: map[string]string{
+				HostnameEnvVar: "test-pod-123",
+			},
+			expectedEnvVarCount: 1,
+		},
+		{
+			name: "inject_hostname_to_container_with_existing_env_vars",
+			container: &corev1.Container{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Env: []corev1.EnvVar{
+					{
+						Name:  "EXISTING_VAR",
+						Value: "existing_value",
+					},
+					{
+						Name:  "ANOTHER_VAR",
+						Value: "another_value",
+					},
+				},
+			},
+			virtualPodName: "my-app-pod",
+			expectedEnvVars: map[string]string{
+				"EXISTING_VAR": "existing_value",
+				"ANOTHER_VAR":  "another_value",
+				HostnameEnvVar: "my-app-pod",
+			},
+			expectedEnvVarCount: 3,
+		},
+		{
+			name: "override_existing_hostname_env_var",
+			container: &corev1.Container{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Env: []corev1.EnvVar{
+					{
+						Name:  HostnameEnvVar,
+						Value: "old-hostname",
+					},
+					{
+						Name:  "OTHER_VAR",
+						Value: "other_value",
+					},
+				},
+			},
+			virtualPodName: "new-pod-name",
+			expectedEnvVars: map[string]string{
+				HostnameEnvVar: "new-pod-name",
+				"OTHER_VAR":    "other_value",
+			},
+			expectedEnvVarCount: 2,
+		},
+		{
+			name: "override_existing_hostname_with_valuefrom",
+			container: &corev1.Container{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Env: []corev1.EnvVar{
+					{
+						Name: HostnameEnvVar,
+						ValueFrom: &corev1.EnvVarSource{
+							FieldRef: &corev1.ObjectFieldSelector{
+								FieldPath: "spec.nodeName",
+							},
+						},
+					},
+					{
+						Name:  "APP_ENV",
+						Value: "production",
+					},
+				},
+			},
+			virtualPodName: "virtual-pod-name",
+			expectedEnvVars: map[string]string{
+				HostnameEnvVar: "virtual-pod-name",
+				"APP_ENV":      "production",
+			},
+			expectedEnvVarCount: 2,
+		},
+		{
+			name: "inject_with_special_characters_in_pod_name",
+			container: &corev1.Container{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Env: []corev1.EnvVar{
+					{
+						Name:  "APP_ENV",
+						Value: "production",
+					},
+				},
+			},
+			virtualPodName: "my-app-pod-123-abc",
+			expectedEnvVars: map[string]string{
+				"APP_ENV":      "production",
+				HostnameEnvVar: "my-app-pod-123-abc",
+			},
+			expectedEnvVarCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a copy of the container to avoid modifying the original
+			container := tt.container.DeepCopy()
+
+			// Call the function
+			reconciler.injectHostnameEnvVar(container, tt.virtualPodName)
+
+			// Verify the number of environment variables
+			assert.Equal(t, tt.expectedEnvVarCount, len(container.Env), "Environment variable count should match expected")
+
+			// Verify all expected environment variables are present with correct values
+			envMap := make(map[string]string)
+			for _, envVar := range container.Env {
+				envMap[envVar.Name] = envVar.Value
+			}
+
+			for expectedName, expectedValue := range tt.expectedEnvVars {
+				actualValue, exists := envMap[expectedName]
+				assert.True(t, exists, "Environment variable %s should exist", expectedName)
+				assert.Equal(t, expectedValue, actualValue, "Environment variable %s should have correct value", expectedName)
+			}
+
+			// Verify HOSTNAME is always present
+			assert.Contains(t, envMap, HostnameEnvVar, "HOSTNAME should always be present")
+			assert.Equal(t, tt.virtualPodName, envMap[HostnameEnvVar], "HOSTNAME should match provided virtual pod name")
+
+			// Verify that ValueFrom is cleared for HOSTNAME
+			for _, envVar := range container.Env {
+				if envVar.Name == HostnameEnvVar {
+					assert.Nil(t, envVar.ValueFrom, "HOSTNAME should not have ValueFrom when set directly")
+					break
+				}
+			}
+		})
+	}
+}
+
 // TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection tests the buildPhysicalPodSpec function with environment variable injection
 func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing.T) {
 	scheme := runtime.NewScheme()
@@ -4584,7 +5311,7 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing
 			if tt.expectedEnvVarInjection {
 				// Check containers
 				for _, container := range result.Containers {
-					var hasKubernetesServiceHost, hasKubernetesServicePort bool
+					var hasKubernetesServiceHost, hasKubernetesServicePort, hasHostname bool
 					for _, envVar := range container.Env {
 						if envVar.Name == KubernetesServiceHost {
 							assert.Equal(t, "10.0.0.1", envVar.Value, "KUBERNETES_SERVICE_HOST should be set to kubernetes-intranet IP")
@@ -4593,15 +5320,20 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing
 						if envVar.Name == KubernetesServicePort {
 							assert.Equal(t, "443", envVar.Value, "KUBERNETES_SERVICE_PORT should be set to kubernetes-intranet port")
 							hasKubernetesServicePort = true
+						}
+						if envVar.Name == HostnameEnvVar {
+							assert.Equal(t, tt.virtualPod.Name, envVar.Value, "HOSTNAME should be set to virtual pod name")
+							hasHostname = true
 						}
 					}
 					assert.True(t, hasKubernetesServiceHost, "Container should have KUBERNETES_SERVICE_HOST environment variable")
 					assert.True(t, hasKubernetesServicePort, "Container should have KUBERNETES_SERVICE_PORT environment variable")
+					assert.True(t, hasHostname, "Container should have HOSTNAME environment variable")
 				}
 
 				// Check init containers
 				for _, container := range result.InitContainers {
-					var hasKubernetesServiceHost, hasKubernetesServicePort bool
+					var hasKubernetesServiceHost, hasKubernetesServicePort, hasHostname bool
 					for _, envVar := range container.Env {
 						if envVar.Name == KubernetesServiceHost {
 							assert.Equal(t, "10.0.0.1", envVar.Value, "KUBERNETES_SERVICE_HOST should be set to kubernetes-intranet IP")
@@ -4611,9 +5343,14 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing
 							assert.Equal(t, "443", envVar.Value, "KUBERNETES_SERVICE_PORT should be set to kubernetes-intranet port")
 							hasKubernetesServicePort = true
 						}
+						if envVar.Name == HostnameEnvVar {
+							assert.Equal(t, tt.virtualPod.Name, envVar.Value, "HOSTNAME should be set to virtual pod name")
+							hasHostname = true
+						}
 					}
 					assert.True(t, hasKubernetesServiceHost, "InitContainer should have KUBERNETES_SERVICE_HOST environment variable")
 					assert.True(t, hasKubernetesServicePort, "InitContainer should have KUBERNETES_SERVICE_PORT environment variable")
+					assert.True(t, hasHostname, "InitContainer should have HOSTNAME environment variable")
 				}
 			}
 		})
@@ -5223,4 +5960,243 @@ func (m *MockClient) IsObjectNamespaced(obj runtime.Object) (bool, error) {
 
 func (m *MockClient) SubResource(subResource string) client.SubResourceClient {
 	return nil
+}
+
+// TestVirtualPodReconciler_AddHostAliasesAndEnvVars tests the addHostAliasesAndEnvVars function
+func TestVirtualPodReconciler_AddHostAliasesAndEnvVars(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Create mock services for loadbalancer IPs
+	kubernetesIntranetService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kubernetes-intranet",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Port: 443,
+				},
+			},
+		},
+		Status: corev1.ServiceStatus{
+			LoadBalancer: corev1.LoadBalancerStatus{
+				Ingress: []corev1.LoadBalancerIngress{
+					{IP: "10.0.0.1"},
+				},
+			},
+		},
+	}
+
+	// Create mock virtual client with services
+	virtualClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(kubernetesIntranetService).
+		Build()
+
+	reconciler := &VirtualPodReconciler{
+		VirtualClient: virtualClient,
+		Log:           ctrl.Log.WithName("test"),
+	}
+
+	tests := []struct {
+		name              string
+		podSpec           *corev1.PodSpec
+		virtualPodName    string
+		expectedHostAlias bool
+		expectedEnvVars   map[string]string
+		expectedEnvCount  int
+	}{
+		{
+			name: "inject_env_vars_to_containers_and_init_containers",
+			podSpec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
+						Env: []corev1.EnvVar{
+							{
+								Name:  "EXISTING_VAR",
+								Value: "existing_value",
+							},
+						},
+					},
+				},
+				InitContainers: []corev1.Container{
+					{
+						Name:  "init-container",
+						Image: "busybox:latest",
+						Env: []corev1.EnvVar{
+							{
+								Name:  "INIT_VAR",
+								Value: "init_value",
+							},
+						},
+					},
+				},
+			},
+			virtualPodName:    "test-pod-123",
+			expectedHostAlias: true,
+			expectedEnvVars: map[string]string{
+				KubernetesServiceHost: "10.0.0.1",
+				KubernetesServicePort: "443",
+				HostnameEnvVar:        "test-pod-123",
+			},
+			expectedEnvCount: 4, // EXISTING_VAR + 3 injected vars for main container
+		},
+		{
+			name: "inject_env_vars_to_empty_containers",
+			podSpec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
+						Env:   []corev1.EnvVar{},
+					},
+				},
+				InitContainers: []corev1.Container{
+					{
+						Name:  "init-container",
+						Image: "busybox:latest",
+						Env:   []corev1.EnvVar{},
+					},
+				},
+			},
+			virtualPodName:    "my-app-pod",
+			expectedHostAlias: true,
+			expectedEnvVars: map[string]string{
+				KubernetesServiceHost: "10.0.0.1",
+				KubernetesServicePort: "443",
+				HostnameEnvVar:        "my-app-pod",
+			},
+			expectedEnvCount: 3, // 3 injected vars for main container
+		},
+		{
+			name: "override_existing_kubernetes_and_hostname_env_vars",
+			podSpec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
+						Env: []corev1.EnvVar{
+							{
+								Name:  KubernetesServiceHost,
+								Value: "old-host",
+							},
+							{
+								Name:  KubernetesServicePort,
+								Value: "old-port",
+							},
+							{
+								Name:  HostnameEnvVar,
+								Value: "old-hostname",
+							},
+							{
+								Name:  "OTHER_VAR",
+								Value: "other_value",
+							},
+						},
+					},
+				},
+			},
+			virtualPodName:    "new-pod-name",
+			expectedHostAlias: true,
+			expectedEnvVars: map[string]string{
+				KubernetesServiceHost: "10.0.0.1",
+				KubernetesServicePort: "443",
+				HostnameEnvVar:        "new-pod-name",
+				"OTHER_VAR":           "other_value",
+			},
+			expectedEnvCount: 4, // OTHER_VAR + 3 injected vars
+		},
+		{
+			name: "inject_with_special_characters_in_pod_name",
+			podSpec: &corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "main-container",
+						Image: "nginx:latest",
+						Env: []corev1.EnvVar{
+							{
+								Name:  "APP_ENV",
+								Value: "production",
+							},
+						},
+					},
+				},
+			},
+			virtualPodName:    "my-app-pod-123-abc",
+			expectedHostAlias: true,
+			expectedEnvVars: map[string]string{
+				KubernetesServiceHost: "10.0.0.1",
+				KubernetesServicePort: "443",
+				HostnameEnvVar:        "my-app-pod-123-abc",
+				"APP_ENV":             "production",
+			},
+			expectedEnvCount: 4, // APP_ENV + 3 injected vars
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a copy of the pod spec to avoid modifying the original
+			podSpec := tt.podSpec.DeepCopy()
+
+			// Call the function
+			err := reconciler.addHostAliasesAndEnvVars(context.Background(), podSpec, tt.virtualPodName)
+			assert.NoError(t, err)
+
+			// Verify hostAlias is added
+			if tt.expectedHostAlias {
+				assert.Len(t, podSpec.HostAliases, 1, "Should have one hostAlias")
+				assert.Equal(t, "10.0.0.1", podSpec.HostAliases[0].IP, "HostAlias IP should match kubernetes-intranet IP")
+				assert.Equal(t, []string{"kubernetes.default.svc"}, podSpec.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
+			}
+
+			// Verify environment variable injection in containers
+			for _, container := range podSpec.Containers {
+				envMap := make(map[string]string)
+				for _, envVar := range container.Env {
+					envMap[envVar.Name] = envVar.Value
+				}
+
+				// Verify all expected environment variables are present
+				for expectedName, expectedValue := range tt.expectedEnvVars {
+					actualValue, exists := envMap[expectedName]
+					assert.True(t, exists, "Container should have environment variable %s", expectedName)
+					assert.Equal(t, expectedValue, actualValue, "Environment variable %s should have correct value", expectedName)
+				}
+
+				// Verify ValueFrom is cleared for injected environment variables
+				for _, envVar := range container.Env {
+					if envVar.Name == KubernetesServiceHost || envVar.Name == KubernetesServicePort || envVar.Name == HostnameEnvVar {
+						assert.Nil(t, envVar.ValueFrom, "Environment variable %s should not have ValueFrom when set directly", envVar.Name)
+					}
+				}
+			}
+
+			// Verify environment variable injection in init containers
+			for _, container := range podSpec.InitContainers {
+				envMap := make(map[string]string)
+				for _, envVar := range container.Env {
+					envMap[envVar.Name] = envVar.Value
+				}
+
+				// Verify all expected environment variables are present
+				for expectedName, expectedValue := range tt.expectedEnvVars {
+					actualValue, exists := envMap[expectedName]
+					assert.True(t, exists, "InitContainer should have environment variable %s", expectedName)
+					assert.Equal(t, expectedValue, actualValue, "Environment variable %s should have correct value", expectedName)
+				}
+
+				// Verify ValueFrom is cleared for injected environment variables
+				for _, envVar := range container.Env {
+					if envVar.Name == KubernetesServiceHost || envVar.Name == KubernetesServicePort || envVar.Name == HostnameEnvVar {
+						assert.Nil(t, envVar.ValueFrom, "Environment variable %s should not have ValueFrom when set directly", envVar.Name)
+					}
+				}
+			}
+		})
+	}
 }
