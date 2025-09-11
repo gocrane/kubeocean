@@ -355,6 +355,29 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 		},
 	}
 
+	// Create a matching ResourceLeasingPolicy
+	matchingPolicy := &cloudv1beta1.ResourceLeasingPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-policy",
+		},
+		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+			Cluster: "test-binding",
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "kubernetes.io/os",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"linux"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
 	// Create physical node reconciler
 	reconciler := &PhysicalNodeReconciler{
 		PhysicalClient:     physicalClient,
@@ -371,6 +394,11 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 	err := physicalClient.Create(ctx, physicalNode)
 	if err != nil {
 		t.Fatalf("Failed to create physical node: %v", err)
+	}
+
+	err = physicalClient.Create(ctx, matchingPolicy)
+	if err != nil {
+		t.Fatalf("Failed to create matching policy: %v", err)
 	}
 
 	err = virtualClient.Create(ctx, clusterBinding)

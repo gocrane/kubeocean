@@ -139,8 +139,8 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 					},
 				},
 			},
-			expectedVirtualNode: true,
-			expectedRequeue:     true,
+			expectedVirtualNode: false, // No policy matches, so virtual node should be deleted
+			expectedRequeue:     false, // No requeue needed after deletion
 		},
 		{
 			name:                "deleted node",
@@ -159,10 +159,12 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 				physicalObjs = append(physicalObjs, tt.physicalNode)
 			}
 
-			virtualObjs := []client.Object{}
+			// Add policies to physical objects since they are now in physical cluster
 			for i := range tt.policies {
-				virtualObjs = append(virtualObjs, &tt.policies[i])
+				physicalObjs = append(physicalObjs, &tt.policies[i])
 			}
+
+			virtualObjs := []client.Object{}
 			// Create cluster binding and ensure it exists in virtual cluster for lookup inside processNode
 			clusterBinding := &cloudv1beta1.ClusterBinding{
 				ObjectMeta: metav1.ObjectMeta{
@@ -739,13 +741,13 @@ func TestPhysicalNodeReconciler_GetApplicablePolicies(t *testing.T) {
 		},
 	}
 
-	virtualClient := fakeclient.NewClientBuilder().
+	physicalClient := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(matchingPolicy, nonMatchingPolicy).
 		Build()
 
 	reconciler := &PhysicalNodeReconciler{
-		VirtualClient:      virtualClient,
+		PhysicalClient:     physicalClient,
 		ClusterBindingName: "test-cluster",
 		Log:                ctrl.Log.WithName("test"),
 	}

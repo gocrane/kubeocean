@@ -1898,6 +1898,27 @@ func setupPodSyncTestEnvironment(ctx context.Context, clusterBindingName, physic
 		},
 	}
 	gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+	// Create a matching ResourceLeasingPolicy
+	policy := &cloudv1beta1.ResourceLeasingPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-test-policy-%s", clusterBindingName)},
+		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+			Cluster: clusterBindingName,
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "node-role.kubernetes.io/worker",
+								Operator: corev1.NodeSelectorOpExists,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	gomega.Expect(k8sPhysical.Create(ctx, policy)).To(gomega.Succeed())
 }
 
 func createAndStartSyncer(ctx context.Context, clusterBindingName string) *syncerpkg.KubeoceanSyncer {

@@ -74,8 +74,10 @@ var _ = ginkgo.BeforeEach(func(ctx context.Context) {
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	gomega.Expect(cfgVirtual).NotTo(gomega.BeNil())
 
-	// 启动物理集群 envtest（仅内建资源）
-	testEnvPhysical = &envtest.Environment{}
+	// 启动物理集群 envtest，加载 CRDs
+	testEnvPhysical = &envtest.Environment{
+		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
+	}
 	cfgPhysical, err = testEnvPhysical.Start()
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	gomega.Expect(cfgPhysical).NotTo(gomega.BeNil())
@@ -248,4 +250,25 @@ func createRequiredServices(ctx context.Context) {
 		},
 	}
 	gomega.Expect(k8sVirtual.Status().Update(ctx, kubeDnsIntranetService)).To(gomega.Succeed())
+}
+
+// CreateDefaultResourceLeasingPolicy creates a default ResourceLeasingPolicy that matches any node
+// in the specified cluster. This is useful for tests that need a policy to exist but don't
+// want to specify complex matching criteria.
+func CreateDefaultResourceLeasingPolicy(ctx context.Context, k8sPhysical client.Client, clusterName string, policyName string) *cloudv1beta1.ResourceLeasingPolicy {
+	policy := &cloudv1beta1.ResourceLeasingPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: policyName,
+		},
+		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+			Cluster: clusterName,
+			// nil NodeSelector means it matches any node
+			NodeSelector: nil,
+			// empty ResourceLimits means no resource restrictions
+			ResourceLimits: nil,
+		},
+	}
+
+	gomega.Expect(k8sPhysical.Create(ctx, policy)).To(gomega.Succeed())
+	return policy
 }

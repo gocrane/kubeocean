@@ -131,37 +131,36 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 		return ctrl.Result{}, err
 	}
 
-	var policy *cloudv1beta1.ResourceLeasingPolicy
-	// If one or more policies match, use the earliest one
-	if len(policies) > 0 {
-		if len(policies) > 1 {
-			// Sort by creation time and use the earliest
-			sort.Slice(policies, func(i, j int) bool {
-				// Older (earlier creation) comes first
-				if policies[i].CreationTimestamp.Time.Equal(policies[j].CreationTimestamp.Time) {
-					return policies[i].Name < policies[j].Name
-				}
-				return policies[i].CreationTimestamp.Time.Before(policies[j].CreationTimestamp.Time)
-			})
-			var ignored []string
-			for idx := 1; idx < len(policies); idx++ {
-				ignored = append(ignored, policies[idx].Name)
-			}
-			policies = policies[:1]
-			log.Info("Multiple ResourceLeasingPolicies matched. Using the earliest one and ignoring others.",
-				"selected", policies[0].Name, "ignored", strings.Join(ignored, ","))
-		} else {
-			log.V(1).Info("Single ResourceLeasingPolicy matched", "selected", policies[0].Name)
-		}
-		// Use the first (earliest) policy
-		policy = &policies[0]
+	if len(policies) == 0 {
+		log.Info("No matching ResourceLeasingPolicy found; deleting virtual node")
+		return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
 	}
 
+	var policy *cloudv1beta1.ResourceLeasingPolicy
+	// If one or more policies match, use the earliest one
+	if len(policies) > 1 {
+		// Sort by creation time and use the earliest
+		sort.Slice(policies, func(i, j int) bool {
+			// Older (earlier creation) comes first
+			if policies[i].CreationTimestamp.Time.Equal(policies[j].CreationTimestamp.Time) {
+				return policies[i].Name < policies[j].Name
+			}
+			return policies[i].CreationTimestamp.Time.Before(policies[j].CreationTimestamp.Time)
+		})
+		var ignored []string
+		for idx := 1; idx < len(policies); idx++ {
+			ignored = append(ignored, policies[idx].Name)
+		}
+		policies = policies[:1]
+		log.Info("Multiple ResourceLeasingPolicies matched. Using the earliest one and ignoring others.",
+			"selected", policies[0].Name, "ignored", strings.Join(ignored, ","))
+	} else {
+		log.V(1).Info("Single ResourceLeasingPolicy matched", "selected", policies[0].Name)
+	}
+	// Use the first (earliest) policy
+	policy = &policies[0]
 	// Handle time window management for policy-managed nodes
 	var availableResources corev1.ResourceList
-	if policy == nil {
-		log.V(1).Info("No matching ResourceLeasingPolicy; using all remaining resources of physical node")
-	}
 
 	// Calculate available resources (with or without policy constraints)
 	availableResources, err = r.calculateAvailableResources(ctx, physicalNode, policy)
@@ -184,8 +183,8 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	// Start lease controller for the virtual node
 	r.startLeaseController(virtualNodeName)
 
-	// Handle out-of-time-windows pod deletion if policy exists and node is outside time windows
-	if policy != nil && !r.isWithinTimeWindows(policy) {
+	// Handle out-of-time-windows pod deletion if node is outside time windows
+	if !r.isWithinTimeWindows(policy) {
 		log.V(1).Info("Handling out-of-time-windows pod deletion")
 		result, err := r.handleOutOfTimeWindows(ctx, physicalNode.Name, policy)
 		if err != nil {
@@ -504,7 +503,7 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 // getApplicablePolicies gets ResourceLeasingPolicies that apply to the given node
 func (r *PhysicalNodeReconciler) getApplicablePolicies(ctx context.Context, node *corev1.Node, clusterSelector *corev1.NodeSelector) ([]cloudv1beta1.ResourceLeasingPolicy, error) {
 	var policyList cloudv1beta1.ResourceLeasingPolicyList
-	if err := r.VirtualClient.List(ctx, &policyList); err != nil {
+	if err := r.PhysicalClient.List(ctx, &policyList); err != nil {
 		return nil, fmt.Errorf("failed to list ResourceLeasingPolicies: %w", err)
 	}
 

@@ -175,8 +175,6 @@ func TestResourceLeasingPolicyReconciler_Reconcile(t *testing.T) {
 			// Create reconciler
 			reconciler := &ResourceLeasingPolicyReconciler{
 				Client:         virtualClient,
-				VirtualClient:  virtualClient,
-				Scheme:         scheme,
 				ClusterBinding: tt.clusterBinding,
 				Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
 				// Provide mock functions for testing
@@ -236,8 +234,6 @@ func TestResourceLeasingPolicyReconciler_TriggerNodeReEvaluation(t *testing.T) {
 
 	reconciler := &ResourceLeasingPolicyReconciler{
 		Client:         virtualClient,
-		VirtualClient:  virtualClient,
-		Scheme:         scheme,
 		ClusterBinding: clusterBinding,
 		Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
 		// Provide mock functions for testing
@@ -292,7 +288,6 @@ func TestResourceLeasingPolicyReconciler_SetupWithManager(t *testing.T) {
 	}
 
 	reconciler := &ResourceLeasingPolicyReconciler{
-		Scheme:         scheme,
 		ClusterBinding: clusterBinding,
 		Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
 	}
@@ -343,8 +338,6 @@ func TestResourceLeasingPolicyReconciler_Finalizer(t *testing.T) {
 
 	reconciler := &ResourceLeasingPolicyReconciler{
 		Client:         virtualClient,
-		VirtualClient:  virtualClient,
-		Scheme:         scheme,
 		ClusterBinding: clusterBinding,
 		Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
 		// Provide mock functions for testing
@@ -415,8 +408,6 @@ func TestResourceLeasingPolicyReconciler_Finalizer(t *testing.T) {
 
 		deletionReconciler := &ResourceLeasingPolicyReconciler{
 			Client:         deletionClient,
-			VirtualClient:  deletionClient,
-			Scheme:         scheme,
 			ClusterBinding: clusterBinding,
 			Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
 			GetNodesMatchingSelector: func(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {

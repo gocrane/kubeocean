@@ -87,7 +87,28 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			}
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
-			ginkgo.By("Physical node created")
+			// Create a matching ResourceLeasingPolicy
+			policy := &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "basic-test-policy"},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					Cluster: "basic-test-cluster",
+					NodeSelector: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "node-role.kubernetes.io/worker",
+										Operator: corev1.NodeSelectorOpExists,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			gomega.Expect(k8sPhysical.Create(ctx, policy)).To(gomega.Succeed())
+
+			ginkgo.By("Physical node and policy created")
 
 			// Create and start KubeoceanSyncer
 			syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
@@ -207,6 +228,27 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			}
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
+			// Create a matching ResourceLeasingPolicy
+			policy := &cloudv1beta1.ResourceLeasingPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-policy-" + uniqueID},
+				Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+					Cluster: clusterName,
+					NodeSelector: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "node-role.kubernetes.io/worker",
+										Operator: corev1.NodeSelectorOpExists,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			gomega.Expect(k8sPhysical.Create(ctx, policy)).To(gomega.Succeed())
+
 			ginkgo.By("Creating KubeoceanSyncer and starting it")
 
 			syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
@@ -269,8 +311,8 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			_ = k8sVirtual.Delete(ctx, clusterBinding)
 		}, ginkgo.SpecTimeout(60*time.Second))
 
-		ginkgo.It("should calculate available resources correctly when no ResourceLeasingPolicy matches but pods are running", func(ctx context.Context) {
-			// Create ClusterBinding without NodeSelector restrictions
+		ginkgo.It("should delete virtual node when no ResourceLeasingPolicy matches", func(ctx context.Context) {
+			// Create ClusterBinding
 			clusterBinding := &cloudv1beta1.ClusterBinding{
 				ObjectMeta: metav1.ObjectMeta{Name: clusterName},
 				Spec: cloudv1beta1.ClusterBindingSpec{
@@ -370,8 +412,11 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			gomega.Expect(k8sPhysical.List(ctx, podList, client.MatchingFields{"spec.nodeName": physicalNode.Name})).To(gomega.Succeed())
 			gomega.Expect(podList.Items).To(gomega.HaveLen(2), "Should find 2 pods on the physical node")
 
-			ginkgo.By("Physical node and pods created")
+			ginkgo.By("Step 1: Create default ResourceLeasingPolicy")
+			// Create a default ResourceLeasingPolicy that matches the node
+			policy := CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "test-policy-"+uniqueID)
 
+			ginkgo.By("Starting syncer")
 			syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -383,30 +428,46 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				_ = syncer.Start(syncerCtx)
 			}()
 
-			// Wait for virtual node to be created
+			ginkgo.By("Step 2: Verify virtual node is created and available resources are calculated correctly")
 			virtualNodeName := "vnode-" + clusterName + "-" + physicalNode.Name
-			var virtualNode corev1.Node
+
+			// Wait for virtual node to be created
+			gomega.Eventually(func() error {
+				var virtualNode corev1.Node
+				return k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+			}, 30*time.Second, 1*time.Second).Should(gomega.Succeed())
+
+			// Verify virtual node resources are calculated correctly
+			// Physical node: 4 CPU, 8Gi memory
+			// Running pods: 1.5 CPU (1 + 0.5), 3Gi memory (2 + 1)
+			// Expected available: 2.5 CPU, 5Gi memory
 			gomega.Eventually(func() bool {
+				var virtualNode corev1.Node
+				if err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode); err != nil {
+					return false
+				}
+
+				allocatableCPU := virtualNode.Status.Allocatable[corev1.ResourceCPU]
+				allocatableMemory := virtualNode.Status.Allocatable[corev1.ResourceMemory]
+
+				expectedCPU := resource.MustParse("2500m")  // 2.5 CPU
+				expectedMemory := resource.MustParse("5Gi") // 5Gi memory
+
+				return allocatableCPU.Equal(expectedCPU) && allocatableMemory.Equal(expectedMemory)
+			}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue(), "Virtual node should have correct available resources")
+
+			ginkgo.By("Step 3: Delete ResourceLeasingPolicy and verify virtual node is removed")
+			// Delete the ResourceLeasingPolicy from physical cluster
+			gomega.Expect(k8sPhysical.Delete(ctx, policy)).To(gomega.Succeed())
+
+			// Wait for virtual node to be deleted
+			gomega.Eventually(func() bool {
+				var virtualNode corev1.Node
 				err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
-				return err == nil
-			}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+				return apierrors.IsNotFound(err)
+			}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue(), "Virtual node should be deleted when no ResourceLeasingPolicy matches")
 
-			ginkgo.By("Virtual node created")
-
-			// Verify available resources = total - used
-			// Expected: CPU: 4 - 1 - 0.5 = 2.5, Memory: 8Gi - 2Gi - 1Gi = 5Gi
-			expectedCPU := resource.MustParse("2500m")
-			expectedMemory := resource.MustParse("5Gi")
-
-			actualCPU := virtualNode.Status.Allocatable[corev1.ResourceCPU]
-			actualMemory := virtualNode.Status.Allocatable[corev1.ResourceMemory]
-
-			gomega.Expect(actualCPU.Cmp(expectedCPU)).To(gomega.Equal(0),
-				fmt.Sprintf("Expected CPU %s, got %s", expectedCPU.String(), actualCPU.String()))
-			gomega.Expect(actualMemory.Cmp(expectedMemory)).To(gomega.Equal(0),
-				fmt.Sprintf("Expected Memory %s, got %s", expectedMemory.String(), actualMemory.String()))
-
-			ginkgo.By("Available resources calculated correctly")
+			ginkgo.By("Virtual node successfully deleted after ResourceLeasingPolicy removal")
 
 			// Cleanup
 			syncerCancel()
@@ -414,7 +475,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			_ = k8sPhysical.Delete(ctx, pod2)
 			_ = k8sPhysical.Delete(ctx, physicalNode)
 			_ = k8sVirtual.Delete(ctx, clusterBinding)
-		}, ginkgo.SpecTimeout(60*time.Second))
+		}, ginkgo.SpecTimeout(120*time.Second))
 
 		ginkgo.It("should calculate available resources correctly with single ResourceLeasingPolicy and running pods", func(ctx context.Context) {
 			// Create ClusterBinding
@@ -465,7 +526,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					},
 				},
 			}
-			gomega.Expect(k8sVirtual.Create(ctx, policy)).To(gomega.Succeed())
+			gomega.Expect(k8sPhysical.Create(ctx, policy)).To(gomega.Succeed())
 
 			// Wait for ResourceLeasingPolicy to be indexed properly
 			time.Sleep(2 * time.Second)
@@ -625,7 +686,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					},
 				},
 			}
-			gomega.Expect(k8sVirtual.Create(ctx, policy1)).To(gomega.Succeed())
+			gomega.Expect(k8sPhysical.Create(ctx, policy1)).To(gomega.Succeed())
 
 			// Wait for ResourceLeasingPolicy to be indexed properly
 			time.Sleep(2 * time.Second)
@@ -670,7 +731,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					},
 				},
 			}
-			gomega.Expect(k8sVirtual.Create(ctx, policy2)).To(gomega.Succeed())
+			gomega.Expect(k8sPhysical.Create(ctx, policy2)).To(gomega.Succeed())
 
 			// Wait for second ResourceLeasingPolicy to be indexed properly
 			time.Sleep(2 * time.Second)
@@ -830,7 +891,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					},
 				},
 			}
-			gomega.Expect(k8sVirtual.Create(ctx, policy)).To(gomega.Succeed())
+			gomega.Expect(k8sPhysical.Create(ctx, policy)).To(gomega.Succeed())
 
 			// Wait for ResourceLeasingPolicy to be indexed properly
 			time.Sleep(2 * time.Second)
@@ -977,6 +1038,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				},
 			}
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+			// Create a matching ResourceLeasingPolicy
+			CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "resource-test-policy-"+uniqueID)
 
 			ginkgo.By("Starting KubeoceanSyncer")
 			syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
@@ -1197,7 +1261,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					},
 				},
 			}
-			gomega.Expect(k8sVirtual.Create(ctx, policy1)).To(gomega.Succeed())
+			gomega.Expect(k8sPhysical.Create(ctx, policy1)).To(gomega.Succeed())
 
 			// Second policy - less restrictive (4 CPU, 8Gi memory)
 			policy2 := &cloudv1beta1.ResourceLeasingPolicy{
@@ -1231,7 +1295,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					},
 				},
 			}
-			gomega.Expect(k8sVirtual.Create(ctx, policy2)).To(gomega.Succeed())
+			gomega.Expect(k8sPhysical.Create(ctx, policy2)).To(gomega.Succeed())
 			time.Sleep(1 * time.Second)
 
 			// Third policy - least restrictive (6 CPU, 12Gi memory)
@@ -1266,7 +1330,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					},
 				},
 			}
-			gomega.Expect(k8sVirtual.Create(ctx, policy3)).To(gomega.Succeed())
+			gomega.Expect(k8sPhysical.Create(ctx, policy3)).To(gomega.Succeed())
 
 			k8sVirtual.Get(ctx, types.NamespacedName{Name: policy1.Name}, policy1)
 			k8sVirtual.Get(ctx, types.NamespacedName{Name: policy2.Name}, policy2)
@@ -1324,7 +1388,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 
 			// Step 3: Delete the first policy
 			ginkgo.By("Deleting the first policy")
-			gomega.Expect(k8sVirtual.Delete(ctx, policy1)).To(gomega.Succeed())
+			gomega.Expect(k8sPhysical.Delete(ctx, policy1)).To(gomega.Succeed())
 
 			// Step 4: Verify virtual node resources are updated to match the second policy
 			ginkgo.By("Verifying virtual node resources are updated to match the second policy")
@@ -1434,6 +1498,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				},
 			}
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+			// Create a matching ResourceLeasingPolicy
+			CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "status-test-policy-"+uniqueID)
 
 			// Start syncer
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -1633,6 +1700,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			}
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
+			// Create a matching ResourceLeasingPolicy
+			CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterName, "pres-policy-"+uniqueID)
+
 			// Start syncer
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
 			defer syncerCancel()
@@ -1767,6 +1837,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			}
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
+			// Create a matching ResourceLeasingPolicy
+			CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "lease-test-policy-"+uniqueID)
+
 			// Start syncer
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
 			defer syncerCancel()
@@ -1886,6 +1959,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				},
 			}
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+			// Create a matching ResourceLeasingPolicy
+			CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterName, "notready-policy-"+uniqueID)
 
 			// Start syncer
 			syncerCtx, syncerCancel := context.WithCancel(ctx)
@@ -2051,6 +2127,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				}
 				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
+				// Create a matching ResourceLeasingPolicy
+				CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "deletion-test-policy")
+
 				// Wait for virtual node to be created
 				virtualNodeName := fmt.Sprintf("vnode-%s-%s", clusterBinding.Spec.ClusterID, physicalNodeName)
 				gomega.Eventually(func() error {
@@ -2136,6 +2215,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					},
 				}
 				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+				// Create a matching ResourceLeasingPolicy
+				CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "deletion-taint-test-policy")
 
 				// Wait for virtual node to be created
 				virtualNodeName := fmt.Sprintf("vnode-%s-%s", clusterBinding.Spec.ClusterID, physicalNodeName)
@@ -2277,6 +2359,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				}
 				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
+				// Create a matching ResourceLeasingPolicy first
+				CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "taint-management-test-policy")
+
 				// Start syncer
 				syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -2298,25 +2383,19 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					return err == nil && virtualNode.Status.Phase != corev1.NodePending
 				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
-				// Step 1: Create policy with time window outside current time, ForceReclaim=false
-				ginkgo.By("Create policy with time window outside current time, ForceReclaim=false")
-				policy := &cloudv1beta1.ResourceLeasingPolicy{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "taint-management-test-policy",
-					},
-					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
-						Cluster: clusterBinding.Name,
-						TimeWindows: []cloudv1beta1.TimeWindow{
-							{
-								Start: time.Now().Add(1 * time.Hour).Format("15:04"),
-								End:   time.Now().Add(2 * time.Hour).Format("15:04"),
-							},
-						},
-						ForceReclaim:                 false,
-						GracefulReclaimPeriodSeconds: 0,
+				// Step 1: Update policy with time window outside current time, ForceReclaim=false
+				ginkgo.By("Update policy with time window outside current time, ForceReclaim=false")
+				var policy cloudv1beta1.ResourceLeasingPolicy
+				gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: "taint-management-test-policy"}, &policy)).To(gomega.Succeed())
+				policy.Spec.TimeWindows = []cloudv1beta1.TimeWindow{
+					{
+						Start: time.Now().Add(1 * time.Hour).Format("15:04"),
+						End:   time.Now().Add(2 * time.Hour).Format("15:04"),
 					},
 				}
-				gomega.Expect(k8sVirtual.Create(ctx, policy)).To(gomega.Succeed())
+				policy.Spec.ForceReclaim = false
+				policy.Spec.GracefulReclaimPeriodSeconds = 0
+				gomega.Expect(k8sPhysical.Update(ctx, &policy)).To(gomega.Succeed())
 
 				// Step 2: Check node has taint with NoSchedule effect
 				ginkgo.By("Check node has taint with NoSchedule effect")
@@ -2357,11 +2436,11 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				// Step 4: Update policy to ForceReclaim=true, GracefulReclaimPeriodSeconds=5
 				ginkgo.By("Update policy to ForceReclaim=true, GracefulReclaimPeriodSeconds=5")
 				var currentPolicy cloudv1beta1.ResourceLeasingPolicy
-				gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: "taint-management-test-policy"}, &currentPolicy)).To(gomega.Succeed())
+				gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: "taint-management-test-policy"}, &currentPolicy)).To(gomega.Succeed())
 
 				currentPolicy.Spec.ForceReclaim = true
 				currentPolicy.Spec.GracefulReclaimPeriodSeconds = 5
-				gomega.Expect(k8sVirtual.Update(ctx, &currentPolicy)).To(gomega.Succeed())
+				gomega.Expect(k8sPhysical.Update(ctx, &currentPolicy)).To(gomega.Succeed())
 
 				// Step 5: Check taint effect immediately becomes NoExecute
 				ginkgo.By("Check taint effect immediately becomes NoExecute")
@@ -2403,10 +2482,10 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				startTime := fmt.Sprintf("%02d:00", currentHour)
 				endTime := fmt.Sprintf("%02d:59", currentHour)
 
-				gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: "taint-management-test-policy"}, &currentPolicy)).To(gomega.Succeed())
+				gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: "taint-management-test-policy"}, &currentPolicy)).To(gomega.Succeed())
 				currentPolicy.Spec.TimeWindows[0].Start = startTime
 				currentPolicy.Spec.TimeWindows[0].End = endTime
-				gomega.Expect(k8sVirtual.Update(ctx, &currentPolicy)).To(gomega.Succeed())
+				gomega.Expect(k8sPhysical.Update(ctx, &currentPolicy)).To(gomega.Succeed())
 
 				// Step 8: Check taint is removed
 				ginkgo.By("Check taint is removed")
@@ -2427,7 +2506,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 
 				// Clean up
 				syncer.Stop()
-				_ = k8sVirtual.Delete(ctx, policy)
+				_ = k8sPhysical.Delete(ctx, &currentPolicy)
 				_ = k8sPhysical.Delete(ctx, physicalNode)
 				_ = k8sVirtual.Delete(ctx, clusterBinding)
 				_ = k8sVirtual.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
@@ -2484,6 +2563,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				}
 				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
 
+				// Create a matching ResourceLeasingPolicy
+				initialPolicy := CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "taint-timeout-initial-policy")
+
 				// Start syncer
 				syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -2505,25 +2587,24 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					return err == nil && virtualNode.Status.Phase != corev1.NodePending
 				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
-				// Step 1: Create policy with time window outside current time, ForceReclaim=true, GracefulReclaimPeriodSeconds=5
-				ginkgo.By("Create policy with time window outside current time, ForceReclaim=true, GracefulReclaimPeriodSeconds=5")
-				policy := &cloudv1beta1.ResourceLeasingPolicy{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "taint-timeout-test-policy",
-					},
-					Spec: cloudv1beta1.ResourceLeasingPolicySpec{
-						Cluster: clusterBinding.Name,
-						TimeWindows: []cloudv1beta1.TimeWindow{
-							{
-								Start: time.Now().Add(1 * time.Hour).Format("15:04"),
-								End:   time.Now().Add(2 * time.Hour).Format("15:04"),
-							},
-						},
-						ForceReclaim:                 true,
-						GracefulReclaimPeriodSeconds: 5,
+				// Step 1: Update initial policy with time window outside current time, ForceReclaim=true, GracefulReclaimPeriodSeconds=5
+				ginkgo.By("Update initial policy with time window outside current time, ForceReclaim=true, GracefulReclaimPeriodSeconds=5")
+
+				// Get the current policy and update it
+				policy := &cloudv1beta1.ResourceLeasingPolicy{}
+				gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: initialPolicy.Name}, policy)).To(gomega.Succeed())
+
+				// Update the policy spec to have time windows outside current time
+				policy.Spec.TimeWindows = []cloudv1beta1.TimeWindow{
+					{
+						Start: time.Now().Add(1 * time.Hour).Format("15:04"),
+						End:   time.Now().Add(2 * time.Hour).Format("15:04"),
 					},
 				}
-				gomega.Expect(k8sVirtual.Create(ctx, policy)).To(gomega.Succeed())
+				policy.Spec.ForceReclaim = true
+				policy.Spec.GracefulReclaimPeriodSeconds = 5
+
+				gomega.Expect(k8sPhysical.Update(ctx, policy)).To(gomega.Succeed())
 
 				// Step 2: Check node has taint with NoExecute effect immediately (new behavior)
 				ginkgo.By("Check node has taint with NoExecute effect immediately")
@@ -2588,7 +2669,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 
 				// Clean up
 				syncer.Stop()
-				_ = k8sVirtual.Delete(ctx, policy)
+				_ = k8sPhysical.Delete(ctx, policy)
 				_ = k8sPhysical.Delete(ctx, physicalNode)
 				_ = k8sVirtual.Delete(ctx, clusterBinding)
 				_ = k8sVirtual.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
@@ -2642,7 +2723,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 						GracefulReclaimPeriodSeconds: 10,
 					},
 				}
-				gomega.Expect(k8sVirtual.Create(ctx, policy)).To(gomega.Succeed())
+				gomega.Expect(k8sPhysical.Create(ctx, policy)).To(gomega.Succeed())
 
 				// Start syncer
 				syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
@@ -2831,6 +2912,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				}
 				gomega.Expect(k8sVirtual.Create(ctx, clusterBinding)).To(gomega.Succeed())
 
+				// Create a matching ResourceLeasingPolicy
+				CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "csinode-test1-policy")
+
 				// Create and start KubeoceanSyncer
 				syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -3010,6 +3094,9 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					},
 				}
 				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+				// Create a matching ResourceLeasingPolicy
+				CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "csinode-test2-policy")
 
 				// Create and start KubeoceanSyncer
 				syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
