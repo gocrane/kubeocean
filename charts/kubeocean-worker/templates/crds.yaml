@@ -1,0 +1,6 @@
+{{- if .Values.crd.enabled }}
+{{- $files := .Files }}
+{{- range $path, $_ :=  .Files.Glob "crd/*.yaml" }}
+{{- $files.Get $path }}
+{{- end }}
+{{- end }}
