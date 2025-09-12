@@ -2783,6 +2783,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					Value:  "true",
 					Effect: corev1.TaintEffectNoSchedule,
 				})
+				virtualNode.Spec.Unschedulable = true
 				if virtualNode.Annotations == nil {
 					virtualNode.Annotations = make(map[string]string)
 				}
