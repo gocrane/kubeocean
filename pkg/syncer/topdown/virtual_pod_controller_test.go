@@ -521,9 +521,13 @@ func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 			},
 			physicalPod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "virtual-pod-" + fmt.Sprintf("%x", md5.Sum([]byte("virtual-ns/virtual-pod"))),
-					Namespace: "test-cluster",
-					UID:       "test-uid",
+					Name:              "virtual-pod-" + fmt.Sprintf("%x", md5.Sum([]byte("virtual-ns/virtual-pod"))),
+					Namespace:         "test-cluster",
+					UID:               "test-uid",
+					CreationTimestamp: metav1.Now(),
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "test-physical-node",
 				},
 			},
 			expectedResult: ctrl.Result{},

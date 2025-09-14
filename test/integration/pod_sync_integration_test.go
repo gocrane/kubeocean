@@ -27,8 +27,23 @@ const (
 	testMountNamespace  = "default"
 	// testClusterIDValue is the value used for cluster ID labels in tests
 	testClusterIDValue = "true"
+)
 
-	// Kubernetes service environment variable names
+// verifyPhysicalPodNodeAffinity verifies that the physical pod has the correct node affinity
+// to schedule to the specified physical node
+func verifyPhysicalPodNodeAffinity(physicalPod *corev1.Pod, physicalNodeName string) {
+	gomega.Expect(physicalPod.Spec.Affinity).NotTo(gomega.BeNil())
+	gomega.Expect(physicalPod.Spec.Affinity.NodeAffinity).NotTo(gomega.BeNil())
+	gomega.Expect(physicalPod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution).NotTo(gomega.BeNil())
+	gomega.Expect(physicalPod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms).To(gomega.HaveLen(1))
+	gomega.Expect(physicalPod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields).To(gomega.HaveLen(1))
+	gomega.Expect(physicalPod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Key).To(gomega.Equal("metadata.name"))
+	gomega.Expect(physicalPod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Operator).To(gomega.Equal(corev1.NodeSelectorOpIn))
+	gomega.Expect(physicalPod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Values).To(gomega.Equal([]string{physicalNodeName}))
+}
+
+// Kubernetes service environment variable names
+const (
 	kubernetesServiceHostConst = "KUBERNETES_SERVICE_HOST"
 	kubernetesServicePortConst = "KUBERNETES_SERVICE_PORT"
 	hostnameEnvVarConst        = "HOSTNAME"
@@ -96,7 +111,8 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			ginkgo.By("Verifying physical pod properties")
 			gomega.Expect(physicalPod).NotTo(gomega.BeNil())
-			gomega.Expect(physicalPod.Spec.NodeName).To(gomega.Equal(physicalNodeName))
+			// Verify node affinity instead of nodeName
+			verifyPhysicalPodNodeAffinity(physicalPod, physicalNodeName)
 			gomega.Expect(physicalPod.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 
 			// Verify bidirectional mapping annotations
@@ -658,7 +674,8 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			ginkgo.By("Verifying physical pod properties")
 			gomega.Expect(physicalPod).NotTo(gomega.BeNil())
-			gomega.Expect(physicalPod.Spec.NodeName).To(gomega.Equal(physicalNodeName))
+			// Verify node affinity instead of nodeName
+			verifyPhysicalPodNodeAffinity(physicalPod, physicalNodeName)
 			gomega.Expect(physicalPod.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 
 			// Verify bidirectional mapping annotations
@@ -1289,7 +1306,8 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			ginkgo.By("Verifying physical pod properties")
 			gomega.Expect(physicalPod).NotTo(gomega.BeNil())
-			gomega.Expect(physicalPod.Spec.NodeName).To(gomega.Equal(physicalNodeName))
+			// Verify node affinity instead of nodeName
+			verifyPhysicalPodNodeAffinity(physicalPod, physicalNodeName)
 			gomega.Expect(physicalPod.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 
 			// Verify bidirectional mapping annotations
@@ -1620,7 +1638,8 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 			ginkgo.By("Verifying physical pod properties")
 			gomega.Expect(physicalPod).NotTo(gomega.BeNil())
-			gomega.Expect(physicalPod.Spec.NodeName).To(gomega.Equal(physicalNodeName))
+			// Verify node affinity instead of nodeName
+			verifyPhysicalPodNodeAffinity(physicalPod, physicalNodeName)
 			gomega.Expect(physicalPod.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 
 			// Verify bidirectional mapping annotations

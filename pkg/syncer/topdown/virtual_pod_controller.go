@@ -40,6 +40,10 @@ const (
 	HostnameEnvVar = "HOSTNAME"
 )
 
+var (
+	PhysicalPodSchedulingTimeout = 5 * time.Minute
+)
+
 // VirtualPodReconciler reconciles Pod objects from virtual cluster
 // This implements requirement 5.1, 5.2, 5.4, 5.5 - Top-down Pod synchronization
 type VirtualPodReconciler struct {
@@ -126,7 +130,46 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.updateVirtualPodWithPhysicalUID(ctx, virtualPod, actualPhysicalUID)
 	}
 
-	// Physical pod exists and UID is already set, check if service account token needs updating
+	// Physical pod exists and UID is already set, check if physical pod is scheduled
+	if physicalPod.Spec.NodeName == "" {
+		// Physical pod is not scheduled yet, check if it has exceeded the scheduling timeout
+		if physicalPod.CreationTimestamp.IsZero() || time.Since(physicalPod.CreationTimestamp.Time) > PhysicalPodSchedulingTimeout {
+			logger.Info("Physical pod scheduling timeout exceeded, deleting physical pod and setting FailedSchedulingPod event",
+				"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+				"creationTime", physicalPod.CreationTimestamp.Time,
+				"timeout", PhysicalPodSchedulingTimeout)
+
+			// Delete the physical pod
+			err = r.PhysicalClient.Delete(ctx, physicalPod)
+			if err != nil && !apierrors.IsNotFound(err) {
+				logger.Error(err, "Failed to delete unscheduled physical pod")
+				return ctrl.Result{}, err
+			}
+
+			// Set FailedSchedulingPod event on virtual pod
+			if r.EventRecorder != nil {
+				r.EventRecorder.Event(virtualPod, corev1.EventTypeWarning, "FailedSchedulingPod",
+					fmt.Sprintf("Physical pod %s/%s failed to schedule within %v timeout",
+						physicalPod.Namespace, physicalPod.Name, PhysicalPodSchedulingTimeout))
+			}
+
+			return ctrl.Result{}, nil
+		}
+
+		// Physical pod is not scheduled but hasn't exceeded timeout, requeue with remaining time
+		var remainingTime time.Duration
+		if physicalPod.CreationTimestamp.IsZero() {
+			remainingTime = PhysicalPodSchedulingTimeout
+		} else {
+			remainingTime = PhysicalPodSchedulingTimeout - time.Since(physicalPod.CreationTimestamp.Time)
+		}
+		logger.V(1).Info("Physical pod not scheduled yet, requeuing with remaining time",
+			"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+			"remainingTime", remainingTime)
+		return ctrl.Result{RequeueAfter: remainingTime}, nil
+	}
+
+	// Physical pod is scheduled, check if service account token needs updating
 	if virtualPod.Spec.ServiceAccountName != "" {
 		// Check and update service account token, don't create if not exists
 		_, err = r.syncServiceAccountToken(ctx, virtualPod, false)
@@ -145,8 +188,9 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// No service account, no action needed
-	logger.V(1).Info("Physical pod exists, no action needed",
-		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+	logger.V(1).Info("Physical pod exists and is scheduled, no action needed",
+		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+		"nodeName", physicalPod.Spec.NodeName)
 	return ctrl.Result{}, nil
 }
 
@@ -599,14 +643,29 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	// Deep copy the spec to avoid modifying the original
 	spec := *virtualPod.Spec.DeepCopy()
 
-	// Set the physical node name for scheduling
-	spec.NodeName = physicalNodeName
+	// Set node affinity to force scheduling to the specific physical node
+	spec.Affinity = &corev1.Affinity{
+		NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchFields: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "metadata.name",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{physicalNodeName},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 
 	// cleanup service account related fields
 	spec.ServiceAccountName = ""
 	spec.DeprecatedServiceAccount = ""
-	// cleanup affinity
-	spec.Affinity = nil
+	spec.NodeName = ""
 
 	// Replace resource names in volumes
 	if err := r.replaceVolumeResourceNames(&spec, virtualPod, resourceMapping); err != nil {
