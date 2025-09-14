@@ -46,8 +46,8 @@ func TestResourceLeasingPolicy_IsWithinTimeWindows(t *testing.T) {
 				Spec: ResourceLeasingPolicySpec{
 					TimeWindows: []TimeWindow{
 						{
-							Start: "01:00",
-							End:   "02:00",
+							Start: time.Now().Add(1 * time.Hour).Format("15:04"),
+							End:   time.Now().Add(2 * time.Hour).Format("15:04"),
 						},
 					},
 				},
