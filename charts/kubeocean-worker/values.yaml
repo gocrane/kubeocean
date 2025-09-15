@@ -61,6 +61,11 @@ rbac:
     app.kubernetes.io/part-of: kubeocean
     kubeocean.io/component: syncer
 
+# CRD configuration
+crd:
+  # Enable CRD creation
+  enabled: true
+
 # Feature flags
 features:
   # Enable namespace creation

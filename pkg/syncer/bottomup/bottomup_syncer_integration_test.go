@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -109,7 +110,7 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 	// Create fake clients with Pod index for spec.nodeName
 	physicalClient := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(physicalNode).
+		WithObjects(physicalNode, policy). // Move policy to physicalClient
 		WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
 			pod := rawObj.(*corev1.Pod)
 			if pod.Spec.NodeName == "" {
@@ -117,7 +118,7 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 			}
 			return []string{pod.Spec.NodeName}
 		}).Build()
-	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(policy, clusterBinding).Build()
+	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(clusterBinding).Build()
 
 	// Create fake physical config
 	physicalConfig := &rest.Config{
@@ -177,9 +178,7 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 
 	t.Run("ResourceLeasingPolicyReconciler handles policy changes", func(t *testing.T) {
 		policyReconciler := &ResourceLeasingPolicyReconciler{
-			Client:         virtualClient,
-			VirtualClient:  virtualClient,
-			Scheme:         scheme,
+			Client:         physicalClient, // Use physicalClient now
 			ClusterBinding: clusterBinding,
 			Log:            ctrl.Log.WithName("test-resourceleasingpolicy-reconciler"),
 			// Provide mock functions for testing
@@ -228,25 +227,13 @@ func TestBottomUpSyncer_Integration(t *testing.T) {
 		// Process the non-matching node
 		result, err := nodeReconciler.processNode(ctx, nonMatchingNode)
 		require.NoError(t, err)
-		assert.True(t, result.RequeueAfter > 0, "Should requeue for periodic sync")
+		assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue after deletion")
 
-		// Verify virtual node is created with default resources
+		// Verify virtual node is deleted when no policy matches
 		virtualNodeName := nodeReconciler.generateVirtualNodeName(nonMatchingNode.Name)
 		virtualNode := &corev1.Node{}
 		err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
-		require.NoError(t, err, "Virtual node should exist when no policy matches (default)")
-
-		// Verify resources match allocatable (no policy restrictions)
-		expectedCPU := resource.MustParse("1800m")
-		expectedMemory := resource.MustParse("3Gi")
-
-		actualCPU := virtualNode.Status.Allocatable[corev1.ResourceCPU]
-		actualMemory := virtualNode.Status.Allocatable[corev1.ResourceMemory]
-
-		assert.True(t, expectedCPU.Equal(actualCPU),
-			"CPU should match allocatable: expected %s, got %s", expectedCPU.String(), actualCPU.String())
-		assert.True(t, expectedMemory.Equal(actualMemory),
-			"Memory should match allocatable: expected %s, got %s", expectedMemory.String(), actualMemory.String())
+		assert.True(t, errors.IsNotFound(err), "Virtual node should be deleted when no policy matches")
 	})
 }
 

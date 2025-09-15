@@ -1,11 +1,12 @@
 # Kubeocean Worker
 
-Kubeocean Worker 是一个 Helm chart，用于在物理 Kubernetes 集群上部署 Kubeocean Syncer 所需的 RBAC 资源。
+Kubeocean Worker 是一个 Helm chart，用于在物理 Kubernetes 集群上部署 Kubeocean Syncer 所需的 RBAC 资源和 CRD。
 
 ## 概述
 
 Kubeocean Worker chart 包含以下资源：
 
+- **CRD**: `ResourceLeasingPolicy` 自定义资源定义
 - **Namespace**: `kubeocean-system` 命名空间
 - **ServiceAccount**: `kubeocean-syncer` 服务账户
 - **ClusterRole**: 定义 Syncer 所需的集群级权限
@@ -114,6 +115,13 @@ permissions:
   # ... 其他资源类型权限
 ```
 
+## CRD 配置
+
+```yaml
+crd:
+  enabled: true  # 启用 CRD 创建
+```
+
 ## 功能开关
 
 ```yaml
@@ -150,6 +158,9 @@ kubectl delete namespace kubeocean-system
 ### 检查资源创建
 
 ```bash
+# 检查 CRD
+kubectl get crd resourceleasingpolicies.cloud.tencent.com
+
 # 检查命名空间
 kubectl get namespace kubeocean-system
 
@@ -200,4 +211,4 @@ kubectl get all -n kubeocean-system
 
 ## 版本历史
 
-- **0.1.0**: 初始版本，包含基本的 RBAC 资源
+- **0.1.0**: 初始版本，包含基本的 RBAC 资源和 ResourceLeasingPolicy CRD

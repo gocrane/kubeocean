@@ -28,12 +28,13 @@ Kubeocean 包含两个主要组件：
 
 1. 创建权限 `helm install kubeocean-worker charts/kubeocean-worker`
 2. 获取凭证 `bash hack/kubeconfig.sh kubeocean-syncer kubeocean-worker /tmp/kubeconfig.buz.1`
+3. 创建 ResourceLeasingPolicy `kubectl create -f examples/resourceleasingpolicy_sample.yaml`
 
 **在算力集群中：**
 
 1. 安装kubeocean组件 `helm install kubeocean charts/kubeocean`
 2. 设置凭证 `kubectl create secret generic -n kubeocean-system worker-cluster-kubeconfig --from-file=kubeconfig=/tmp/kubeconfig.buz.1`
-3. 创建ClusterBinding和ResourceLeasingPolicy `kubectl create -f examples/`
+3. 创建 ClusterBinding `kubectl create -f examples/clusterbinding_sample.yaml`
 
 ### 构建项目
 

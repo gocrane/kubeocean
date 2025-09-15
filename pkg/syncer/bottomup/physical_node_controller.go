@@ -24,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -124,6 +125,34 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 		return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
 	}
 
+	// Check virtual node UID and deletion timestamp before processing policies
+	if r.getClusterID() == "" {
+		return ctrl.Result{}, fmt.Errorf("clusterID is unknown, skipping virtual node checks")
+	}
+	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
+
+	// Check if virtual node exists and verify UID match
+	existingVirtualNode := &corev1.Node{}
+	err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, existingVirtualNode)
+	if err == nil {
+		// Virtual node exists, check if UID matches
+		if existingVirtualNode.Labels[cloudv1beta1.LabelPhysicalNodeUID] != string(physicalNode.UID) {
+			log.Info("Virtual node UID mismatch, triggering deletion",
+				"virtualNodeUID", existingVirtualNode.Labels[cloudv1beta1.LabelPhysicalNodeUID],
+				"physicalNodeUID", string(physicalNode.UID))
+			return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
+		}
+
+		// Check if virtual node has deletion timestamp
+		if existingVirtualNode.DeletionTimestamp != nil {
+			log.Info("Virtual node has deletion timestamp, calling handleNodeDeletion")
+			return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
+		}
+	} else if !errors.IsNotFound(err) {
+		log.Error(err, "Failed to get virtual node")
+		return ctrl.Result{}, err
+	}
+
 	// Find applicable ResourceLeasingPolicies by node selector
 	policies, err := r.getApplicablePolicies(ctx, physicalNode, clusterBinding.Spec.NodeSelector)
 	if err != nil {
@@ -131,37 +160,36 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 		return ctrl.Result{}, err
 	}
 
-	var policy *cloudv1beta1.ResourceLeasingPolicy
-	// If one or more policies match, use the earliest one
-	if len(policies) > 0 {
-		if len(policies) > 1 {
-			// Sort by creation time and use the earliest
-			sort.Slice(policies, func(i, j int) bool {
-				// Older (earlier creation) comes first
-				if policies[i].CreationTimestamp.Time.Equal(policies[j].CreationTimestamp.Time) {
-					return policies[i].Name < policies[j].Name
-				}
-				return policies[i].CreationTimestamp.Time.Before(policies[j].CreationTimestamp.Time)
-			})
-			var ignored []string
-			for idx := 1; idx < len(policies); idx++ {
-				ignored = append(ignored, policies[idx].Name)
-			}
-			policies = policies[:1]
-			log.Info("Multiple ResourceLeasingPolicies matched. Using the earliest one and ignoring others.",
-				"selected", policies[0].Name, "ignored", strings.Join(ignored, ","))
-		} else {
-			log.V(1).Info("Single ResourceLeasingPolicy matched", "selected", policies[0].Name)
-		}
-		// Use the first (earliest) policy
-		policy = &policies[0]
+	if len(policies) == 0 {
+		log.Info("No matching ResourceLeasingPolicy found; deleting virtual node")
+		return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
 	}
 
+	var policy *cloudv1beta1.ResourceLeasingPolicy
+	// If one or more policies match, use the earliest one
+	if len(policies) > 1 {
+		// Sort by creation time and use the earliest
+		sort.Slice(policies, func(i, j int) bool {
+			// Older (earlier creation) comes first
+			if policies[i].CreationTimestamp.Time.Equal(policies[j].CreationTimestamp.Time) {
+				return policies[i].Name < policies[j].Name
+			}
+			return policies[i].CreationTimestamp.Time.Before(policies[j].CreationTimestamp.Time)
+		})
+		var ignored []string
+		for idx := 1; idx < len(policies); idx++ {
+			ignored = append(ignored, policies[idx].Name)
+		}
+		policies = policies[:1]
+		log.Info("Multiple ResourceLeasingPolicies matched. Using the earliest one and ignoring others.",
+			"selected", policies[0].Name, "ignored", strings.Join(ignored, ","))
+	} else {
+		log.V(1).Info("Single ResourceLeasingPolicy matched", "selected", policies[0].Name)
+	}
+	// Use the first (earliest) policy
+	policy = &policies[0]
 	// Handle time window management for policy-managed nodes
 	var availableResources corev1.ResourceList
-	if policy == nil {
-		log.V(1).Info("No matching ResourceLeasingPolicy; using all remaining resources of physical node")
-	}
 
 	// Calculate available resources (with or without policy constraints)
 	availableResources, err = r.calculateAvailableResources(ctx, physicalNode, policy)
@@ -171,10 +199,7 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	}
 
 	// Create or update virtual node
-	if r.getClusterID() == "" {
-		return ctrl.Result{}, fmt.Errorf("clusterID is unknown, skipping create or update virtual node")
-	}
-	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
+
 	err = r.createOrUpdateVirtualNode(ctx, physicalNode, availableResources, policies, clusterBinding.Spec.DisableNodeDefaultTaint)
 	if err != nil {
 		log.Error(err, "Failed to create or update virtual node")
@@ -184,8 +209,8 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	// Start lease controller for the virtual node
 	r.startLeaseController(virtualNodeName)
 
-	// Handle out-of-time-windows pod deletion if policy exists and node is outside time windows
-	if policy != nil && !r.isWithinTimeWindows(policy) {
+	// Handle out-of-time-windows pod deletion if node is outside time windows
+	if !r.isWithinTimeWindows(policy) {
 		log.V(1).Info("Handling out-of-time-windows pod deletion")
 		result, err := r.handleOutOfTimeWindows(ctx, physicalNode.Name, policy)
 		if err != nil {
@@ -208,36 +233,50 @@ func (r *PhysicalNodeReconciler) addDeletionTaint(ctx context.Context, virtualNo
 	logger := r.Log.WithValues("virtualNode", virtualNode.Name)
 
 	// Check if deletion taint already exists
+	taintExists := false
 	for _, taint := range virtualNode.Spec.Taints {
 		if taint.Key == TaintKeyVirtualNodeDeleting {
-			logger.V(1).Info("Deletion taint already exists")
-			return virtualNode, nil
+			taintExists = true
+			break
 		}
 	}
 
-	// Add deletion taint
-	deletionTaint := corev1.Taint{
-		Key:    TaintKeyVirtualNodeDeleting,
-		Value:  "true",
-		Effect: corev1.TaintEffectNoSchedule,
+	// If both taint exists and node is already unschedulable, no action needed
+	if taintExists && virtualNode.Spec.Unschedulable {
+		logger.V(1).Info("Deletion taint and unschedulable flag already set")
+		return virtualNode, nil
 	}
 
-	virtualNode.Spec.Taints = append(virtualNode.Spec.Taints, deletionTaint)
+	// Create a deep copy to avoid modifying the original object
+	updatedNode := virtualNode.DeepCopy()
+
+	// Add deletion taint if it doesn't exist
+	if !taintExists {
+		deletionTaint := corev1.Taint{
+			Key:    TaintKeyVirtualNodeDeleting,
+			Value:  "true",
+			Effect: corev1.TaintEffectNoSchedule,
+		}
+		updatedNode.Spec.Taints = append(updatedNode.Spec.Taints, deletionTaint)
+	}
+
+	// Always ensure the node is marked as unschedulable
+	updatedNode.Spec.Unschedulable = true
 
 	// Add annotation with taint addition time
-	if virtualNode.Annotations == nil {
-		virtualNode.Annotations = make(map[string]string)
+	if updatedNode.Annotations == nil {
+		updatedNode.Annotations = make(map[string]string)
 	}
-	virtualNode.Annotations[AnnotationDeletionTaintTime] = time.Now().Format(time.RFC3339)
+	updatedNode.Annotations[AnnotationDeletionTaintTime] = time.Now().Format(time.RFC3339)
 
 	// Update the node
-	if err := r.VirtualClient.Update(ctx, virtualNode); err != nil {
+	if err := r.VirtualClient.Update(ctx, updatedNode); err != nil {
 		return nil, fmt.Errorf("failed to add deletion taint: %w", err)
 	}
 
 	logger.Info("Added deletion taint to virtual node")
 
-	return virtualNode, nil
+	return updatedNode, nil
 }
 
 // hasDeletionTaint checks if a virtual node has the deletion taint
@@ -424,6 +463,23 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 		logger.Info("Deletion taint added, continuing with deletion process")
 	}
 
+	// Step 1.5: Check if virtual node deletion timestamp is empty
+	if virtualNode.DeletionTimestamp == nil {
+		logger.Info("Virtual node deletion timestamp is empty, calling Delete to trigger deletion")
+		deleteOptions := &client.DeleteOptions{
+			Preconditions: &metav1.Preconditions{
+				UID: &virtualNode.UID,
+			},
+		}
+		err = r.VirtualClient.Delete(ctx, virtualNode, deleteOptions)
+		if err != nil && !errors.IsNotFound(err) {
+			logger.Error(err, "Failed to delete virtual node")
+			return ctrl.Result{}, err
+		}
+		logger.Info("Successfully triggered virtual node deletion")
+		return ctrl.Result{}, nil
+	}
+
 	// Step 2: Handle ForceReclaim based on input parameters
 	logger.Info("Processing deletion", "forceReclaim", forceReclaim, "gracefulPeriod", gracefulReclaimPeriodSeconds)
 
@@ -478,33 +534,31 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	// Step 4: All conditions met, proceed with virtual node deletion
-	logger.Info("No active pods found, proceeding with virtual node deletion")
+	// Step 4: All conditions met, proceed with finalizer removal
+	logger.Info("No active pods found, proceeding with finalizer removal")
 
 	// Stop lease controller for the virtual node
 	r.stopLeaseController(virtualNodeName)
 
-	// Delete virtual node
-	logger.Info("Deleting virtual node", "virtualNode", virtualNodeName)
-	deleteOptions := &client.DeleteOptions{
-		Preconditions: &metav1.Preconditions{
-			UID: &virtualNode.UID,
-		},
-	}
-	err = r.VirtualClient.Delete(ctx, virtualNode, deleteOptions)
+	// Remove finalizer to allow virtual node deletion
+	logger.Info("Removing finalizer from virtual node", "virtualNode", virtualNodeName)
+	updatedVirtualNode := virtualNode.DeepCopy()
+	controllerutil.RemoveFinalizer(updatedVirtualNode, cloudv1beta1.VirtualNodeFinalizer)
+
+	err = r.VirtualClient.Update(ctx, updatedVirtualNode)
 	if err != nil && !errors.IsNotFound(err) {
-		logger.Error(err, "Failed to delete virtual node")
+		logger.Error(err, "Failed to remove finalizer from virtual node")
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully deleted virtual node", "virtualNode", virtualNodeName)
+	logger.Info("Successfully removed finalizer from virtual node", "virtualNode", virtualNodeName)
 	return ctrl.Result{}, nil
 }
 
 // getApplicablePolicies gets ResourceLeasingPolicies that apply to the given node
 func (r *PhysicalNodeReconciler) getApplicablePolicies(ctx context.Context, node *corev1.Node, clusterSelector *corev1.NodeSelector) ([]cloudv1beta1.ResourceLeasingPolicy, error) {
 	var policyList cloudv1beta1.ResourceLeasingPolicyList
-	if err := r.VirtualClient.List(ctx, &policyList); err != nil {
+	if err := r.PhysicalClient.List(ctx, &policyList); err != nil {
 		return nil, fmt.Errorf("failed to list ResourceLeasingPolicies: %w", err)
 	}
 
@@ -906,6 +960,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 			Name:        virtualNodeName,
 			Labels:      r.buildVirtualNodeLabels(virtualNodeName, physicalNode),
 			Annotations: r.buildVirtualNodeAnnotations(physicalNode, policies),
+			Finalizers:  []string{cloudv1beta1.VirtualNodeFinalizer},
 		},
 		Spec: corev1.NodeSpec{
 			// Transform taints including out-of-time-windows taint based on policy
@@ -960,6 +1015,11 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		newNode.Spec.Taints = virtualNode.Spec.Taints
 		newNode.Labels = virtualNode.Labels
 		newNode.Annotations = virtualNode.Annotations
+
+		// Ensure finalizer exists
+		if !controllerutil.ContainsFinalizer(newNode, cloudv1beta1.VirtualNodeFinalizer) {
+			controllerutil.AddFinalizer(newNode, cloudv1beta1.VirtualNodeFinalizer)
+		}
 
 		if !reflect.DeepEqual(existingNode, newNode) {
 			logger.V(1).Info("Updating virtual node",
@@ -1239,6 +1299,7 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physica
 	labels[cloudv1beta1.LabelClusterBinding] = r.ClusterBindingName
 	labels[cloudv1beta1.LabelPhysicalClusterID] = r.getClusterID()
 	labels[cloudv1beta1.LabelPhysicalNodeName] = physicalNode.Name
+	labels[cloudv1beta1.LabelPhysicalNodeUID] = string(physicalNode.UID)
 	labels[cloudv1beta1.LabelManagedBy] = "kubeocean"
 	labels[LabelVirtualNodeType] = VirtualNodeTypeValue
 	labels[NodeInstanceTypeLabel] = NodeInstanceTypeVNode
@@ -1515,6 +1576,20 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 			node := obj.(*corev1.Node)
 			if node != nil {
 				r.handleVirtualNodeEvent(node, "add")
+			}
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldNode := oldObj.(*corev1.Node)
+			newNode := newObj.(*corev1.Node)
+			if oldNode != nil && newNode != nil {
+				// Check if deletion timestamp changed from empty to non-empty
+				oldDeletionTimestamp := oldNode.DeletionTimestamp
+				newDeletionTimestamp := newNode.DeletionTimestamp
+
+				if oldDeletionTimestamp == nil && newDeletionTimestamp != nil {
+					// Virtual node deletion timestamp was set, trigger physical node reconciliation
+					r.handleVirtualNodeEvent(newNode, "update")
+				}
 			}
 		},
 	})

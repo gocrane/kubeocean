@@ -232,7 +232,8 @@ func (r *PhysicalPodReconciler) buildSyncPod(physicalPod, virtualPod *corev1.Pod
 	// Copy annotations from physical pod (excluding Kubeocean internal ones)
 	for k, v := range physicalPod.Annotations {
 		if k != cloudv1beta1.AnnotationVirtualPodNamespace && k != cloudv1beta1.AnnotationVirtualPodName && k != cloudv1beta1.AnnotationVirtualPodUID &&
-			k != cloudv1beta1.AnnotationPhysicalPodNamespace && k != cloudv1beta1.AnnotationPhysicalPodName && k != cloudv1beta1.AnnotationPhysicalPodUID {
+			k != cloudv1beta1.AnnotationPhysicalPodNamespace && k != cloudv1beta1.AnnotationPhysicalPodName && k != cloudv1beta1.AnnotationPhysicalPodUID &&
+			k != cloudv1beta1.AnnotationVirtualNodeName {
 			syncPod.Annotations[k] = v
 		}
 	}

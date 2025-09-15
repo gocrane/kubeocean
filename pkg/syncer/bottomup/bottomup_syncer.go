@@ -177,9 +177,7 @@ func (bus *BottomUpSyncer) setupControllers() error {
 
 	// Setup ResourceLeasingPolicy Controller
 	policyReconciler := &ResourceLeasingPolicyReconciler{
-		Client:         bus.virtualManager.GetClient(),
-		VirtualClient:  bus.virtualManager.GetClient(),
-		Scheme:         bus.Scheme,
+		Client:         bus.physicalManager.GetClient(),
 		ClusterBinding: bus.ClusterBinding,
 		Log:            bus.Log.WithName("resource-leasing-policy-controller"),
 		// Provide functions for triggering node re-evaluation
@@ -187,7 +185,7 @@ func (bus *BottomUpSyncer) setupControllers() error {
 		RequeueNodes:             bus.RequeueNodes,
 	}
 
-	if err := policyReconciler.SetupWithManager(bus.virtualManager); err != nil {
+	if err := policyReconciler.SetupWithManager(bus.physicalManager); err != nil {
 		return fmt.Errorf("failed to setup resource leasing policy controller: %w", err)
 	}
 

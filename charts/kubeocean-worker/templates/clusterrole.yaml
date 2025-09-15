@@ -28,4 +28,13 @@ rules:
 - apiGroups: ["storage.k8s.io"]
   resources: ["csinodes"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["cloud.tencent.com"]
+  resources: ["resourceleasingpolicies"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["cloud.tencent.com"]
+  resources: ["resourceleasingpolicies/finalizers"]
+  verbs: ["update"]
+- apiGroups: ["cloud.tencent.com"]
+  resources: ["resourceleasingpolicies/status"]
+  verbs: ["get", "patch", "update"]
 {{- end }}

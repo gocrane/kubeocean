@@ -12,6 +12,7 @@ const (
 	AnnotationPhysicalPodNamespace = "kubeocean.io/physical-pod-namespace"
 	AnnotationPhysicalPodName      = "kubeocean.io/physical-pod-name"
 	AnnotationPhysicalPodUID       = "kubeocean.io/physical-pod-uid"
+	AnnotationVirtualNodeName      = "kubeocean.io/virtual-node-name"
 
 	// Sync annotations
 	AnnotationLastSyncTime     = "kubeocean.io/last-sync-time"
@@ -20,6 +21,7 @@ const (
 
 	// Finalizers
 	VirtualPodFinalizer     = "kubeocean.io/virtual-pod"
+	VirtualNodeFinalizer    = "kubeocean.io/vnode"
 	PolicyFinalizerName     = "policy.kubeocean.io/finalizer"
 	SyncedResourceFinalizer = "kubeocean.io/synced-resource"
 
@@ -32,6 +34,7 @@ const (
 	LabelClusterBinding    = "kubeocean.io/cluster-binding"
 	LabelPhysicalClusterID = "kubeocean.io/physical-cluster-id"
 	LabelPhysicalNodeName  = "kubeocean.io/physical-node-name"
+	LabelPhysicalNodeUID   = "kubeocean.io/physical-node-uid"
 	LabelValueTrue         = "true"
 
 	// Resource mapping labels

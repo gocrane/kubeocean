@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,8 +32,6 @@ const (
 // ResourceLeasingPolicyReconciler reconciles ResourceLeasingPolicy objects
 type ResourceLeasingPolicyReconciler struct {
 	Client         client.Client
-	VirtualClient  client.Client
-	Scheme         *runtime.Scheme
 	ClusterBinding *cloudv1beta1.ClusterBinding
 	Log            logr.Logger
 	// Functions for triggering node re-evaluation, provided by BottomUpSyncer

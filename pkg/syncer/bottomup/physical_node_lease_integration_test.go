@@ -355,6 +355,29 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 		},
 	}
 
+	// Create a matching ResourceLeasingPolicy
+	matchingPolicy := &cloudv1beta1.ResourceLeasingPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-policy",
+		},
+		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+			Cluster: "test-binding",
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "kubernetes.io/os",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"linux"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
 	// Create physical node reconciler
 	reconciler := &PhysicalNodeReconciler{
 		PhysicalClient:     physicalClient,
@@ -371,6 +394,11 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 	err := physicalClient.Create(ctx, physicalNode)
 	if err != nil {
 		t.Fatalf("Failed to create physical node: %v", err)
+	}
+
+	err = physicalClient.Create(ctx, matchingPolicy)
+	if err != nil {
+		t.Fatalf("Failed to create matching policy: %v", err)
 	}
 
 	err = virtualClient.Create(ctx, clusterBinding)
@@ -419,7 +447,8 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 		// First, ensure virtual node exists
 		virtualNode := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: virtualNodeName,
+				Name:       virtualNodeName,
+				Finalizers: []string{cloudv1beta1.VirtualNodeFinalizer},
 			},
 		}
 		err := virtualClient.Create(ctx, virtualNode)
@@ -427,11 +456,26 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 			t.Fatalf("Failed to create virtual node: %v", err)
 		}
 
-		// Handle node deletion (should stop lease controller and delete virtual node)
+		// First call to handleNodeDeletion (should trigger deletion)
 		// Physical node deleted, force reclaim immediately
 		_, err = reconciler.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 		if err != nil {
-			t.Fatalf("Failed to handle node deletion: %v", err)
+			t.Fatalf("Failed to handle node deletion (first call): %v", err)
+		}
+
+		// Verify virtual node has deletion timestamp set after first call
+		err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
+		if err != nil {
+			t.Fatalf("Expected virtual node to exist after first deletion call, got error: %v", err)
+		}
+		if virtualNode.DeletionTimestamp == nil {
+			t.Error("Expected virtual node to have deletion timestamp set after first deletion call")
+		}
+
+		// Second call to handleNodeDeletion (should complete deletion and remove finalizer)
+		_, err = reconciler.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
+		if err != nil {
+			t.Fatalf("Failed to handle node deletion (second call): %v", err)
 		}
 
 		// Verify lease controller was stopped
@@ -444,6 +488,8 @@ func TestPhysicalNodeReconciler_ProcessNodeWithLeaseController(t *testing.T) {
 		err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
 		if err == nil {
 			t.Error("Expected virtual node to be deleted")
+		} else if !apierrors.IsNotFound(err) {
+			t.Errorf("Expected NotFound error, got: %v", err)
 		}
 	})
 }

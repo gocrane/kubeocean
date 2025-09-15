@@ -36,6 +36,12 @@ const (
 	// Kubernetes service environment variable names
 	KubernetesServiceHost = "KUBERNETES_SERVICE_HOST"
 	KubernetesServicePort = "KUBERNETES_SERVICE_PORT"
+	// Hostname environment variable name
+	HostnameEnvVar = "HOSTNAME"
+)
+
+var (
+	PhysicalPodSchedulingTimeout = 5 * time.Minute
 )
 
 // VirtualPodReconciler reconciles Pod objects from virtual cluster
@@ -124,7 +130,46 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.updateVirtualPodWithPhysicalUID(ctx, virtualPod, actualPhysicalUID)
 	}
 
-	// Physical pod exists and UID is already set, check if service account token needs updating
+	// Physical pod exists and UID is already set, check if physical pod is scheduled
+	if physicalPod.Spec.NodeName == "" {
+		// Physical pod is not scheduled yet, check if it has exceeded the scheduling timeout
+		if physicalPod.CreationTimestamp.IsZero() || time.Since(physicalPod.CreationTimestamp.Time) > PhysicalPodSchedulingTimeout {
+			logger.Info("Physical pod scheduling timeout exceeded, deleting physical pod and setting FailedSchedulingPod event",
+				"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+				"creationTime", physicalPod.CreationTimestamp.Time,
+				"timeout", PhysicalPodSchedulingTimeout)
+
+			// Delete the physical pod
+			err = r.PhysicalClient.Delete(ctx, physicalPod)
+			if err != nil && !apierrors.IsNotFound(err) {
+				logger.Error(err, "Failed to delete unscheduled physical pod")
+				return ctrl.Result{}, err
+			}
+
+			// Set FailedSchedulingPod event on virtual pod
+			if r.EventRecorder != nil {
+				r.EventRecorder.Event(virtualPod, corev1.EventTypeWarning, "FailedSchedulingPod",
+					fmt.Sprintf("Physical pod %s/%s failed to schedule within %v timeout",
+						physicalPod.Namespace, physicalPod.Name, PhysicalPodSchedulingTimeout))
+			}
+
+			return ctrl.Result{}, nil
+		}
+
+		// Physical pod is not scheduled but hasn't exceeded timeout, requeue with remaining time
+		var remainingTime time.Duration
+		if physicalPod.CreationTimestamp.IsZero() {
+			remainingTime = PhysicalPodSchedulingTimeout
+		} else {
+			remainingTime = PhysicalPodSchedulingTimeout - time.Since(physicalPod.CreationTimestamp.Time)
+		}
+		logger.V(1).Info("Physical pod not scheduled yet, requeuing with remaining time",
+			"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+			"remainingTime", remainingTime)
+		return ctrl.Result{RequeueAfter: remainingTime}, nil
+	}
+
+	// Physical pod is scheduled, check if service account token needs updating
 	if virtualPod.Spec.ServiceAccountName != "" {
 		// Check and update service account token, don't create if not exists
 		_, err = r.syncServiceAccountToken(ctx, virtualPod, false)
@@ -143,8 +188,9 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// No service account, no action needed
-	logger.V(1).Info("Physical pod exists, no action needed",
-		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+	logger.V(1).Info("Physical pod exists and is scheduled, no action needed",
+		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+		"nodeName", physicalPod.Spec.NodeName)
 	return ctrl.Result{}, nil
 }
 
@@ -536,6 +582,9 @@ func (r *VirtualPodReconciler) buildPhysicalPodAnnotations(virtualPod *corev1.Po
 	annotations[cloudv1beta1.AnnotationVirtualPodName] = virtualPod.Name
 	annotations[cloudv1beta1.AnnotationVirtualPodUID] = string(virtualPod.UID)
 
+	// Add virtual node name annotation
+	annotations[cloudv1beta1.AnnotationVirtualNodeName] = virtualPod.Spec.NodeName
+
 	return annotations
 }
 
@@ -543,9 +592,10 @@ const (
 	// Field path constants for DownwardAPI
 	metadataNamespaceFieldPath = "metadata.namespace"
 	metadataNameFieldPath      = "metadata.name"
+	specNodeNameFieldPath      = "spec.nodeName"
 )
 
-// replaceDownwardAPIFieldPaths replaces metadata.namespace and metadata.name fieldPath
+// replaceDownwardAPIFieldPaths replaces metadata.namespace, metadata.name and spec.nodeName fieldPath
 // with annotation references in DownwardAPI items
 func (r *VirtualPodReconciler) replaceDownwardAPIFieldPaths(items []corev1.DownwardAPIVolumeFile) {
 	for i := range items {
@@ -559,11 +609,15 @@ func (r *VirtualPodReconciler) replaceDownwardAPIFieldPaths(items []corev1.Downw
 			if item.FieldRef.FieldPath == metadataNameFieldPath {
 				item.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
 			}
+			// Replace spec.nodeName fieldPath with kubeocean.io/virtual-node-name annotation
+			if item.FieldRef.FieldPath == specNodeNameFieldPath {
+				item.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName)
+			}
 		}
 	}
 }
 
-// replaceContainerDownwardAPIFieldPaths replaces metadata.namespace and metadata.name fieldPath
+// replaceContainerDownwardAPIFieldPaths replaces metadata.namespace, metadata.name and spec.nodeName fieldPath
 // with annotation references in container environment variables
 func (r *VirtualPodReconciler) replaceContainerDownwardAPIFieldPaths(envVars []corev1.EnvVar) {
 	for i := range envVars {
@@ -577,6 +631,10 @@ func (r *VirtualPodReconciler) replaceContainerDownwardAPIFieldPaths(envVars []c
 			if envVar.ValueFrom.FieldRef.FieldPath == metadataNameFieldPath {
 				envVar.ValueFrom.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualPodName)
 			}
+			// Replace spec.nodeName fieldPath with kubeocean.io/virtual-node-name annotation
+			if envVar.ValueFrom.FieldRef.FieldPath == specNodeNameFieldPath {
+				envVar.ValueFrom.FieldRef.FieldPath = fmt.Sprintf("metadata.annotations['%s']", cloudv1beta1.AnnotationVirtualNodeName)
+			}
 		}
 	}
 }
@@ -585,14 +643,29 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	// Deep copy the spec to avoid modifying the original
 	spec := *virtualPod.Spec.DeepCopy()
 
-	// Set the physical node name for scheduling
-	spec.NodeName = physicalNodeName
+	// Set node affinity to force scheduling to the specific physical node
+	spec.Affinity = &corev1.Affinity{
+		NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchFields: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "metadata.name",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{physicalNodeName},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 
 	// cleanup service account related fields
 	spec.ServiceAccountName = ""
 	spec.DeprecatedServiceAccount = ""
-	// cleanup affinity
-	spec.Affinity = nil
+	spec.NodeName = ""
 
 	// Replace resource names in volumes
 	if err := r.replaceVolumeResourceNames(&spec, virtualPod, resourceMapping); err != nil {
@@ -610,7 +683,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	}
 
 	// Add hostAliases and inject environment variables
-	if err := r.addHostAliasesAndEnvVars(ctx, &spec); err != nil {
+	if err := r.addHostAliasesAndEnvVars(ctx, &spec, virtualPod.Name); err != nil {
 		return spec, err
 	}
 
@@ -754,7 +827,7 @@ func (r *VirtualPodReconciler) replaceImagePullSecretNames(spec *corev1.PodSpec,
 }
 
 // addHostAliasesAndEnvVars adds hostAliases and injects environment variables
-func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spec *corev1.PodSpec) error {
+func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spec *corev1.PodSpec, virtualPodName string) error {
 	// Add hostAliases for kubernetes.default.svc and get IP/port for environment variables
 	kubernetesIntranetIP, kubernetesIntranetPort, err := r.getKubernetesIntranetIPAndPort(ctx)
 	if err != nil {
@@ -771,12 +844,16 @@ func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spe
 	for i := range spec.Containers {
 		container := &spec.Containers[i]
 		r.injectKubernetesServiceEnvVars(container, kubernetesIntranetIP, kubernetesIntranetPort)
+		// Inject HOSTNAME environment variable with virtual pod name
+		r.injectHostnameEnvVar(container, virtualPodName)
 	}
 
 	// Inject KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables to all init containers
 	for i := range spec.InitContainers {
 		container := &spec.InitContainers[i]
 		r.injectKubernetesServiceEnvVars(container, kubernetesIntranetIP, kubernetesIntranetPort)
+		// Inject HOSTNAME environment variable with virtual pod name
+		r.injectHostnameEnvVar(container, virtualPodName)
 	}
 	return nil
 }
@@ -1942,6 +2019,31 @@ func (r *VirtualPodReconciler) injectKubernetesServiceEnvVars(container *corev1.
 		container.Env = append(container.Env, corev1.EnvVar{
 			Name:  KubernetesServicePort,
 			Value: port,
+		})
+	}
+}
+
+// injectHostnameEnvVar injects HOSTNAME environment variable into the container's environment variables,
+// setting the value to the virtual pod name, overriding any existing values
+func (r *VirtualPodReconciler) injectHostnameEnvVar(container *corev1.Container, virtualPodName string) {
+	// Track if we found and updated existing HOSTNAME environment variable
+	hostnameFound := false
+
+	// First pass: update existing HOSTNAME environment variable if it exists
+	for i := range container.Env {
+		if container.Env[i].Name == HostnameEnvVar {
+			container.Env[i].Value = virtualPodName
+			container.Env[i].ValueFrom = nil // Clear ValueFrom if it exists
+			hostnameFound = true
+			break
+		}
+	}
+
+	// Second pass: append missing HOSTNAME environment variable
+	if !hostnameFound {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  HostnameEnvVar,
+			Value: virtualPodName,
 		})
 	}
 }
