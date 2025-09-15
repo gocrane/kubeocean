@@ -31,6 +31,7 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/metrics"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/proxier"
 )
 
 const (
@@ -42,6 +43,7 @@ const (
 
 	// Default names
 	DefaultSyncerName = "kubeocean-syncer"
+	DefaultProxierName = "kubeocean-proxier"
 )
 
 // SyncerTemplateData holds the data for rendering Syncer templates
@@ -52,6 +54,21 @@ type SyncerTemplateData struct {
 	ClusterRoleName        string
 	ClusterRoleBindingName string
 	SyncerNamespace        string
+}
+
+// ProxierTemplateData holds the data for rendering Proxier templates
+type ProxierTemplateData struct {
+	ClusterBindingName     string
+	DeploymentName         string
+	ServiceAccountName     string
+	ServiceName            string
+	ClusterRoleName        string
+	ClusterRoleBindingName string
+	ProxierNamespace       string
+	// TLS configuration from ClusterBinding annotations
+	TLSEnabled         bool
+	TLSSecretName      string
+	TLSSecretNamespace string
 }
 
 // ResourceCleanupStatus tracks the cleanup status of different resource types
@@ -73,8 +90,11 @@ type ClusterBindingReconciler struct {
 //+kubebuilder:rbac:groups=cloud.tencent.com,resources=clusterbindings,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=cloud.tencent.com,resources=clusterbindings/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=cloud.tencent.com,resources=clusterbindings/finalizers,verbs=update
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//+kubebuilder:rbac:groups=certificates.k8s.io,resources=certificatesigningrequests,verbs=create;get;list;watch;update;delete
+//+kubebuilder:rbac:groups=certificates.k8s.io,resources=certificatesigningrequests/approval,verbs=update
+//+kubebuilder:rbac:groups=certificates.k8s.io,resources=signers,resourceNames=kubernetes.io/legacy-unknown,verbs=approve
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
@@ -195,6 +215,23 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		r.updateCondition(clusterBinding, "SyncerReady", metav1.ConditionTrue, "SyncerCreated", "Kubeocean Syncer created successfully")
 	}
 
+	// Create or update Kubeocean Proxier
+	if err := r.reconcileKubeoceanProxier(ctx, clusterBinding); err != nil {
+		log.Error(err, "Failed to reconcile Kubeocean Proxier")
+		r.Recorder.Event(clusterBinding, corev1.EventTypeWarning, "ProxierFailed", fmt.Sprintf("Failed to reconcile Kubeocean Proxier: %v", err))
+
+		// Update status to Failed for other errors
+		clusterBinding.Status.Phase = PhaseFailed
+		r.updateCondition(clusterBinding, "Ready", metav1.ConditionFalse, "ProxierFailed", err.Error())
+		if updateErr := r.Status().Update(ctx, clusterBinding); updateErr != nil {
+			log.Error(updateErr, "unable to update ClusterBinding status after proxier failure")
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	} else {
+		r.updateCondition(clusterBinding, "ProxierReady", metav1.ConditionTrue, "ProxierCreated", "Kubeocean Proxier created successfully")
+	}
+
 	// Mark as Ready if validation and syncer creation passes
 	if clusterBinding.Status.Phase != "Ready" {
 		clusterBinding.Status.Phase = "Ready"
@@ -202,6 +239,7 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		r.updateCondition(clusterBinding, "Ready", metav1.ConditionTrue, "ValidationPassed", "ClusterBinding validation and connectivity check passed")
 		r.updateCondition(clusterBinding, "Connected", metav1.ConditionTrue, "ConnectivityPassed", "Successfully connected to target cluster")
 		r.updateCondition(clusterBinding, "SyncerReady", metav1.ConditionTrue, "SyncerCreated", "Kubeocean Syncer created successfully")
+		r.updateCondition(clusterBinding, "ProxierReady", metav1.ConditionTrue, "ProxierCreated", "Kubeocean Proxier created successfully")
 		if err := r.Status().Update(ctx, clusterBinding); err != nil {
 			log.Error(err, "unable to update ClusterBinding status to Ready")
 			return ctrl.Result{}, err
@@ -594,6 +632,15 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 	log.Info("Syncer Deployment cleaned up successfully, RBAC resources preserved", "status", cleanupStatus)
 	r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "Cleanup", "Syncer Deployment cleaned up successfully, RBAC resources preserved")
 
+
+	// Cleanup auto-managed certificates
+	if err := r.cleanupAutoManagedCertificates(ctx, originalClusterBinding); err != nil {
+		log.Error(err, "Failed to cleanup auto-managed certificates")
+		r.Recorder.Event(originalClusterBinding, corev1.EventTypeWarning, "CertificateCleanupFailed", fmt.Sprintf("Failed to cleanup certificates: %v", err))
+		// Continue with deletion even if certificate cleanup fails - this is not critical
+		// as orphaned certificates will eventually expire
+	}
+
 	// Create a deep copy for modification
 	clusterBinding := originalClusterBinding.DeepCopy()
 
@@ -786,6 +833,159 @@ func (r *ClusterBindingReconciler) removeFinalizer(clusterBinding *cloudv1beta1.
 	clusterBinding.Finalizers = finalizers
 }
 
+// reconcileKubeoceanProxier creates or updates the Kubeocean Proxier for the ClusterBinding
+func (r *ClusterBindingReconciler) reconcileKubeoceanProxier(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) error {
+	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding))
+
+	// Load the proxier template from mounted files
+	templateFiles, err := r.loadProxierTemplate()
+	if err != nil {
+		return fmt.Errorf("failed to load proxier template: %w", err)
+	}
+
+	// Prepare template data
+	templateData := r.prepareProxierTemplateData(clusterBinding, templateFiles)
+
+	log.V(2).Info("Proxier template data", "templateData", *templateData)
+
+	// Create or update the Proxier Deployment
+	if err := r.createProxierResourceFromTemplate(ctx, clusterBinding, templateFiles, templateData, "deployment.yaml"); err != nil {
+		return fmt.Errorf("failed to create or update proxier deployment: %w", err)
+	}
+
+	// Create or update the Proxier Service
+	if err := r.createProxierResourceFromTemplate(ctx, clusterBinding, templateFiles, templateData, "service.yaml"); err != nil {
+		return fmt.Errorf("failed to create or update proxier service: %w", err)
+	}
+
+	log.Info("Kubeocean Proxier reconciled successfully")
+	return nil
+}
+
+// loadProxierTemplate loads the Proxier template from mounted files
+func (r *ClusterBindingReconciler) loadProxierTemplate() (map[string]string, error) {
+	// Allow overriding template directory via environment variable for tests
+	templateDir := os.Getenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR")
+	if templateDir == "" {
+		templateDir = "/etc/kubeocean/proxier-template"
+	}
+
+	// Read all files in the template directory
+	templateData := make(map[string]string)
+
+	// Read basic configuration files
+	configFiles := []string{
+		"serviceAccountName",
+		"clusterRoleName",
+		"clusterRoleBindingName",
+		"proxierNamespace",
+	}
+
+	for _, filename := range configFiles {
+		filePath := fmt.Sprintf("%s/%s", templateDir, filename)
+		if content, err := os.ReadFile(filePath); err == nil {
+			templateData[filename] = strings.TrimSpace(string(content))
+		}
+	}
+
+	// Read template files
+	templateFiles := []string{
+		"deployment.yaml",
+		"service.yaml",
+	}
+
+	for _, filename := range templateFiles {
+		filePath := fmt.Sprintf("%s/%s", templateDir, filename)
+		if content, err := os.ReadFile(filePath); err == nil {
+			templateData[filename] = string(content)
+		} else {
+			return nil, fmt.Errorf("failed to read template file %s: %w", filename, err)
+		}
+	}
+
+	return templateData, nil
+}
+
+// prepareProxierTemplateData prepares the data for rendering Proxier templates
+func (r *ClusterBindingReconciler) prepareProxierTemplateData(clusterBinding *cloudv1beta1.ClusterBinding, templateFiles map[string]string) *ProxierTemplateData {
+	// Generate deployment name based on ClusterBinding name
+	deploymentName := fmt.Sprintf("%s-%s", DefaultProxierName, clusterBinding.Spec.ClusterID)
+	serviceName := fmt.Sprintf("%s-%s-svc", DefaultProxierName, clusterBinding.Spec.ClusterID)
+
+	// Read TLS configuration from ClusterBinding annotations
+	var tlsEnabled bool
+	var tlsSecretName, tlsSecretNamespace string
+
+	if annotations := clusterBinding.GetAnnotations(); annotations != nil {
+		// Check if logs proxy is enabled
+		if enabled, exists := annotations["kubeocean.io/logs-proxy-enabled"]; exists {
+			tlsEnabled = enabled == "true"
+		}
+
+		// Get TLS secret information
+		if tlsEnabled {
+			if name, exists := annotations["kubeocean.io/logs-proxy-secret-name"]; exists {
+				tlsSecretName = name
+			}
+			if namespace, exists := annotations["kubeocean.io/logs-proxy-secret-namespace"]; exists {
+				tlsSecretNamespace = namespace
+			} else {
+				// Default to proxier namespace if not specified
+				tlsSecretNamespace = templateFiles["proxierNamespace"]
+			}
+		}
+	}
+
+	return &ProxierTemplateData{
+		ClusterBindingName:     clusterBinding.Name,
+		DeploymentName:         deploymentName,
+		ServiceAccountName:     templateFiles["serviceAccountName"],
+		ServiceName:            serviceName,
+		ClusterRoleName:        templateFiles["clusterRoleName"],
+		ClusterRoleBindingName: templateFiles["clusterRoleBindingName"],
+		ProxierNamespace:       templateFiles["proxierNamespace"],
+		TLSEnabled:             tlsEnabled,
+		TLSSecretName:          tlsSecretName,
+		TLSSecretNamespace:     tlsSecretNamespace,
+	}
+}
+
+// createProxierResourceFromTemplate creates or updates a Kubernetes resource from a template
+func (r *ClusterBindingReconciler) createProxierResourceFromTemplate(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding, templateFiles map[string]string, templateData *ProxierTemplateData, templateName string) error {
+
+	// Get template content
+	templateContent, exists := templateFiles[templateName]
+	if !exists {
+		return fmt.Errorf("template %s not found", templateName)
+	}
+
+	// Parse and execute template
+	tmpl, err := template.New(templateName).Parse(templateContent)
+	if err != nil {
+		return fmt.Errorf("failed to parse template %s: %w", templateName, err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, templateData); err != nil {
+		return fmt.Errorf("failed to execute template %s: %w", templateName, err)
+	}
+
+	// Decode the YAML into a Kubernetes object
+	decoder := serializer.NewCodecFactory(r.Scheme).UniversalDeserializer()
+	obj, _, err := decoder.Decode(buf.Bytes(), nil, nil)
+	if err != nil {
+		return fmt.Errorf("failed to decode YAML from template %s: %w", templateName, err)
+	}
+
+	// Set owner reference
+	if err := r.setOwnerReference(clusterBinding, obj); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
+	}
+
+	// Create or update the resource
+	return r.createOrUpdateResource(ctx, obj)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return r.SetupWithManagerAndName(mgr, "clusterbinding")
@@ -814,4 +1014,28 @@ func (r *ClusterBindingReconciler) SetupWithManagerAndName(mgr ctrl.Manager, con
 			},
 		}).
 		Complete(r)
+}
+
+// cleanupAutoManagedCertificates cleans up auto-managed certificates when ClusterBinding is deleted
+func (r *ClusterBindingReconciler) cleanupAutoManagedCertificates(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) error {
+	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding))
+	log.Info("Starting cleanup of auto-managed certificates")
+
+	// Create Kubernetes clientset for certificate operations
+	config := ctrl.GetConfigOrDie()
+	k8sClient, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("failed to create Kubernetes client: %w", err)
+	}
+
+	// Create certificate manager
+	certManager := proxier.NewCertificateManager(
+		k8sClient,
+		clusterBinding,
+		"kubeocean-system", // Default namespace where certificates are stored
+		log.WithName("cert-cleanup"),
+	)
+
+	// Perform complete cleanup
+	return certManager.ForceCleanupAll(ctx)
 }

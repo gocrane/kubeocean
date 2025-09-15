@@ -1,4 +1,4 @@
-# Build the manager binary
+# Build the proxier binary
 FROM golang:1.24 as builder
 ARG TARGETOS
 ARG TARGETARCH
@@ -12,7 +12,7 @@ COPY go.sum go.sum
 RUN go mod download
 
 # Copy the go source
-COPY cmd/kubeocean-manager/main.go cmd/kubeocean-manager/main.go
+COPY cmd/kubeocean-proxier/main.go cmd/kubeocean-proxier/main.go
 COPY api/ api/
 COPY pkg/ pkg/
 
@@ -21,9 +21,9 @@ COPY pkg/ pkg/
 # was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
 # the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/kubeocean-manager/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o proxier cmd/kubeocean-proxier/main.go
 
-# Use distroless as minimal base image to package the manager binary
+# Use distroless as minimal base image to package the proxier binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 #FROM gcr.io/distroless/static:nonroot
 # Use Ubuntu 22.04 as base image with development tools
@@ -36,7 +36,7 @@ RUN apt update && apt-get install --no-install-recommends --no-install-suggests 
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /
-COPY --from=builder /workspace/manager .
-#USER 65532:65532
+COPY --from=builder /workspace/proxier .
+USER 65532:65532
 
-ENTRYPOINT ["/manager"]
+ENTRYPOINT ["/proxier"]

@@ -4,9 +4,10 @@
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ## Build manager and syncer binaries.
+build: manifests generate fmt vet ## Build manager and syncer and proxier  binaries.
 	go build -o bin/kubeocean-manager cmd/kubeocean-manager/main.go
 	go build -o bin/kubeocean-syncer cmd/kubeocean-syncer/main.go
+	go build -o bin/kubeocean-proxier cmd/kubeocean-proxier/main.go
 
 .PHONY: run-manager
 run-manager: manifests generate fmt vet ## Run kubeocean-manager from your host.
@@ -20,22 +21,28 @@ run-syncer: manifests generate fmt vet ## Run kubeocean-syncer from your host.
 # (i.e. docker build --platform linux/arm64 ). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/dev-best-practices/
 .PHONY: docker-build
-docker-build: ## Build docker images for manager and syncer.
+docker-build: ## Build docker images for manager, syncer and proxier.
 	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager .
 	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer .
+	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier .
 
-.PHONY: docker-build.manager
-docker-build.manager: ## Build docker image for manager only.
+.PHONY: docker-build-manager
+docker-build-manager: ## Build docker image for manager only.
 	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager .
 
-.PHONY: docker-build.syncer
-docker-build.syncer: ## Build docker image for syncer only.
+.PHONY: docker-build-syncer
+docker-build-syncer: ## Build docker image for syncer only.
 	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer .
+
+.PHONY: docker-build-proxier
+docker-build-proxier: ## Build docker image for proxier only.
+	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier .
 
 .PHONY: docker-push
-docker-push: docker-build ## Push docker images for manager and syncer.
+docker-push: docker-build ## Push docker images for manager, syncer and proxier.
 	docker push ${IMG_MANAGER}
 	docker push ${IMG_SYNCER}
+	docker push ${IMG_PROXIER}
 
 .PHONY: docker-push.manager
 docker-push.manager: docker-build.manager ## Push docker image for manager only.

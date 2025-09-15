@@ -86,6 +86,9 @@ manager:
     - name: syncer-template
       mountPath: /etc/kubeocean/syncer-template
       readOnly: true
+    - name: proxier-template
+      mountPath: /etc/kubeocean/proxier-template
+      readOnly: true
     - name: tz-config
       mountPath: /etc/localtime
       readOnly: true
@@ -94,6 +97,9 @@ manager:
     - name: syncer-template
       configMap:
         name: kubeocean-syncer-template
+    - name: proxier-template
+      configMap:
+        name: kubeocean-proxier-template
     - name: tz-config
       hostPath:
         path: /etc/localtime
@@ -171,6 +177,67 @@ syncer:
     - name: tz-config
       hostPath:
         path: /etc/localtime
+
+# Proxier configuration
+proxier:
+  # Enable proxier deployment (managed by manager)
+  enabled: true
+  # Image configuration
+  image:
+    repository: kubeocean-proxier
+    tag: latest
+    pullPolicy: IfNotPresent
+  # Default replica count for proxier instances
+  replicas: 1
+  # Listen port for kubelet API requests
+  listenPort: 10250
+  # Resources
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  # Service account
+  serviceAccount:
+    create: true
+    name: kubeocean-proxier
+    annotations: {}
+  # RBAC configuration
+  rbac:
+    create: true
+    # Cluster role name
+    clusterRoleName: kubeocean-proxier
+    # Cluster role binding name
+    clusterRoleBindingName: kubeocean-proxier
+  # Metrics configuration
+  metrics:
+    enabled: false
+    port: 8080
+  # TLS configuration
+  tls:
+    enabled: false
+    secretName: ""
+    secretNamespace: ""
+  # Health probe configuration
+  healthProbe:
+    enabled: true
+    port: 10250
+    livenessProbe:
+      initialDelaySeconds: 15
+      periodSeconds: 20
+    readinessProbe:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+  # Pod security context
+  podSecurityContext: {}
+  # Container security context
+  containerSecurityContext: {}
+  # Volume mounts
+  volumeMounts: []
+  # Volumes
+  volumes: []
 
 # CRD configuration
 crd:

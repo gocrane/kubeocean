@@ -16,6 +16,7 @@ rules:
   - pods
   - secrets
   - serviceaccounts
+  - services
   verbs:
   - create
   - delete
@@ -106,6 +107,14 @@ rules:
   - patch
   - update
   - watch
+# Certificate cleanup permissions (only for ClusterBinding deletion cleanup)
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - certificatesigningrequests
+  verbs:
+  - list
+  - delete
 - apiGroups:
   - storage.k8s.io
   resources:

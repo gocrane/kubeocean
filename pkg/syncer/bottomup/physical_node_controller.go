@@ -370,14 +370,14 @@ func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context
 			continue
 		}
 
-		// 跳过 deletionTimestamp 不为nil 的 Pod
+		// Skip pods with non-nil deletionTimestamp
 		if pod.DeletionTimestamp != nil {
 			skippedCount++
 			logger.V(1).Info("Skipping pod with deletionTimestamp set", "pod", pod.Name, "namespace", pod.Namespace)
 			continue
 		}
 
-		// 如果 skipTimeOutTaintsTolerations 为 true，检查 Pod 是否有 TaintOutOfTimeWindows tolerations
+		// If skipTimeOutTaintsTolerations is true, check if Pod has TaintOutOfTimeWindows tolerations
 		if skipTimeOutTaintsTolerations && r.hasTaintOutOfTimeWindowsToleration(pod) {
 			skippedCount++
 			logger.V(1).Info("Skipping pod with TaintOutOfTimeWindows toleration", "pod", pod.Name, "namespace", pod.Namespace)
@@ -393,7 +393,7 @@ func (r *PhysicalNodeReconciler) forceEvictPodsOnVirtualNode(ctx context.Context
 		}
 		if err := r.VirtualClient.Delete(ctx, pod, deleteOptions); err != nil {
 			if errors.IsNotFound(err) {
-				// Pod已经被删除，忽略
+				// Pod has already been deleted, ignore
 				continue
 			}
 			failedCount++
@@ -685,7 +685,7 @@ func GetPolicyName(policy *cloudv1beta1.ResourceLeasingPolicy) string {
 }
 
 // calculateAvailableResources calculates available resources based on policies and actual node usage
-// 实际可用资源 = min(物理节点可用资源 - 已占用资源, policy限制)
+// Actual available resources = min(physical node available resources - used resources, policy limits)
 func (r *PhysicalNodeReconciler) calculateAvailableResources(ctx context.Context, node *corev1.Node, policy *cloudv1beta1.ResourceLeasingPolicy) (corev1.ResourceList, error) {
 	logger := r.Log.WithValues("node", node.Name, "policyName", GetPolicyName(policy))
 
@@ -944,6 +944,43 @@ func (r *PhysicalNodeReconciler) getBaseResources(node *corev1.Node) corev1.Reso
 	return baseResources
 }
 
+// buildVirtualNodeAddresses builds addresses for virtual node
+func (r *PhysicalNodeReconciler) buildVirtualNodeAddresses(physicalNode *corev1.Node) []corev1.NodeAddress {
+	// Keep all original node addresses, but force update InternalIP to point to proxier pod IP
+	// Use Pod IP instead of Service ClusterIP to avoid ClusterIP connectivity issues
+	proxierPodIP := r.getProxierPodIP()
+	if proxierPodIP != "" {
+		// First find and update existing InternalIP
+		internalIPUpdated := false
+		addresses := make([]corev1.NodeAddress, len(physicalNode.Status.Addresses))
+		copy(addresses, physicalNode.Status.Addresses)
+
+		for i := range addresses {
+			if addresses[i].Type == corev1.NodeInternalIP {
+				addresses[i].Address = proxierPodIP
+				internalIPUpdated = true
+				r.Log.Info("Updated existing InternalIP for virtual node to point to proxier pod", "node", physicalNode.Name, "podIP", proxierPodIP)
+				break
+			}
+		}
+
+		// If no InternalIP found, add a new one
+		if !internalIPUpdated {
+			addresses = append(addresses, corev1.NodeAddress{
+				Type:    corev1.NodeInternalIP,
+				Address: proxierPodIP,
+			})
+			r.Log.Info("Added new InternalIP for virtual node pointing to proxier pod", "node", physicalNode.Name, "podIP", proxierPodIP)
+		}
+
+		return addresses
+	} else {
+		r.Log.Info("Unable to get proxier pod IP for virtual node, using original addresses", "node", physicalNode.Name)
+		// If unable to get proxier pod IP, return original addresses
+		return physicalNode.Status.Addresses
+	}
+}
+
 // createOrUpdateVirtualNode creates or updates a virtual node based on physical node
 func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, physicalNode *corev1.Node, resources corev1.ResourceList, policies []cloudv1beta1.ResourceLeasingPolicy, disableNodeDefaultTaint bool) error {
 	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
@@ -954,6 +991,9 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 	if len(policies) > 0 {
 		policy = &policies[0]
 	}
+
+	// Build virtual node addresses
+	addresses := r.buildVirtualNodeAddresses(physicalNode)
 
 	virtualNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -972,6 +1012,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 			Conditions:  physicalNode.Status.Conditions,
 			NodeInfo:    physicalNode.Status.NodeInfo,
 			Phase:       physicalNode.Status.Phase,
+			Addresses:   addresses,
 		},
 	}
 
@@ -1015,6 +1056,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		newNode.Spec.Taints = virtualNode.Spec.Taints
 		newNode.Labels = virtualNode.Labels
 		newNode.Annotations = virtualNode.Annotations
+		newNode.Status.Addresses = virtualNode.Status.Addresses
 
 		// Ensure finalizer exists
 		if !controllerutil.ContainsFinalizer(newNode, cloudv1beta1.VirtualNodeFinalizer) {
@@ -1146,11 +1188,11 @@ func (r *PhysicalNodeReconciler) mergeLabels(existing, new *corev1.Node, previou
 
 	// Identify user-added labels (those in existing but not in previous expected)
 	for key, value := range existing.Labels {
-		// 如果currentExpected中存在，则不覆盖
+		// If exists in currentExpected, don't override
 		if _, ok := currentExpected[key]; ok {
 			continue
 		}
-		// 如果不在previousExpected中，则认为是用户添加的
+		// If not in previousExpected, consider it as user-added
 		if _, ok := previousExpected[key]; !ok {
 			r.Log.Info("user added label", "key", key, "value", value, "node", new.Name)
 			new.Labels[key] = value
@@ -1171,7 +1213,7 @@ func (r *PhysicalNodeReconciler) mergeAnnotations(existing, new *corev1.Node, pr
 
 	// Identify user-added annotations
 	for key, value := range existing.Annotations {
-		// 如果currentExpected中存在，则不覆盖
+		// If exists in currentExpected, don't override
 		if _, ok := currentExpected[key]; ok {
 			continue
 		}
@@ -1179,7 +1221,7 @@ func (r *PhysicalNodeReconciler) mergeAnnotations(existing, new *corev1.Node, pr
 			r.Log.Info("skipping deletion taint time", "key", key, "value", value, "node", new.Name)
 			continue
 		}
-		// 如果不在previousExpected中，则认为是用户添加的
+		// If not in previousExpected, consider it as user-added
 		if _, ok := previousExpected[key]; !ok {
 			r.Log.Info("user added annotation", "key", key, "value", value, "node", new.Name)
 			new.Annotations[key] = value
@@ -1210,7 +1252,7 @@ func (r *PhysicalNodeReconciler) mergeTaints(existing, new *corev1.Node, previou
 
 	// Identify user-added taints
 	for _, taint := range existing.Spec.Taints {
-		// 如果currentExpected中存在，则不覆盖
+		// If exists in currentExpected, don't override
 		if _, ok := currentExpectedMap[taint.Key]; ok {
 			continue
 		}
@@ -1218,7 +1260,7 @@ func (r *PhysicalNodeReconciler) mergeTaints(existing, new *corev1.Node, previou
 			r.Log.Info("skipping deletion taint", "taint", taint, "node", new.Name)
 			continue
 		}
-		// 如果不在previousExpected中，则认为是用户添加的
+		// If not in previousExpected, consider it as user-added
 		if _, ok := previousExpectedMap[taint.Key]; !ok {
 			r.Log.Info("user added taint", "taint", taint, "node", new.Name)
 			new.Spec.Taints = append(new.Spec.Taints, taint)
@@ -1711,4 +1753,70 @@ func (r *PhysicalNodeReconciler) shouldProcessNode(node *corev1.Node) bool {
 	}
 
 	return true
+}
+
+// getProxierServiceClusterIP retrieves the ClusterIP of the proxier service for this ClusterBinding
+func (r *PhysicalNodeReconciler) getProxierServiceClusterIP() string {
+	if r.ClusterBinding == nil {
+		r.Log.Error(nil, "ClusterBinding is nil, cannot determine proxier service name")
+		return ""
+	}
+
+	// Generate proxier service name based on ClusterBinding
+	// This should match the naming convention used in the manager controller
+	proxierServiceName := fmt.Sprintf("kubeocean-proxier-%s-svc", r.ClusterBinding.Spec.ClusterID)
+
+	// Get the service from the virtual cluster (where proxier service is deployed)
+	service := &corev1.Service{}
+	err := r.VirtualClient.Get(context.Background(), client.ObjectKey{
+		Name:      proxierServiceName,
+		Namespace: "kubeocean-system", // This should match the namespace where proxier is deployed
+	}, service)
+
+	if err != nil {
+		r.Log.Error(err, "Failed to get proxier service", "serviceName", proxierServiceName)
+		return ""
+	}
+
+	if service.Spec.ClusterIP == "" || service.Spec.ClusterIP == "None" {
+		r.Log.Error(nil, "Proxier service does not have a valid ClusterIP", "serviceName", proxierServiceName, "clusterIP", service.Spec.ClusterIP)
+		return ""
+	}
+
+	r.Log.V(2).Info("Found proxier service ClusterIP", "serviceName", proxierServiceName, "clusterIP", service.Spec.ClusterIP)
+	return service.Spec.ClusterIP
+}
+
+// getProxierPodIP retrieves the Pod IP of the proxier pod for this ClusterBinding
+func (r *PhysicalNodeReconciler) getProxierPodIP() string {
+	if r.ClusterBinding == nil {
+		r.Log.Error(nil, "ClusterBinding is nil, cannot determine proxier pod name")
+		return ""
+	}
+
+	// Generate proxier deployment name based on ClusterBinding
+	proxierDeploymentName := fmt.Sprintf("kubeocean-proxier-%s", r.ClusterBinding.Spec.ClusterID)
+
+	// List pods with the proxier deployment label selector
+	podList := &corev1.PodList{}
+	err := r.VirtualClient.List(context.Background(), podList, client.InNamespace("kubeocean-system"), client.MatchingLabels{
+		"app.kubernetes.io/name":     "kubeocean-proxier",
+		"app.kubernetes.io/instance": r.ClusterBinding.Name,
+	})
+
+	if err != nil {
+		r.Log.Error(err, "Failed to list proxier pods", "deploymentName", proxierDeploymentName)
+		return ""
+	}
+
+	// Find a running proxier pod
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+			r.Log.V(2).Info("Found running proxier pod IP", "podName", pod.Name, "podIP", pod.Status.PodIP)
+			return pod.Status.PodIP
+		}
+	}
+
+	r.Log.Error(nil, "No running proxier pod found", "deploymentName", proxierDeploymentName)
+	return ""
 }

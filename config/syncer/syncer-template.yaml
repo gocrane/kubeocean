@@ -64,6 +64,10 @@ data:
               value: cluster.local
             - name: CLUSTER_BINDING_NAME
               value: "{{.ClusterBindingName}}"
+            - name: VKUBELET_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             ports:
             - name: metrics
               containerPort: 8080
