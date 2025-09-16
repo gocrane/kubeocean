@@ -49,7 +49,7 @@ func NewCertificateManager(client kubernetes.Interface, clusterBinding *cloudv1b
 // This method is only called for automatic certificate management (Priority 3)
 func (cm *CertificateManager) GetOrCreateTLSSecret(ctx context.Context) (*corev1.Secret, error) {
 	// Use default naming pattern for auto-managed certificates
-	defaultSecretName := fmt.Sprintf("%s-logs-proxy-tls", cm.clusterBinding.Name)
+	defaultSecretName := fmt.Sprintf("%s-logs-proxy-tls", cm.clusterBinding.Spec.ClusterID)
 
 	// Check if auto-managed secret already exists
 	secret, err := cm.getExistingSecret(ctx, defaultSecretName)
@@ -112,60 +112,72 @@ func (cm *CertificateManager) getExistingSecret(ctx context.Context, secretName 
 
 // createTLSSecretWithAutoApproval creates TLS secret with automatic certificate approval
 func (cm *CertificateManager) createTLSSecretWithAutoApproval(ctx context.Context, secretName string) (*corev1.Secret, error) {
-	// 1. 获取 Pod IP
-	podIP, err := cm.getPodIP()
+	// Generate certificate data
+	certificate, privateKey, err := cm.generateCertificateData(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get pod IP: %w", err)
+		return nil, fmt.Errorf("failed to generate certificate data: %w", err)
 	}
 
-	// 2. 生成私钥
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate private key: %w", err)
-	}
-
-	// 3. 构建证书签名请求
-	csr, err := cm.createCSR(privateKey, podIP)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create CSR: %w", err)
-	}
-
-	// 4. 提交 CSR 到 Kubernetes
-	csrName := fmt.Sprintf("kubeocean-proxier-%s-%d", cm.clusterBinding.Name, time.Now().Unix())
-	_, err = cm.submitCSR(ctx, csrName, csr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to submit CSR: %w", err)
-	}
-
-	// 5. 自动批准 CSR
-	err = cm.approveCSR(ctx, csrName)
-	if err != nil {
-		// 清理 CSR
-		cm.client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{})
-		return nil, fmt.Errorf("failed to approve CSR: %w", err)
-	}
-
-	// 6. 等待证书签发
-	certificate, err := cm.waitForCertificate(ctx, csrName, 60*time.Second)
-	if err != nil {
-		// 清理 CSR
-		cm.client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{})
-		return nil, fmt.Errorf("failed to get certificate: %w", err)
-	}
-
-	// 7. 创建 TLS Secret
+	// Create TLS Secret
 	secret, err := cm.createTLSSecret(ctx, secretName, certificate, privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TLS secret: %w", err)
 	}
 
-	// 8. 清理 CSR
-	cm.client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{})
-
-	cm.log.Info("Successfully created TLS secret with auto-approved certificate",
-		"secretName", secretName, "podIP", podIP)
+	cm.log.Info("Successfully created TLS secret with auto-approved certificate", "secretName", secretName)
 
 	return secret, nil
+}
+
+// generateCertificateData generates certificate data without creating a Secret
+func (cm *CertificateManager) generateCertificateData(ctx context.Context) ([]byte, *rsa.PrivateKey, error) {
+	// 1. Get Pod IP
+	podIP, err := cm.getPodIP()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get pod IP: %w", err)
+	}
+
+	// 2. Generate private key
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate private key: %w", err)
+	}
+
+	// 3. Create certificate signing request
+	csr, err := cm.createCSR(privateKey, podIP)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create CSR: %w", err)
+	}
+
+	// 4. Submit CSR to Kubernetes
+	csrName := fmt.Sprintf("kubeocean-proxier-%s-%d", cm.clusterBinding.Name, time.Now().Unix())
+	_, err = cm.submitCSR(ctx, csrName, csr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to submit CSR: %w", err)
+	}
+
+	// 5. Automatically approve CSR
+	err = cm.approveCSR(ctx, csrName)
+	if err != nil {
+		// Clean up CSR
+		cm.client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{})
+		return nil, nil, fmt.Errorf("failed to approve CSR: %w", err)
+	}
+
+	// 6. Wait for certificate to be issued
+	certificate, err := cm.waitForCertificate(ctx, csrName, 60*time.Second)
+	if err != nil {
+		// Clean up CSR
+		cm.client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{})
+		return nil, nil, fmt.Errorf("failed to get certificate: %w", err)
+	}
+
+	// 7. Clean up CSR
+	cm.client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{})
+
+	cm.log.Info("Successfully generated certificate data", "podIP", podIP)
+
+	return certificate, privateKey, nil
 }
 
 // getPodIP gets current pod IP
@@ -420,7 +432,7 @@ func (cm *CertificateManager) checkAndRenewCertificate(ctx context.Context) {
 	}
 
 	// Check default secret
-	defaultSecretName := fmt.Sprintf("%s-logs-proxy-tls", cm.clusterBinding.Name)
+	defaultSecretName := fmt.Sprintf("%s-logs-proxy-tls", cm.clusterBinding.Spec.ClusterID)
 	secret, err := cm.getExistingSecret(ctx, defaultSecretName)
 	if err != nil {
 		cm.log.Error(err, "Failed to get secret for renewal check", "secretName", defaultSecretName)
@@ -485,39 +497,41 @@ func (cm *CertificateManager) needsCertificateRenewal(secret *corev1.Secret) (bo
 
 // renewCertificate renews an existing certificate
 func (cm *CertificateManager) renewCertificate(ctx context.Context, secretName string) error {
-	// Generate new certificate using the same process as initial creation
-	newSecret, err := cm.createTLSSecretWithAutoApproval(ctx, fmt.Sprintf("%s-new", secretName))
+	// Generate new certificate data
+	certificate, privateKey, err := cm.generateCertificateData(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create new certificate: %w", err)
+		return fmt.Errorf("failed to generate new certificate: %w", err)
 	}
+
+	// Encode private key to PEM
+	privateKeyDER := x509.MarshalPKCS1PrivateKey(privateKey)
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: privateKeyDER,
+	})
 
 	// Get the existing secret
 	existingSecret, err := cm.client.CoreV1().Secrets(cm.namespace).Get(ctx, secretName, metav1.GetOptions{})
 	if err != nil {
-		// Clean up new secret if we can't get existing one
-		cm.client.CoreV1().Secrets(cm.namespace).Delete(ctx, newSecret.Name, metav1.DeleteOptions{})
 		return fmt.Errorf("failed to get existing secret: %w", err)
 	}
 
 	// Update existing secret with new certificate data
-	existingSecret.Data = newSecret.Data
-	existingSecret.Annotations = map[string]string{
-		"kubeocean.io/certificate-renewed": time.Now().Format(time.RFC3339),
-		"kubeocean.io/renewal-reason":      "auto-renewal",
+	existingSecret.Data = map[string][]byte{
+		"tls.crt": certificate,
+		"tls.key": privateKeyPEM,
 	}
+
+	// Add renewal annotations
+	if existingSecret.Annotations == nil {
+		existingSecret.Annotations = make(map[string]string)
+	}
+	existingSecret.Annotations["kubeocean.io/certificate-renewed"] = time.Now().Format(time.RFC3339)
+	existingSecret.Annotations["kubeocean.io/renewal-reason"] = "auto-renewal"
 
 	_, err = cm.client.CoreV1().Secrets(cm.namespace).Update(ctx, existingSecret, metav1.UpdateOptions{})
 	if err != nil {
-		// Clean up new secret if update fails
-		cm.client.CoreV1().Secrets(cm.namespace).Delete(ctx, newSecret.Name, metav1.DeleteOptions{})
 		return fmt.Errorf("failed to update existing secret: %w", err)
-	}
-
-	// Clean up temporary secret
-	err = cm.client.CoreV1().Secrets(cm.namespace).Delete(ctx, newSecret.Name, metav1.DeleteOptions{})
-	if err != nil {
-		cm.log.Error(err, "Failed to clean up temporary secret", "secretName", newSecret.Name)
-		// Non-fatal error, continue
 	}
 
 	return nil
@@ -531,7 +545,7 @@ func (cm *CertificateManager) GetCertificateInfo(ctx context.Context) (*Certific
 	if specifiedName := cm.getSpecifiedSecretName(); specifiedName != "" {
 		secretName = specifiedName
 	} else {
-		secretName = fmt.Sprintf("%s-logs-proxy-tls", cm.clusterBinding.Name)
+		secretName = fmt.Sprintf("%s-logs-proxy-tls", cm.clusterBinding.Spec.ClusterID)
 	}
 
 	secret, err := cm.getExistingSecret(ctx, secretName)
@@ -625,7 +639,7 @@ func (cm *CertificateManager) CleanupCertificates(ctx context.Context) error {
 	}
 
 	// Cleanup auto-generated certificate
-	defaultSecretName := fmt.Sprintf("%s-logs-proxy-tls", cm.clusterBinding.Name)
+	defaultSecretName := fmt.Sprintf("%s-logs-proxy-tls", cm.clusterBinding.Spec.ClusterID)
 
 	return cm.cleanupAutoManagedSecret(ctx, defaultSecretName)
 }

@@ -26,16 +26,16 @@ docker-build: ## Build docker images for manager, syncer and proxier.
 	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer .
 	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier .
 
-.PHONY: docker-build-manager
-docker-build-manager: ## Build docker image for manager only.
+.PHONY: docker-build.manager
+docker-build.manager: ## Build docker image for manager only.
 	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager .
 
-.PHONY: docker-build-syncer
-docker-build-syncer: ## Build docker image for syncer only.
+.PHONY: docker-build.syncer
+docker-build.syncer: ## Build docker image for syncer only.
 	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer .
 
-.PHONY: docker-build-proxier
-docker-build-proxier: ## Build docker image for proxier only.
+.PHONY: docker-build.proxier
+docker-build.proxier: ## Build docker image for proxier only.
 	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier .
 
 .PHONY: docker-push

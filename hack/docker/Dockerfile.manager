@@ -25,18 +25,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ma
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-#FROM gcr.io/distroless/static:nonroot
-# Use Ubuntu 22.04 as base image with development tools
-FROM ccr.ccs.tencentyun.com/tkeimages/ubuntu:22.04
-
-# Install development and debugging tools
-RUN apt update && apt-get install --no-install-recommends --no-install-suggests -y \
-    apt-utils inetutils-tools iproute2 vim procps inetutils-ping net-tools telnet curl \
-    iptables conntrack ipvsadm ipset kmod ca-certificates less netcat golang-go \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
+FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
-#USER 65532:65532
+USER 65532:65532
 
 ENTRYPOINT ["/manager"]

@@ -198,23 +198,6 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Create or update Kubeocean Syncer
-	if err := r.reconcileKubeoceanSyncer(ctx, clusterBinding); err != nil {
-		log.Error(err, "Failed to reconcile Kubeocean Syncer")
-		r.Recorder.Event(clusterBinding, corev1.EventTypeWarning, "SyncerFailed", fmt.Sprintf("Failed to reconcile Kubeocean Syncer: %v", err))
-
-		// Update status to Failed for other errors
-		clusterBinding.Status.Phase = PhaseFailed
-		r.updateCondition(clusterBinding, "Ready", metav1.ConditionFalse, "SyncerFailed", err.Error())
-		if updateErr := r.Status().Update(ctx, clusterBinding); updateErr != nil {
-			log.Error(updateErr, "unable to update ClusterBinding status after syncer failure")
-			return ctrl.Result{}, updateErr
-		}
-		return ctrl.Result{}, err
-	} else {
-		r.updateCondition(clusterBinding, "SyncerReady", metav1.ConditionTrue, "SyncerCreated", "Kubeocean Syncer created successfully")
-	}
-
 	// Create or update Kubeocean Proxier
 	if err := r.reconcileKubeoceanProxier(ctx, clusterBinding); err != nil {
 		log.Error(err, "Failed to reconcile Kubeocean Proxier")
@@ -230,6 +213,23 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	} else {
 		r.updateCondition(clusterBinding, "ProxierReady", metav1.ConditionTrue, "ProxierCreated", "Kubeocean Proxier created successfully")
+	}
+
+	// Create or update Kubeocean Syncer
+	if err := r.reconcileKubeoceanSyncer(ctx, clusterBinding); err != nil {
+		log.Error(err, "Failed to reconcile Kubeocean Syncer")
+		r.Recorder.Event(clusterBinding, corev1.EventTypeWarning, "SyncerFailed", fmt.Sprintf("Failed to reconcile Kubeocean Syncer: %v", err))
+
+		// Update status to Failed for other errors
+		clusterBinding.Status.Phase = PhaseFailed
+		r.updateCondition(clusterBinding, "Ready", metav1.ConditionFalse, "SyncerFailed", err.Error())
+		if updateErr := r.Status().Update(ctx, clusterBinding); updateErr != nil {
+			log.Error(updateErr, "unable to update ClusterBinding status after syncer failure")
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	} else {
+		r.updateCondition(clusterBinding, "SyncerReady", metav1.ConditionTrue, "SyncerCreated", "Kubeocean Syncer created successfully")
 	}
 
 	// Mark as Ready if validation and syncer creation passes
