@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -695,20 +696,225 @@ func TestVirtualPodReconciler_BuildPhysicalPodLabels(t *testing.T) {
 		PhysicalK8sClient: fake.NewSimpleClientset(),
 	}
 
-	virtualPod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels: map[string]string{
-				"app":     "test-app",
-				"version": "v1.0",
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		workloadType   string
+		workloadName   string
+		expectedLabels map[string]string
+	}{
+		{
+			name: "pod with labels and workload info",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-namespace",
+					Labels: map[string]string{
+						"app":     "test-app",
+						"version": "v1.0",
+						"env":     "production",
+					},
+				},
+			},
+			workloadType: "deployment",
+			workloadName: "test-deployment",
+			expectedLabels: map[string]string{
+				"app":                              "test-app",
+				"version":                          "v1.0",
+				"env":                              "production",
+				cloudv1beta1.LabelManagedBy:        cloudv1beta1.LabelManagedByValue,
+				cloudv1beta1.LabelVirtualNamespace: "test-namespace",
+				cloudv1beta1.LabelWorkloadType:     "deployment",
+				cloudv1beta1.LabelWorkloadName:     "test-deployment",
+			},
+		},
+		{
+			name: "pod without labels",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "default",
+				},
+			},
+			workloadType: "daemonset",
+			workloadName: "test-daemonset",
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy:        cloudv1beta1.LabelManagedByValue,
+				cloudv1beta1.LabelVirtualNamespace: "default",
+				cloudv1beta1.LabelWorkloadType:     "daemonset",
+				cloudv1beta1.LabelWorkloadName:     "test-daemonset",
+			},
+		},
+		{
+			name: "pod with empty workload info",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						"app": "test-app",
+					},
+				},
+			},
+			workloadType: "",
+			workloadName: "",
+			expectedLabels: map[string]string{
+				"app":                              "test-app",
+				cloudv1beta1.LabelManagedBy:        cloudv1beta1.LabelManagedByValue,
+				cloudv1beta1.LabelVirtualNamespace: "test-ns",
+			},
+		},
+		{
+			name: "pod with only workload type",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						"app": "test-app",
+					},
+				},
+			},
+			workloadType: "statefulset",
+			workloadName: "",
+			expectedLabels: map[string]string{
+				"app":                              "test-app",
+				cloudv1beta1.LabelManagedBy:        cloudv1beta1.LabelManagedByValue,
+				cloudv1beta1.LabelVirtualNamespace: "test-ns",
+				cloudv1beta1.LabelWorkloadType:     "statefulset",
+			},
+		},
+		{
+			name: "pod with only workload name",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						"app": "test-app",
+					},
+				},
+			},
+			workloadType: "",
+			workloadName: "test-job",
+			expectedLabels: map[string]string{
+				"app":                              "test-app",
+				cloudv1beta1.LabelManagedBy:        cloudv1beta1.LabelManagedByValue,
+				cloudv1beta1.LabelVirtualNamespace: "test-ns",
+				cloudv1beta1.LabelWorkloadName:     "test-job",
+			},
+		},
+		{
+			name: "pod with conflicting labels",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						"app":                              "test-app",
+						cloudv1beta1.LabelManagedBy:        "other-manager",
+						cloudv1beta1.LabelVirtualNamespace: "conflicting-ns",
+						cloudv1beta1.LabelWorkloadType:     "conflicting-type",
+						cloudv1beta1.LabelWorkloadName:     "conflicting-name",
+					},
+				},
+			},
+			workloadType: "cronjob",
+			workloadName: "test-cronjob",
+			expectedLabels: map[string]string{
+				"app":                              "test-app",
+				cloudv1beta1.LabelManagedBy:        cloudv1beta1.LabelManagedByValue, // Should be overridden
+				cloudv1beta1.LabelVirtualNamespace: "test-ns",                        // Should be overridden
+				cloudv1beta1.LabelWorkloadType:     "cronjob",                        // Should be overridden
+				cloudv1beta1.LabelWorkloadName:     "test-cronjob",                   // Should be overridden
+			},
+		},
+		{
+			name: "pod with special characters in namespace",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-namespace-with-dashes_and.underscores",
+					Labels: map[string]string{
+						"app": "test-app",
+					},
+				},
+			},
+			workloadType: "replicaset",
+			workloadName: "test-replicaset",
+			expectedLabels: map[string]string{
+				"app":                              "test-app",
+				cloudv1beta1.LabelManagedBy:        cloudv1beta1.LabelManagedByValue,
+				cloudv1beta1.LabelVirtualNamespace: "test-namespace-with-dashes_and.underscores",
+				cloudv1beta1.LabelWorkloadType:     "replicaset",
+				cloudv1beta1.LabelWorkloadName:     "test-replicaset",
+			},
+		},
+		{
+			name: "pod with special characters in workload name",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						"app": "test-app",
+					},
+				},
+			},
+			workloadType: "job",
+			workloadName: "test-job-with-special-chars-123",
+			expectedLabels: map[string]string{
+				"app":                              "test-app",
+				cloudv1beta1.LabelManagedBy:        cloudv1beta1.LabelManagedByValue,
+				cloudv1beta1.LabelVirtualNamespace: "test-ns",
+				cloudv1beta1.LabelWorkloadType:     "job",
+				cloudv1beta1.LabelWorkloadName:     "test-job-with-special-chars-123",
+			},
+		},
+		{
+			name: "pod with empty namespace",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "",
+					Labels: map[string]string{
+						"app": "test-app",
+					},
+				},
+			},
+			workloadType: "deployment",
+			workloadName: "test-deployment",
+			expectedLabels: map[string]string{
+				"app":                              "test-app",
+				cloudv1beta1.LabelManagedBy:        cloudv1beta1.LabelManagedByValue,
+				cloudv1beta1.LabelVirtualNamespace: "",
+				cloudv1beta1.LabelWorkloadType:     "deployment",
+				cloudv1beta1.LabelWorkloadName:     "test-deployment",
 			},
 		},
 	}
 
-	labels := reconciler.buildPhysicalPodLabels(virtualPod)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels := reconciler.buildPhysicalPodLabels(tt.virtualPod, tt.workloadType, tt.workloadName)
 
-	assert.Equal(t, "test-app", labels["app"])
-	assert.Equal(t, "v1.0", labels["version"])
-	assert.Equal(t, cloudv1beta1.LabelManagedByValue, labels[cloudv1beta1.LabelManagedBy])
+			// Verify all expected labels are present
+			for key, expectedValue := range tt.expectedLabels {
+				actualValue, exists := labels[key]
+				assert.True(t, exists, "Label %s should exist", key)
+				assert.Equal(t, expectedValue, actualValue, "Label %s should have correct value", key)
+			}
+
+			// Verify no unexpected labels are present
+			for key, actualValue := range labels {
+				_, exists := tt.expectedLabels[key]
+				assert.True(t, exists, "Unexpected label %s with value %s", key, actualValue)
+			}
+
+			// Verify managed-by label is always present
+			assert.Equal(t, cloudv1beta1.LabelManagedByValue, labels[cloudv1beta1.LabelManagedBy], "Managed-by label should always be present")
+		})
+	}
 }
 
 func TestVirtualPodReconciler_BuildPhysicalPodAnnotations(t *testing.T) {
@@ -6201,6 +6407,258 @@ func TestVirtualPodReconciler_AddHostAliasesAndEnvVars(t *testing.T) {
 					}
 				}
 			}
+		})
+	}
+}
+
+func TestVirtualPodReconciler_GetWorkloadInfo(t *testing.T) {
+	tests := []struct {
+		name          string
+		pod           *corev1.Pod
+		setupClient   func(*testing.T, client.Client)
+		expectedType  string
+		expectedName  string
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name: "pod without owner references",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+			},
+			expectedType: "pod",
+			expectedName: "",
+			expectError:  false,
+		},
+		{
+			name: "pod with deployment owner reference",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "Deployment",
+							Name: "test-deployment",
+						},
+					},
+				},
+			},
+			expectedType: "deployment",
+			expectedName: "test-deployment",
+			expectError:  false,
+		},
+		{
+			name: "pod with daemonset owner reference",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+			},
+			expectedType: "daemonset",
+			expectedName: "test-daemonset",
+			expectError:  false,
+		},
+		{
+			name: "pod with statefulset owner reference",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "StatefulSet",
+							Name: "test-statefulset",
+						},
+					},
+				},
+			},
+			expectedType: "statefulset",
+			expectedName: "test-statefulset",
+			expectError:  false,
+		},
+		{
+			name: "pod with job owner reference",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "Job",
+							Name: "test-job",
+						},
+					},
+				},
+			},
+			expectedType: "job",
+			expectedName: "test-job",
+			expectError:  false,
+		},
+		{
+			name: "pod with cronjob owner reference",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "CronJob",
+							Name: "test-cronjob",
+						},
+					},
+				},
+			},
+			expectedType: "cronjob",
+			expectedName: "test-cronjob",
+			expectError:  false,
+		},
+		{
+			name: "pod with replicaset owner reference - deployment found",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "ReplicaSet",
+							Name: "test-replicaset",
+						},
+					},
+				},
+			},
+			setupClient: func(t *testing.T, c client.Client) {
+				replicaset := &appsv1.ReplicaSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-replicaset",
+						Namespace: "test-ns",
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								Kind: "Deployment",
+								Name: "test-deployment",
+							},
+						},
+					},
+				}
+				err := c.Create(context.Background(), replicaset)
+				assert.NoError(t, err)
+			},
+			expectedType: "deployment",
+			expectedName: "test-deployment",
+			expectError:  false,
+		},
+		{
+			name: "pod with replicaset owner reference - no deployment owner",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "ReplicaSet",
+							Name: "test-replicaset",
+						},
+					},
+				},
+			},
+			setupClient: func(t *testing.T, c client.Client) {
+				replicaset := &appsv1.ReplicaSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-replicaset",
+						Namespace: "test-ns",
+						// No owner references
+					},
+				}
+				err := c.Create(context.Background(), replicaset)
+				assert.NoError(t, err)
+			},
+			expectedType: "replicaset",
+			expectedName: "test-replicaset",
+			expectError:  false,
+		},
+		{
+			name: "pod with replicaset owner reference - replicaset not found",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "ReplicaSet",
+							Name: "non-existent-replicaset",
+						},
+					},
+				},
+			},
+			expectedType:  "",
+			expectedName:  "",
+			expectError:   true,
+			errorContains: "failed to get ReplicaSet",
+		},
+		{
+			name: "pod with unknown owner reference",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "UnknownKind",
+							Name: "test-unknown",
+						},
+					},
+				},
+			},
+			expectedType: "unknownkind",
+			expectedName: "test-unknown",
+			expectError:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup fake client
+			scheme := runtime.NewScheme()
+			corev1.AddToScheme(scheme)
+			appsv1.AddToScheme(scheme)
+
+			fakeClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+
+			// Setup client if needed
+			if tt.setupClient != nil {
+				tt.setupClient(t, fakeClient)
+			}
+
+			// Create reconciler
+			reconciler := &VirtualPodReconciler{
+				VirtualClient: fakeClient,
+				Log:           ctrl.Log.WithName("test-virtual-pod-reconciler"),
+			}
+
+			// Test getWorkloadInfo
+			workloadType, workloadName, err := reconciler.getWorkloadInfo(context.Background(), tt.pod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.expectedType, workloadType)
+			assert.Equal(t, tt.expectedName, workloadName)
 		})
 	}
 }

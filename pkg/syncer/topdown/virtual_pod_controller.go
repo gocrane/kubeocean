@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -473,17 +474,24 @@ func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod
 		return err
 	}
 
+	// 3. Get workload information
+	workloadType, workloadName, err := r.getWorkloadInfo(ctx, virtualPod)
+	if err != nil {
+		logger.Error(err, "Failed to get workload information")
+		return err
+	}
+
 	physicalPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        physicalName,
 			Namespace:   physicalNamespace,
-			Labels:      r.buildPhysicalPodLabels(virtualPod),
+			Labels:      r.buildPhysicalPodLabels(virtualPod, workloadType, workloadName),
 			Annotations: r.buildPhysicalPodAnnotations(virtualPod),
 		},
 		Spec: podSpec,
 	}
 
-	// 3. Create physical pod
+	// 4. Create physical pod
 	err = r.PhysicalClient.Create(ctx, physicalPod)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -549,7 +557,7 @@ func (r *VirtualPodReconciler) setVirtualPodFailed(ctx context.Context, virtualP
 }
 
 // buildPhysicalPodLabels builds labels for physical pod
-func (r *VirtualPodReconciler) buildPhysicalPodLabels(virtualPod *corev1.Pod) map[string]string {
+func (r *VirtualPodReconciler) buildPhysicalPodLabels(virtualPod *corev1.Pod, workloadType, workloadName string) map[string]string {
 	labels := make(map[string]string)
 
 	// Copy all labels from virtual pod
@@ -560,7 +568,70 @@ func (r *VirtualPodReconciler) buildPhysicalPodLabels(virtualPod *corev1.Pod) ma
 	// Add Kubeocean managed-by label
 	labels[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
 
+	// Add virtual namespace label
+	labels[cloudv1beta1.LabelVirtualNamespace] = virtualPod.Namespace
+
+	// Add workload type and name labels
+	if workloadType != "" {
+		labels[cloudv1beta1.LabelWorkloadType] = workloadType
+	}
+	if workloadName != "" {
+		labels[cloudv1beta1.LabelWorkloadName] = workloadName
+	}
+
 	return labels
+}
+
+// getWorkloadInfo extracts workload type and name from pod's owner references
+func (r *VirtualPodReconciler) getWorkloadInfo(ctx context.Context, pod *corev1.Pod) (workloadType, workloadName string, err error) {
+	if len(pod.OwnerReferences) == 0 {
+		return "pod", "", nil
+	}
+
+	// Get the first owner reference (usually the direct owner)
+	ownerRef := pod.OwnerReferences[0]
+
+	switch ownerRef.Kind {
+	case "ReplicaSet":
+		// For ReplicaSet, we need to find the corresponding Deployment
+		deploymentName, err := r.getDeploymentFromReplicaSet(ctx, pod.Namespace, ownerRef.Name)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to get deployment from replicaset %s: %w", ownerRef.Name, err)
+		}
+		if deploymentName != "" {
+			return "deployment", deploymentName, nil
+		}
+		return "replicaset", ownerRef.Name, nil
+	case "Deployment":
+		return "deployment", ownerRef.Name, nil
+	case "DaemonSet":
+		return "daemonset", ownerRef.Name, nil
+	case "StatefulSet":
+		return "statefulset", ownerRef.Name, nil
+	case "CronJob":
+		return "cronjob", ownerRef.Name, nil
+	case "Job":
+		return "job", ownerRef.Name, nil
+	default:
+		return strings.ToLower(ownerRef.Kind), ownerRef.Name, nil
+	}
+}
+
+// getDeploymentFromReplicaSet finds the deployment that owns the given replicaset
+func (r *VirtualPodReconciler) getDeploymentFromReplicaSet(ctx context.Context, namespace, replicasetName string) (string, error) {
+	var replicaset appsv1.ReplicaSet
+	if err := r.VirtualClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: replicasetName}, &replicaset); err != nil {
+		return "", fmt.Errorf("failed to get ReplicaSet %s: %w", replicasetName, err)
+	}
+
+	// Look for deployment owner reference
+	for _, ownerRef := range replicaset.OwnerReferences {
+		if ownerRef.Kind == "Deployment" {
+			return ownerRef.Name, nil
+		}
+	}
+
+	return "", nil
 }
 
 // buildPhysicalPodAnnotations builds annotations for physical pod
