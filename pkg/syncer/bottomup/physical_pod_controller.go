@@ -224,7 +224,9 @@ func (r *PhysicalPodReconciler) buildSyncPod(physicalPod, virtualPod *corev1.Pod
 	syncPod.Labels = make(map[string]string)
 	// Copy labels from physical pod
 	for k, v := range physicalPod.Labels {
-		syncPod.Labels[k] = v
+		if k != cloudv1beta1.LabelVirtualNamespace && k != cloudv1beta1.LabelWorkloadType && k != cloudv1beta1.LabelWorkloadName {
+			syncPod.Labels[k] = v
+		}
 	}
 
 	// Replace annotations (excluding Kubeocean internal annotations)

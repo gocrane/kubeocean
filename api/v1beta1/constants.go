@@ -2,8 +2,11 @@ package v1beta1
 
 const (
 	// Labels
-	LabelManagedBy      = "kubeocean.io/managed-by"
-	LabelManagedByValue = "kubeocean"
+	LabelManagedBy        = "kubeocean.io/managed-by"
+	LabelManagedByValue   = "kubeocean"
+	LabelVirtualNamespace = "kubeocean.io/virtual-namespace"
+	LabelWorkloadType     = "kubeocean.io/workload-type"
+	LabelWorkloadName     = "kubeocean.io/workload-name"
 
 	// Pod mapping annotations
 	AnnotationVirtualPodNamespace  = "kubeocean.io/virtual-pod-namespace"

@@ -166,9 +166,10 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			ginkgo.By("Deleting virtual pod")
 			gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
 
-			ginkgo.By("Verifying physical pod is being deleted")
+			ginkgo.By("Verifying physical pod is being deleted" + fmt.Sprintf("%s/%s", physicalPodName, physicalPodNamespace))
+			// 由于物理集群 Pod 没有调度，这里会被直接删除
 			physicalPod := &corev1.Pod{}
-			gomega.Eventually(func() bool {
+			/*gomega.Eventually(func() bool {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{
 					Name: physicalPodName, Namespace: physicalPodNamespace,
 				}, physicalPod)
@@ -179,7 +180,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			// 测试环境无法真的回收 physical pod，这里直接删除
 			ginkgo.By("Deleting physical pod with GracePeriodSeconds=0")
 			zero := int64(0)
-			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
+			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())*/
 			gomega.Eventually(func() bool {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{
 					Name: physicalPodName, Namespace: physicalPodNamespace,
@@ -1074,24 +1075,9 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			ginkgo.By("Deleting virtual pod")
 			gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
 
-			ginkgo.By("Verifying physical pod has DeletionTimestamp")
+			ginkgo.By("Verifying physical pod is deleted" + fmt.Sprintf("%s/%s", physicalPodName, physicalPodNamespace))
 			gomega.Eventually(func() bool {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPod.Name, Namespace: physicalPod.Namespace}, physicalPod)
-				if err != nil {
-					return false
-				}
-				return physicalPod.DeletionTimestamp != nil
-			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
-
-			// 测试环境无法真的回收 physical pod，这里直接删除
-			ginkgo.By("Deleting physical pod with GracePeriodSeconds=0")
-			zero := int64(0)
-			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
-			gomega.Eventually(func() bool {
-				err := k8sPhysical.Get(ctx, types.NamespacedName{
-					Name: physicalPodName, Namespace: physicalPodNamespace,
-				}, physicalPod)
-				// 验证 physical pod 是否真的被删除
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
@@ -1453,17 +1439,11 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			ginkgo.By("Deleting virtual pod")
 			gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
 
-			ginkgo.By("Verifying physical pod has DeletionTimestamp")
+			ginkgo.By("Verifying physical pod is deleted" + fmt.Sprintf("%s/%s", physicalPodName, physicalPodNamespace))
 			gomega.Eventually(func() bool {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: physicalPodNamespace}, physicalPod)
-				if err != nil {
-					return false
-				}
-				return physicalPod.DeletionTimestamp != nil
+				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
-
-			ginkgo.By("Deleting physical pod with GracePeriodSeconds=0")
-			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &[]int64{0}[0]})).To(gomega.Succeed())
 
 			ginkgo.By("Verifying virtual pod is deleted")
 			gomega.Eventually(func() bool {
@@ -1795,17 +1775,11 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			ginkgo.By("Deleting virtual pod")
 			gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
 
-			ginkgo.By("Verifying physical pod has DeletionTimestamp")
+			ginkgo.By("Verifying physical pod is deleted" + fmt.Sprintf("%s/%s", physicalPodName, physicalPodNamespace))
 			gomega.Eventually(func() bool {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: physicalPodNamespace}, physicalPod)
-				if err != nil {
-					return false
-				}
-				return physicalPod.DeletionTimestamp != nil
+				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
-
-			ginkgo.By("Force deleting physical pod")
-			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &[]int64{0}[0]})).To(gomega.Succeed())
 
 			ginkgo.By("Verifying virtual pod is deleted")
 			gomega.Eventually(func() bool {
