@@ -42,7 +42,7 @@ const (
 	PhaseFailed = "Failed"
 
 	// Default names
-	DefaultSyncerName = "kubeocean-syncer"
+	DefaultSyncerName  = "kubeocean-syncer"
 	DefaultProxierName = "kubeocean-proxier"
 )
 
@@ -631,7 +631,6 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 
 	log.Info("Syncer Deployment cleaned up successfully, RBAC resources preserved", "status", cleanupStatus)
 	r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "Cleanup", "Syncer Deployment cleaned up successfully, RBAC resources preserved")
-
 
 	// Cleanup auto-managed certificates
 	if err := r.cleanupAutoManagedCertificates(ctx, originalClusterBinding); err != nil {
