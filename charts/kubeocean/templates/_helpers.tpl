@@ -164,3 +164,65 @@ Get the syncer image name
 {{- $tag := .Values.syncer.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s/%s:%s" $registry $repository $tag -}}
 {{- end -}}
+
+{{/*
+Create the name of the proxier template configmap
+*/}}
+{{- define "kubeocean.proxierTemplate.configMapName" -}}
+{{- printf "%s-proxier-template" (include "kubeocean.fullname" .) -}}
+{{- end -}}
+
+{{/*
+Proxier labels
+*/}}
+{{- define "kubeocean.proxier.labels" -}}
+{{ include "kubeocean.labels" . }}
+app.kubernetes.io/component: proxier
+app.kubernetes.io/part-of: kubeocean
+app.kubernetes.io/managed-by: kubeocean-manager
+{{- end }}
+
+{{/*
+Proxier selector labels
+*/}}
+{{- define "kubeocean.proxier.selectorLabels" -}}
+{{ include "kubeocean.selectorLabels" . }}
+app.kubernetes.io/component: proxier
+app.kubernetes.io/part-of: kubeocean
+app.kubernetes.io/managed-by: kubeocean-manager
+{{- end }}
+
+{{/*
+Create the name of the proxier service account to use
+*/}}
+{{- define "kubeocean.proxier.serviceAccountName" -}}
+{{- if .Values.proxier.serviceAccount.create }}
+{{- default (printf "%s-proxier" (include "kubeocean.fullname" .)) .Values.proxier.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.proxier.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Create the name of the proxier cluster role
+*/}}
+{{- define "kubeocean.proxier.clusterRoleName" -}}
+{{- default (printf "%s-proxier" (include "kubeocean.fullname" .)) .Values.proxier.rbac.clusterRoleName }}
+{{- end }}
+
+{{/*
+Create the name of the proxier cluster role binding
+*/}}
+{{- define "kubeocean.proxier.clusterRoleBindingName" -}}
+{{- default (printf "%s-proxier" (include "kubeocean.fullname" .)) .Values.proxier.rbac.clusterRoleBindingName }}
+{{- end }}
+
+{{/*
+Get the proxier image name
+*/}}
+{{- define "kubeocean.proxier.image" -}}
+{{- $registry := .Values.global.imageRegistry | default .Values.proxier.image.registry -}}
+{{- $repository := .Values.proxier.image.repository -}}
+{{- $tag := .Values.proxier.image.tag | default .Chart.AppVersion -}}
+{{- printf "%s/%s:%s" $registry $repository $tag -}}
+{{- end -}}

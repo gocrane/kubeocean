@@ -1,0 +1,180 @@
+{{- if .Values.manager.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubeocean.proxierTemplate.configMapName" . }}
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "kubeocean.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kubeocean-proxier-template
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: kubeocean
+data:
+  serviceAccountName: "{{ include "kubeocean.proxier.serviceAccountName" . }}"
+  clusterRoleName: "{{ include "kubeocean.proxier.clusterRoleName" . }}"
+  clusterRoleBindingName: "{{ include "kubeocean.proxier.clusterRoleBindingName" . }}"
+  proxierNamespace: "{{ .Values.namespace.name }}"
+  
+  deployment.yaml: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: "{{ "{{" }}.DeploymentName{{ "}}" }}"
+      namespace: "{{ "{{" }}.ProxierNamespace{{ "}}" }}"
+      labels:
+        app.kubernetes.io/name: kubeocean-proxier
+        app.kubernetes.io/instance: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+        app.kubernetes.io/component: proxier
+        app.kubernetes.io/part-of: kubeocean
+        app.kubernetes.io/managed-by: kubeocean-manager
+        kubeocean.io/cluster-binding: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+    spec:
+      replicas: {{ .Values.proxier.replicas }}
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: kubeocean-proxier
+          app.kubernetes.io/instance: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+          app.kubernetes.io/component: proxier
+          k8s-app: "{{ "{{" }}.DeploymentName{{ "}}" }}"
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: kubeocean-proxier
+            app.kubernetes.io/instance: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+            app.kubernetes.io/component: proxier
+            app.kubernetes.io/part-of: kubeocean
+            app.kubernetes.io/managed-by: kubeocean-manager
+            kubeocean.io/cluster-binding: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+            k8s-app: "{{ "{{" }}.DeploymentName{{ "}}" }}"
+        spec:
+          serviceAccountName: "{{ "{{" }}.ServiceAccountName{{ "}}" }}"
+          {{- if .Values.global.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml .Values.global.imagePullSecrets | nindent 12 }}
+          {{- end }}
+          {{- if .Values.global.affinity }}
+          affinity:
+            {{- toYaml .Values.global.affinity | nindent 12 }}
+          {{- end }}
+          {{- if .Values.global.nodeSelector }}
+          nodeSelector:
+            {{- toYaml .Values.global.nodeSelector | nindent 12 }}
+          {{- end }}
+          {{- if .Values.global.tolerations }}
+          tolerations:
+            {{- toYaml .Values.global.tolerations | nindent 12 }}
+          {{- end }}
+          {{- if .Values.proxier.podSecurityContext }}
+          securityContext:
+            {{- toYaml .Values.proxier.podSecurityContext | nindent 12 }}
+          {{- end }}
+          containers:
+          - name: proxier
+            image: "{{ include "kubeocean.proxier.image" . }}"
+            imagePullPolicy: {{ .Values.proxier.image.pullPolicy }}
+            args:
+            - --cluster-binding-name={{ "{{" }}.ClusterBindingName{{ "}}" }}
+            - --listen-port={{ .Values.proxier.listenPort }}
+            {{- "{{" }}- if .TLSEnabled{{ "}}" }}
+            - --tls-secret-name={{ "{{" }}.TLSSecretName{{ "}}" }}
+            - --tls-secret-namespace={{ "{{" }}.TLSSecretNamespace{{ "}}" }}
+            {{- "{{" }}- end{{ "}}" }}
+            {{- if .Values.logging.level }}
+            - --zap-log-level={{ .Values.logging.level }}
+            {{- end }}
+            {{- if .Values.logging.format }}
+            - --zap-encoder={{ .Values.logging.format }}
+            {{- end }}
+            env:
+            - name: CLUSTER_BINDING_NAME
+              value: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            ports:
+            - name: kubelet-api
+              containerPort: {{ .Values.proxier.listenPort }}
+              protocol: TCP
+            {{- if .Values.proxier.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.proxier.metrics.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.proxier.healthProbe.enabled }}
+            - name: health
+              containerPort: {{ .Values.proxier.healthProbe.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.proxier.healthProbe.enabled }}
+            livenessProbe:
+              httpGet:
+                path: /healthz
+                port: {{ .Values.proxier.healthProbe.port }}
+                scheme: HTTPS
+              initialDelaySeconds: {{ .Values.proxier.healthProbe.livenessProbe.initialDelaySeconds }}
+              periodSeconds: {{ .Values.proxier.healthProbe.livenessProbe.periodSeconds }}
+            readinessProbe:
+              httpGet:
+                path: /healthz
+                port: {{ .Values.proxier.healthProbe.port }}
+                scheme: HTTPS
+              initialDelaySeconds: {{ .Values.proxier.healthProbe.readinessProbe.initialDelaySeconds }}
+              periodSeconds: {{ .Values.proxier.healthProbe.readinessProbe.periodSeconds }}
+            {{- end }}
+            resources:
+              {{- toYaml .Values.proxier.resources | nindent 14 }}
+            {{- if .Values.proxier.containerSecurityContext }}
+            securityContext:
+              {{- toYaml .Values.proxier.containerSecurityContext | nindent 14 }}
+            {{- end }}
+            {{- if .Values.proxier.volumeMounts }}
+            volumeMounts:
+              {{- toYaml .Values.proxier.volumeMounts | nindent 14 }}
+            {{- end }}
+          terminationGracePeriodSeconds: 10
+          {{- if .Values.proxier.volumes }}
+          volumes:
+            {{- toYaml .Values.proxier.volumes | nindent 12 }}
+          {{- end }}
+
+  service.yaml: |
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: "{{ "{{" }}.ServiceName{{ "}}" }}"
+      namespace: "{{ "{{" }}.ProxierNamespace{{ "}}" }}"
+      labels:
+        app.kubernetes.io/name: kubeocean-proxier
+        app.kubernetes.io/instance: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+        app.kubernetes.io/component: proxier
+        app.kubernetes.io/part-of: kubeocean
+        app.kubernetes.io/managed-by: kubeocean-manager
+        kubeocean.io/cluster-binding: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+    spec:
+      type: ClusterIP
+      ports:
+      - name: kubelet-api
+        port: {{ .Values.proxier.listenPort }}
+        targetPort: kubelet-api
+        protocol: TCP
+      {{- if .Values.proxier.metrics.enabled }}
+      - name: metrics
+        port: {{ .Values.proxier.metrics.port }}
+        targetPort: metrics
+        protocol: TCP
+      {{- end }}
+      selector:
+        app.kubernetes.io/name: kubeocean-proxier
+        app.kubernetes.io/instance: "{{ "{{" }}.ClusterBindingName{{ "}}" }}"
+        app.kubernetes.io/component: proxier
+        k8s-app: "{{ "{{" }}.DeploymentName{{ "}}" }}"
+{{- end }}
