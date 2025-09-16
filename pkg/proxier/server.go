@@ -34,7 +34,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientremotecommand "k8s.io/client-go/tools/remotecommand"
 
-	localremotecommand "github.com/TKEColocation/kubeocean/pkg/syncer/proxier/remotecommand"
+	localremotecommand "github.com/TKEColocation/kubeocean/pkg/proxier/remotecommand"
 )
 
 // server implements HTTPServer interface

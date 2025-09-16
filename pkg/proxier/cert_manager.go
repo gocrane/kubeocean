@@ -63,27 +63,6 @@ func (cm *CertificateManager) GetOrCreateTLSSecret(ctx context.Context) (*corev1
 	return cm.createTLSSecretWithAutoApproval(ctx, defaultSecretName)
 }
 
-// GetExternalTLSSecret gets an external TLS secret (for command line or annotation specified secrets)
-func (cm *CertificateManager) GetExternalTLSSecret(ctx context.Context, secretName, secretNamespace string) (*corev1.Secret, error) {
-	cm.log.Info("Getting external TLS secret", "secretName", secretName, "secretNamespace", secretNamespace)
-
-	secret, err := cm.client.CoreV1().Secrets(secretNamespace).Get(ctx, secretName, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get external TLS secret %s/%s: %w", secretNamespace, secretName, err)
-	}
-
-	// Validate external secret has required keys
-	if _, hasCert := secret.Data["tls.crt"]; !hasCert {
-		return nil, fmt.Errorf("external TLS secret %s/%s missing tls.crt", secretNamespace, secretName)
-	}
-	if _, hasKey := secret.Data["tls.key"]; !hasKey {
-		return nil, fmt.Errorf("external TLS secret %s/%s missing tls.key", secretNamespace, secretName)
-	}
-
-	cm.log.Info("Successfully retrieved external TLS secret", "secretName", secretName, "secretNamespace", secretNamespace)
-	return secret, nil
-}
-
 // getSpecifiedSecretName gets secret name from ClusterBinding annotation
 func (cm *CertificateManager) getSpecifiedSecretName() string {
 	if cm.clusterBinding.Annotations == nil {

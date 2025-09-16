@@ -31,7 +31,7 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/metrics"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/proxier"
+	"github.com/TKEColocation/kubeocean/pkg/proxier"
 )
 
 const (
