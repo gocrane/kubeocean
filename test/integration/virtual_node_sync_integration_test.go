@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -2137,15 +2138,149 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					return k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
 				}, 30*time.Second, 1*time.Second).Should(gomega.Succeed())
 
-				// Delete the physical node
+				// Step 1: Create virtual pod after virtual node is created
+				ginkgo.By("Creating virtual pod after virtual node is created")
+				virtualPodName := "deletion-test-pod"
+				virtualPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      virtualPodName,
+						Namespace: "default",
+						Labels: map[string]string{
+							"app": "deletion-test",
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "test-container",
+								Image: "nginx:latest",
+							},
+						},
+						NodeName: virtualNodeName,
+					},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
+
+				// Verify physical pod is created but not scheduled (spec.nodeName is empty)
+				ginkgo.By("Verifying physical pod is created but not scheduled")
+				// Wait for virtual pod to have physical pod mapping annotations
+				var updatedVirtualPod corev1.Pod
+				gomega.Eventually(func() bool {
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualPod.Name, Namespace: virtualPod.Namespace}, &updatedVirtualPod)
+					if err != nil {
+						return false
+					}
+					physicalName := updatedVirtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodName]
+					physicalNamespace := updatedVirtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace]
+					return physicalName != "" && physicalNamespace != ""
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Now verify the physical pod exists but is not scheduled
+				physicalPodName := updatedVirtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodName]
+				physicalPodNamespace := updatedVirtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace]
+				gomega.Eventually(func() bool {
+					var physicalPod corev1.Pod
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: physicalPodNamespace}, &physicalPod)
+					return err == nil && physicalPod.Spec.NodeName == ""
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Step 2: Schedule physical pod to corresponding physical node using Bind API
+				ginkgo.By("Scheduling physical pod to corresponding physical node")
+				// Use the physical pod name from the virtual pod annotations
+				actualPhysicalPodName := physicalPodName
+
+				binding := &corev1.Binding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      actualPhysicalPodName,
+						Namespace: physicalPodNamespace,
+					},
+					Target: corev1.ObjectReference{
+						Kind: "Node",
+						Name: physicalNodeName,
+					},
+				}
+				// Use the physical cluster's clientset to bind the pod
+				physicalClientset := kubernetes.NewForConfigOrDie(cfgPhysical)
+				gomega.Expect(physicalClientset.CoreV1().Pods(physicalPodNamespace).Bind(ctx, binding, metav1.CreateOptions{})).To(gomega.Succeed())
+
+				// Verify physical pod's spec.nodeName is set to corresponding physical node
+				gomega.Eventually(func() bool {
+					var physicalPod corev1.Pod
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: actualPhysicalPodName, Namespace: physicalPodNamespace}, &physicalPod)
+					return err == nil && physicalPod.Spec.NodeName == physicalNodeName
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Step 3: Delete physical node and verify deletion states
+				ginkgo.By("Deleting physical node and verifying deletion states")
 				gomega.Expect(k8sPhysical.Delete(ctx, physicalNode)).To(gomega.Succeed())
 
-				// Wait for virtual node to be deleted
+				// Wait 1s and verify deletion states
+				time.Sleep(1 * time.Second)
+
+				// Verify virtual node exists and has deletion taint
+				gomega.Eventually(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					if err != nil {
+						return false
+					}
+					// Check if virtual node has deletion taint
+					for _, taint := range virtualNode.Spec.Taints {
+						if taint.Key == "kubeocean.io/vnode-deleting" {
+							return true
+						}
+					}
+					return false
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify virtual node has DeletionTimestamp (being deleted)
+				gomega.Eventually(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					return err == nil && virtualNode.DeletionTimestamp != nil
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify virtual pod exists and is being deleted
+				gomega.Eventually(func() bool {
+					var vPod corev1.Pod
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualPod.Name, Namespace: virtualPod.Namespace}, &vPod)
+					return err == nil && vPod.DeletionTimestamp != nil
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify physical pod exists and is being deleted
+				gomega.Eventually(func() bool {
+					var pPod corev1.Pod
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: actualPhysicalPodName, Namespace: physicalPodNamespace}, &pPod)
+					return err == nil && pPod.DeletionTimestamp != nil
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Step 4: Force delete physical pod and verify final states
+				ginkgo.By("Force deleting physical pod and verifying final states")
+				var physicalPod corev1.Pod
+				gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: actualPhysicalPodName, Namespace: physicalPodNamespace}, &physicalPod)).To(gomega.Succeed())
+				zero := int64(0)
+				gomega.Expect(k8sPhysical.Delete(ctx, &physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
+
+				// Verify physical pod is deleted
+				gomega.Eventually(func() bool {
+					var pPod corev1.Pod
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: actualPhysicalPodName, Namespace: physicalPodNamespace}, &pPod)
+					return apierrors.IsNotFound(err)
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify virtual pod is deleted
+				gomega.Eventually(func() bool {
+					var vPod corev1.Pod
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualPod.Name, Namespace: virtualPod.Namespace}, &vPod)
+					return apierrors.IsNotFound(err)
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify virtual node is deleted
 				gomega.Eventually(func() bool {
 					var virtualNode corev1.Node
 					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
 					return apierrors.IsNotFound(err)
-				}, 30*time.Second, 2*time.Second).Should(gomega.BeTrue())
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
 				// Clean up
 				syncer.Stop()
@@ -2302,6 +2437,237 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 
 				// Clean up
 				syncer.Stop()
+				_ = k8sVirtual.Delete(ctx, clusterBinding)
+				_ = k8sVirtual.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+			}, ginkgo.SpecTimeout(180*time.Second))
+		})
+
+		ginkgo.Describe("ResourceLeasingPolicy Deletion", func() {
+			ginkgo.It("should delete virtual node when ResourceLeasingPolicy is deleted", func(ctx context.Context) {
+				// Create namespace for secrets
+				ns := "kubeocean-system-rlp-deletion"
+				_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+
+				// Create kubeconfig secret
+				kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: "rlp-deletion-test-kc", Namespace: ns},
+					Data:       map[string][]byte{"kubeconfig": kc},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
+
+				// Create ClusterBinding resource
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{Name: "rlp-deletion-test-cluster"},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:      "rlp-deletion-test-cls",
+						SecretRef:      corev1.SecretReference{Name: "rlp-deletion-test-kc", Namespace: ns},
+						MountNamespace: "default",
+					},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, clusterBinding)).To(gomega.Succeed())
+
+				// Start syncer
+				syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBinding.Name, 100, 150)
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				go func() {
+					defer ginkgo.GinkgoRecover()
+					err := syncer.Start(ctx)
+					if err != nil && ctx.Err() == nil {
+						ginkgo.Fail(fmt.Sprintf("KubeoceanSyncer failed: %v", err))
+					}
+				}()
+
+				// Step 1: Create physical node
+				ginkgo.By("Creating physical node")
+				physicalNodeName := "rlp-deletion-test-node"
+				physicalNode := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: physicalNodeName,
+					},
+					Spec: corev1.NodeSpec{},
+					Status: corev1.NodeStatus{
+						Capacity: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+						Allocatable: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   corev1.NodeReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+				gomega.Expect(k8sPhysical.Create(ctx, physicalNode)).To(gomega.Succeed())
+
+				// Step 2: Create matching ResourceLeasingPolicy
+				ginkgo.By("Creating matching ResourceLeasingPolicy")
+				policy := CreateDefaultResourceLeasingPolicy(ctx, k8sPhysical, clusterBinding.Name, "rlp-deletion-test-policy")
+
+				// Step 3: Verify virtual node is created
+				ginkgo.By("Verifying virtual node is created")
+				virtualNodeName := fmt.Sprintf("vnode-%s-%s", clusterBinding.Spec.ClusterID, physicalNodeName)
+				gomega.Eventually(func() error {
+					var virtualNode corev1.Node
+					return k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+				}, 30*time.Second, 1*time.Second).Should(gomega.Succeed())
+
+				// Step 4: Create virtual pod
+				ginkgo.By("Creating virtual pod")
+				virtualPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "rlp-deletion-test-pod",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: virtualNodeName,
+						Containers: []corev1.Container{
+							{
+								Name:  "test-container",
+								Image: "nginx:latest",
+							},
+						},
+					},
+				}
+				gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
+
+				// Step 5: Verify physical pod is created but not scheduled (spec.nodeName is empty)
+				physicalPodName := virtualPod.Name + "-" + fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))))
+				ginkgo.By("Verifying physical pod is created")
+				gomega.Eventually(func() bool {
+					var physicalPod corev1.Pod
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: clusterBinding.Spec.MountNamespace}, &physicalPod)
+					return err == nil && physicalPod.Spec.NodeName == ""
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Step 6: Bind physical pod to corresponding physical node using Bind API
+				ginkgo.By("Binding physical pod to corresponding physical node")
+				binding := &corev1.Binding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      physicalPodName,
+						Namespace: clusterBinding.Spec.MountNamespace,
+					},
+					Target: corev1.ObjectReference{
+						Kind: "Node",
+						Name: physicalNodeName,
+					},
+				}
+				gomega.Expect(k8sPhysical.SubResource("binding").Create(ctx, &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      physicalPodName,
+						Namespace: clusterBinding.Spec.MountNamespace,
+					},
+				}, binding)).To(gomega.Succeed())
+
+				// Verify physical pod spec.nodeName is set to corresponding physical node
+				ginkgo.By("Verifying physical pod spec.nodeName is set to corresponding physical node")
+				gomega.Eventually(func() bool {
+					var physicalPod corev1.Pod
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: clusterBinding.Spec.MountNamespace}, &physicalPod)
+					return err == nil && physicalPod.Spec.NodeName == physicalNodeName
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Step 7: Delete matching ResourceLeasingPolicy
+				ginkgo.By("Deleting matching ResourceLeasingPolicy")
+				gomega.Expect(k8sPhysical.Delete(ctx, policy)).To(gomega.Succeed())
+
+				// Step 8: Wait 1s and verify deletion states
+				time.Sleep(1 * time.Second)
+
+				// Verify virtual node exists and has deletion taint
+				ginkgo.By("Verifying virtual node exists and has deletion taint")
+				gomega.Eventually(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					if err != nil {
+						return false
+					}
+					// Check if virtual node has deletion taint
+					for _, taint := range virtualNode.Spec.Taints {
+						if taint.Key == "kubeocean.io/vnode-deleting" {
+							return true
+						}
+					}
+					return false
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify virtual node has DeletionTimestamp (is being deleted)
+				ginkgo.By("Verifying virtual node has DeletionTimestamp (is being deleted)")
+				gomega.Eventually(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					return err == nil && virtualNode.DeletionTimestamp != nil
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify virtual pod still exists (not deleted yet because node has active pods)
+				ginkgo.By("Verifying virtual pod still exists (not deleted yet because node has active pods)")
+				gomega.Eventually(func() bool {
+					var vPod corev1.Pod
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualPod.Name, Namespace: virtualPod.Namespace}, &vPod)
+					return err == nil && vPod.DeletionTimestamp == nil
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify physical pod still exists (not deleted yet)
+				ginkgo.By("Verifying physical pod still exists (not deleted yet)")
+				gomega.Eventually(func() bool {
+					var pPod corev1.Pod
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: clusterBinding.Spec.MountNamespace}, &pPod)
+					return err == nil && pPod.DeletionTimestamp == nil
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Step 9: Delete virtual pod first, then force delete physical pod
+				ginkgo.By("Deleting virtual pod first")
+				gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
+
+				// Verify physical pod is being deleted (has DeletionTimestamp)
+				ginkgo.By("Verifying physical pod is being deleted (has DeletionTimestamp)")
+				gomega.Eventually(func() bool {
+					var pPod corev1.Pod
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: clusterBinding.Spec.MountNamespace}, &pPod)
+					return err == nil && pPod.DeletionTimestamp != nil
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Force delete physical pod
+				ginkgo.By("Force deleting physical pod")
+				var physicalPod corev1.Pod
+				gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: clusterBinding.Spec.MountNamespace}, &physicalPod)).To(gomega.Succeed())
+				zero := int64(0)
+				gomega.Expect(k8sPhysical.Delete(ctx, &physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
+
+				// Verify physical pod is deleted
+				ginkgo.By("Verifying physical pod is deleted")
+				gomega.Eventually(func() bool {
+					var pPod corev1.Pod
+					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: clusterBinding.Spec.MountNamespace}, &pPod)
+					return apierrors.IsNotFound(err)
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify virtual pod is deleted
+				ginkgo.By("Verifying virtual pod is deleted")
+				gomega.Eventually(func() bool {
+					var vPod corev1.Pod
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualPod.Name, Namespace: virtualPod.Namespace}, &vPod)
+					return apierrors.IsNotFound(err)
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify virtual node is deleted
+				ginkgo.By("Verifying virtual node is deleted")
+				gomega.Eventually(func() bool {
+					var virtualNode corev1.Node
+					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
+					return apierrors.IsNotFound(err)
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Clean up
+				syncer.Stop()
+				_ = k8sPhysical.Delete(ctx, physicalNode)
 				_ = k8sVirtual.Delete(ctx, clusterBinding)
 				_ = k8sVirtual.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 			}, ginkgo.SpecTimeout(180*time.Second))
