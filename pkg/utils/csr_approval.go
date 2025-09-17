@@ -117,4 +117,3 @@ func waitForCertificate(client kubernetes.Interface, csrName string, timeout tim
 		}
 	}
 }
-
