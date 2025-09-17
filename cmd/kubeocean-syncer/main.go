@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	//+kubebuilder:scaffold:imports
 
 	"go.uber.org/zap/zapcore"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,10 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	clsv1 "github.com/TKEColocation/kubeocean/api/cls/v1"
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/syncer"
-	corev1 "k8s.io/api/core/v1"
-	//+kubebuilder:scaffold:imports
 )
 
 var (
@@ -33,6 +34,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(cloudv1beta1.AddToScheme(scheme))
+	utilruntime.Must(clsv1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
