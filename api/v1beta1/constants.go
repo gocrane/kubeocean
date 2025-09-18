@@ -55,4 +55,7 @@ const (
 	// Cluster-specific labels and finalizers
 	LabelManagedByClusterIDPrefix = "kubeocean.io/synced-by-"
 	FinalizerClusterIDPrefix      = "kubeocean.io/finalizer-"
+
+	// PriorityClass
+	DefaultPriorityClassName = "kubeocean-default"
 )

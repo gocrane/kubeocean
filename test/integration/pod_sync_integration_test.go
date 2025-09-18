@@ -12,6 +12,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -137,6 +138,19 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(updatedVirtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace]).To(gomega.Equal(physicalPod.Namespace))
 			gomega.Expect(updatedVirtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodName]).To(gomega.Equal(physicalPod.Name))
 			gomega.Expect(updatedVirtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodUID]).To(gomega.Equal(string(physicalPod.UID)))
+
+			// Verify PriorityClass is set to default
+			ginkgo.By("Verifying physical pod has default PriorityClass")
+			gomega.Expect(physicalPod.Spec.PriorityClassName).To(gomega.Equal(cloudv1beta1.DefaultPriorityClassName))
+			gomega.Expect(physicalPod.Spec.Priority).To(gomega.HaveValue(gomega.Equal(int32(0))))
+
+			// Verify that the default PriorityClass exists
+			ginkgo.By("Verifying default PriorityClass exists")
+			defaultPriorityClass := &schedulingv1.PriorityClass{}
+			gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: cloudv1beta1.DefaultPriorityClassName}, defaultPriorityClass)).To(gomega.Succeed())
+			gomega.Expect(defaultPriorityClass.Value).To(gomega.Equal(int32(0)))
+			gomega.Expect(*defaultPriorityClass.PreemptionPolicy).To(gomega.Equal(corev1.PreemptLowerPriority))
+
 			ginkgo.By("Verifying physical pod is created")
 		}, ginkgo.SpecTimeout(testTimeout))
 
@@ -1804,6 +1818,81 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 				}
 			}
 		})
+	})
+
+	ginkgo.Context("PriorityClass Tests", func() {
+		ginkgo.It("should create physical pod with custom PriorityClass when podPriorityClassName is specified", func(ctx context.Context) {
+			// Wait for virtual node to be ready before creating pods
+			waitForVirtualNodeReady(ctx, virtualNodeName)
+
+			customPriorityClassName := "test-new"
+			customPriorityValue := int32(1000)
+
+			ginkgo.By("Creating custom PriorityClass in physical cluster")
+			customPriorityClass := &schedulingv1.PriorityClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: customPriorityClassName,
+				},
+				Value:            customPriorityValue,
+				PreemptionPolicy: &[]corev1.PreemptionPolicy{corev1.PreemptLowerPriority}[0],
+				Description:      "Test PriorityClass for Kubeocean E2E tests",
+			}
+			gomega.Expect(k8sPhysical.Create(ctx, customPriorityClass)).To(gomega.Succeed())
+
+			ginkgo.By("Updating ClusterBinding to use custom PriorityClass")
+			clusterBinding := &cloudv1beta1.ClusterBinding{}
+			gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: clusterBindingName}, clusterBinding)).To(gomega.Succeed())
+
+			clusterBinding.Spec.PodPriorityClassName = customPriorityClassName
+			gomega.Expect(k8sVirtual.Update(ctx, clusterBinding)).To(gomega.Succeed())
+
+			ginkgo.By("Creating a virtual pod in the virtual cluster")
+			virtualPod := createTestVirtualPod("test-pod-custom-priority", testPodNamespace, virtualNodeName)
+			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
+
+			ginkgo.By("Waiting for physical pod to be created")
+			var physicalPod *corev1.Pod
+			gomega.Eventually(func() bool {
+				pods := &corev1.PodList{}
+				err := k8sPhysical.List(ctx, pods, client.InNamespace(testMountNamespace))
+				if err != nil {
+					return false
+				}
+
+				for i := range pods.Items {
+					pod := &pods.Items[i]
+					if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+						// Check if this physical pod belongs to our virtual pod
+						if pod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] == virtualPod.Namespace &&
+							pod.Annotations[cloudv1beta1.AnnotationVirtualPodName] == virtualPod.Name {
+							physicalPod = pod
+							return true
+						}
+					}
+				}
+				return false
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying physical pod has custom PriorityClass")
+			gomega.Expect(physicalPod).NotTo(gomega.BeNil())
+			gomega.Expect(physicalPod.Spec.PriorityClassName).To(gomega.Equal(customPriorityClassName))
+			ginkgo.By("Verifying physical pod has custom PriorityClass: " + fmt.Sprintf("%v", physicalPod.Spec.PriorityClassName))
+
+			// Verify that the physical pod has the correct priority value
+			ginkgo.By("Verifying physical pod has correct priority value")
+			gomega.Expect(physicalPod.Spec.Priority).NotTo(gomega.BeNil())
+			gomega.Expect(*physicalPod.Spec.Priority).To(gomega.Equal(customPriorityValue))
+			ginkgo.By("Verifying physical pod has correct priority value: " + fmt.Sprintf("%v", *physicalPod.Spec.Priority))
+
+			// Clean up: restore ClusterBinding to default
+			ginkgo.By("Restoring ClusterBinding to default PriorityClass")
+			clusterBinding.Spec.PodPriorityClassName = ""
+			gomega.Expect(k8sVirtual.Update(ctx, clusterBinding)).To(gomega.Succeed())
+
+			// Clean up: delete custom PriorityClass
+			ginkgo.By("Cleaning up custom PriorityClass")
+			gomega.Expect(k8sPhysical.Delete(ctx, customPriorityClass)).To(gomega.Succeed())
+		}, ginkgo.SpecTimeout(testTimeout))
 	})
 })
 

@@ -33,6 +33,11 @@ type ClusterBindingSpec struct {
 	// If true, the default taint will not be added; if false or not set, the default taint will be added
 	// +optional
 	DisableNodeDefaultTaint bool `json:"disableNodeDefaultTaint,omitempty"`
+
+	// PodPriorityClassName specifies the priority class name for physical pods
+	// If empty, kubeocean-default will be used
+	// +optional
+	PodPriorityClassName string `json:"podPriorityClassName,omitempty"`
 }
 
 // ClusterBindingStatus defines the observed state of ClusterBinding
