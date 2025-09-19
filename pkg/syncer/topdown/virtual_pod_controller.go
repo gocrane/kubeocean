@@ -1586,16 +1586,6 @@ func (r *VirtualPodReconciler) syncPVCs(ctx context.Context, virtualPod *corev1.
 	return pvcMappings, nil
 }
 
-// ResourceType represents the type of Kubernetes resource
-type ResourceType string
-
-const (
-	ResourceTypeConfigMap ResourceType = "ConfigMap"
-	ResourceTypeSecret    ResourceType = "Secret"
-	ResourceTypePVC       ResourceType = "PVC"
-	ResourceTypePV        ResourceType = "PV"
-)
-
 // ResourceMapping represents the mapping from virtual resource names to physical resource names
 type ResourceMapping struct {
 	ConfigMaps              map[string]string // virtual name -> physical name

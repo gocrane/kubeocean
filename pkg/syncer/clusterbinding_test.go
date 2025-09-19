@@ -3,15 +3,18 @@ package syncer
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -416,8 +419,8 @@ func TestClusterBindingReconciler_Reconcile(t *testing.T) {
 	}
 }
 
-// TestClusterBindingReconciler_checkVirtualResourcesExist tests the checkVirtualResourcesExist method
-func TestClusterBindingReconciler_checkVirtualResourcesExist(t *testing.T) {
+// TestClusterBindingReconciler_checkAndCleanVirtualResources tests the checkAndCleanVirtualResources method
+func TestClusterBindingReconciler_checkAndCleanVirtualResources(t *testing.T) {
 	tests := []struct {
 		name           string
 		setupResources func(*ClusterBindingReconciler)
@@ -469,13 +472,37 @@ func TestClusterBindingReconciler_checkVirtualResourcesExist(t *testing.T) {
 			reconciler := setupTestEnvironment(t)
 			tt.setupResources(reconciler)
 
-			result, err := reconciler.checkVirtualResourcesExist(context.Background(), tt.labelKey)
+			clusterBinding := &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster-binding",
+					Namespace: "default",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			}
+			result, err := reconciler.checkAndCleanVirtualResources(context.Background(), tt.labelKey, clusterBinding)
 
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.expectedResult, result)
+
+				// Additionally verify that clusterbinding-deleting annotation was added if resources exist
+				if result != "" {
+					// Check that the annotation was added to the resources
+					var configMapList corev1.ConfigMapList
+					labelSelector := labels.SelectorFromSet(map[string]string{tt.labelKey: cloudv1beta1.LabelValueTrue})
+					err := reconciler.List(context.Background(), &configMapList, client.MatchingLabelsSelector{Selector: labelSelector})
+					assert.NoError(t, err)
+
+					for _, cm := range configMapList.Items {
+						assert.NotNil(t, cm.Annotations, "ConfigMap should have annotations")
+						annotationKey := cloudv1beta1.GetClusterBindingDeletingAnnotation("test-cluster")
+						assert.Equal(t, "test-cluster-binding", cm.Annotations[annotationKey], "ConfigMap should have clusterbinding-deleting annotation")
+					}
+				}
 			}
 		})
 	}
@@ -544,6 +571,428 @@ func TestClusterBindingReconciler_checkPhysicalResourcesExist(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.expectedResult, result)
+			}
+		})
+	}
+}
+
+// TestClusterBindingReconciler_handleClusterBindingDeletion tests the handleClusterBindingDeletion method
+func TestClusterBindingReconciler_handleClusterBindingDeletion(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupResources func(*ClusterBindingReconciler)
+		clusterBinding *cloudv1beta1.ClusterBinding
+		expectedResult ctrl.Result
+		expectError    bool
+		errorContains  string
+	}{
+		{
+			name: "virtual nodes exist - should return error due to uninitialized reconciler",
+			setupResources: func(r *ClusterBindingReconciler) {
+				// Create virtual nodes with cluster binding label
+				virtualNode1 := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "virtual-node-1",
+						Labels: map[string]string{
+							cloudv1beta1.LabelClusterBinding:   "test-cluster-binding",
+							cloudv1beta1.LabelPhysicalNodeName: "physical-node-1",
+						},
+					},
+				}
+				virtualNode2 := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "virtual-node-2",
+						Labels: map[string]string{
+							cloudv1beta1.LabelClusterBinding:   "test-cluster-binding",
+							cloudv1beta1.LabelPhysicalNodeName: "physical-node-2",
+						},
+					},
+				}
+				r.Create(context.Background(), virtualNode1)
+				r.Create(context.Background(), virtualNode2)
+			},
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster-binding",
+					Namespace: "default",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			expectedResult: ctrl.Result{},
+			expectError:    true,
+			errorContains:  "", // We expect some error from uninitialized reconciler
+		},
+		{
+			name: "virtual resources exist - should add annotations and return error",
+			setupResources: func(r *ClusterBindingReconciler) {
+				// Create virtual configmap with cluster-specific label
+				cm := &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-configmap",
+						Namespace: "default",
+						Labels: map[string]string{
+							"kubeocean.io/synced-by-test-cluster": cloudv1beta1.LabelValueTrue,
+						},
+					},
+				}
+				r.Create(context.Background(), cm)
+			},
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster-binding",
+					Namespace: "default",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			expectedResult: ctrl.Result{},
+			expectError:    true,
+			errorContains:  "virtual resources still exist",
+		},
+		{
+			name: "physical resources exist - should return error",
+			setupResources: func(r *ClusterBindingReconciler) {
+				// Create physical pod with kubeocean managed-by label
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "default",
+						Labels: map[string]string{
+							cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						},
+					},
+				}
+				r.PhysicalClient.Create(context.Background(), pod)
+			},
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster-binding",
+					Namespace: "default",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			expectedResult: ctrl.Result{},
+			expectError:    true,
+			errorContains:  "physical resources still exist",
+		},
+		{
+			name: "successful deletion - no resources exist",
+			setupResources: func(r *ClusterBindingReconciler) {
+				// No resources to create - clean environment
+			},
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-cluster-binding",
+					Namespace:  "default",
+					Finalizers: []string{ClusterBindingSyncerFinalizer},
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			expectedResult: ctrl.Result{},
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := setupTestEnvironment(t)
+			tt.setupResources(reconciler)
+
+			// Create the ClusterBinding
+			err := reconciler.Create(context.Background(), tt.clusterBinding)
+			require.NoError(t, err)
+
+			result, err := reconciler.handleClusterBindingDeletion(context.Background(), tt.clusterBinding)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tt.expectedResult, result)
+
+			// For successful deletion, verify finalizer was removed
+			if !tt.expectError && tt.name == "successful deletion - no resources exist" {
+				var updatedBinding cloudv1beta1.ClusterBinding
+				err = reconciler.Get(context.Background(), types.NamespacedName{
+					Name:      tt.clusterBinding.Name,
+					Namespace: tt.clusterBinding.Namespace,
+				}, &updatedBinding)
+				assert.NoError(t, err)
+				assert.NotContains(t, updatedBinding.Finalizers, ClusterBindingSyncerFinalizer)
+			}
+		})
+	}
+}
+
+// TestClusterBindingReconciler_Reconcile_DeletionScenarios tests the full Reconcile method with deletion scenarios
+func TestClusterBindingReconciler_Reconcile_DeletionScenarios(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupBinding   func(*ClusterBindingReconciler) *cloudv1beta1.ClusterBinding
+		setupResources func(*ClusterBindingReconciler)
+		expectedResult ctrl.Result
+		expectError    bool
+		errorContains  string
+	}{
+		{
+			name: "reconcile deletion with finalizer - should add finalizer if missing",
+			setupBinding: func(r *ClusterBindingReconciler) *cloudv1beta1.ClusterBinding {
+				binding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:              "test-cluster-binding",
+						Namespace:         "default",
+						DeletionTimestamp: &metav1.Time{Time: time.Now()},
+						// No finalizer initially
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID: "test-cluster",
+					},
+				}
+				r.Create(context.Background(), binding)
+
+				// Set the existing ClusterBinding to avoid nodeSelector change detection
+				r.BottomUpSyncer.ClusterBinding = binding
+				return binding
+			},
+			setupResources: func(r *ClusterBindingReconciler) {
+				// No additional resources
+			},
+			expectedResult: ctrl.Result{},
+			expectError:    false,
+		},
+		{
+			name: "reconcile deletion without finalizer - should do nothing",
+			setupBinding: func(r *ClusterBindingReconciler) *cloudv1beta1.ClusterBinding {
+				binding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:              "test-cluster-binding",
+						Namespace:         "default",
+						DeletionTimestamp: &metav1.Time{Time: time.Now()},
+						// No finalizer, so should do nothing
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID: "test-cluster",
+					},
+				}
+				r.Create(context.Background(), binding)
+
+				// Set the existing ClusterBinding to avoid nodeSelector change detection
+				r.BottomUpSyncer.ClusterBinding = binding
+				return binding
+			},
+			setupResources: func(r *ClusterBindingReconciler) {
+				// No additional resources
+			},
+			expectedResult: ctrl.Result{},
+			expectError:    false,
+		},
+		{
+			name: "reconcile normal operation - no deletion timestamp",
+			setupBinding: func(r *ClusterBindingReconciler) *cloudv1beta1.ClusterBinding {
+				binding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-cluster-binding",
+						Namespace: "default",
+						// No deletion timestamp
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID: "test-cluster",
+					},
+				}
+				r.Create(context.Background(), binding)
+
+				// Set the existing ClusterBinding to avoid nodeSelector change detection
+				r.BottomUpSyncer.ClusterBinding = binding
+				return binding
+			},
+			setupResources: func(r *ClusterBindingReconciler) {
+				// No additional resources
+			},
+			expectedResult: ctrl.Result{},
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := setupTestEnvironment(t)
+			tt.setupResources(reconciler)
+			binding := tt.setupBinding(reconciler)
+
+			req := ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      binding.Name,
+					Namespace: binding.Namespace,
+				},
+			}
+
+			result, err := reconciler.Reconcile(context.Background(), req)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
+}
+
+// TestClusterBindingReconciler_checkAndCleanVirtualResources_AnnotationAddition tests that annotations are properly added
+func TestClusterBindingReconciler_checkAndCleanVirtualResources_AnnotationAddition(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupResources func(*ClusterBindingReconciler)
+		labelKey       string
+		expectedResult string
+		expectError    bool
+	}{
+		{
+			name: "add annotations to multiple resource types",
+			setupResources: func(r *ClusterBindingReconciler) {
+				// Create resources of different types
+				cm := &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-cm",
+						Namespace: "default",
+						Labels: map[string]string{
+							"kubeocean.io/synced-by-test-cluster": cloudv1beta1.LabelValueTrue,
+						},
+					},
+				}
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-secret",
+						Namespace: "default",
+						Labels: map[string]string{
+							"kubeocean.io/synced-by-test-cluster": cloudv1beta1.LabelValueTrue,
+						},
+					},
+				}
+				pv := &corev1.PersistentVolume{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-pv",
+						Labels: map[string]string{
+							"kubeocean.io/synced-by-test-cluster": cloudv1beta1.LabelValueTrue,
+						},
+					},
+				}
+				pvc := &corev1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pvc",
+						Namespace: "default",
+						Labels: map[string]string{
+							"kubeocean.io/synced-by-test-cluster": cloudv1beta1.LabelValueTrue,
+						},
+					},
+				}
+				r.Create(context.Background(), cm)
+				r.Create(context.Background(), secret)
+				r.Create(context.Background(), pv)
+				r.Create(context.Background(), pvc)
+			},
+			labelKey:       "kubeocean.io/synced-by-test-cluster",
+			expectedResult: "configmaps: [test-cm]; secrets: [test-secret]; persistent volumes: [test-pv]; persistent volume claims: [test-pvc]",
+			expectError:    false,
+		},
+		{
+			name: "resources already have annotation - should be idempotent",
+			setupResources: func(r *ClusterBindingReconciler) {
+				cm := &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-cm",
+						Namespace: "default",
+						Labels: map[string]string{
+							"kubeocean.io/synced-by-test-cluster": cloudv1beta1.LabelValueTrue,
+						},
+						Annotations: map[string]string{
+							cloudv1beta1.GetClusterBindingDeletingAnnotation("test-cluster"): "test-cluster-binding",
+						},
+					},
+				}
+				r.Create(context.Background(), cm)
+			},
+			labelKey:       "kubeocean.io/synced-by-test-cluster",
+			expectedResult: "configmaps: [test-cm]",
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := setupTestEnvironment(t)
+			tt.setupResources(reconciler)
+
+			clusterBinding := &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster-binding",
+					Namespace: "default",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			}
+			result, err := reconciler.checkAndCleanVirtualResources(context.Background(), tt.labelKey, clusterBinding)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedResult, result)
+
+				// Verify annotations were added
+				if result != "" {
+					// Check ConfigMaps
+					var cmList corev1.ConfigMapList
+					labelSelector := labels.SelectorFromSet(map[string]string{tt.labelKey: cloudv1beta1.LabelValueTrue})
+					err := reconciler.List(context.Background(), &cmList, client.MatchingLabelsSelector{Selector: labelSelector})
+					assert.NoError(t, err)
+					for _, cm := range cmList.Items {
+						annotationKey := cloudv1beta1.GetClusterBindingDeletingAnnotation("test-cluster")
+						assert.Equal(t, "test-cluster-binding", cm.Annotations[annotationKey])
+					}
+
+					// Check Secrets
+					var secretList corev1.SecretList
+					err = reconciler.List(context.Background(), &secretList, client.MatchingLabelsSelector{Selector: labelSelector})
+					assert.NoError(t, err)
+					for _, secret := range secretList.Items {
+						annotationKey := cloudv1beta1.GetClusterBindingDeletingAnnotation("test-cluster")
+						assert.Equal(t, "test-cluster-binding", secret.Annotations[annotationKey])
+					}
+
+					// Check PVs
+					var pvList corev1.PersistentVolumeList
+					err = reconciler.List(context.Background(), &pvList, client.MatchingLabelsSelector{Selector: labelSelector})
+					assert.NoError(t, err)
+					for _, pv := range pvList.Items {
+						annotationKey := cloudv1beta1.GetClusterBindingDeletingAnnotation("test-cluster")
+						assert.Equal(t, "test-cluster-binding", pv.Annotations[annotationKey])
+					}
+
+					// Check PVCs
+					var pvcList corev1.PersistentVolumeClaimList
+					err = reconciler.List(context.Background(), &pvcList, client.MatchingLabelsSelector{Selector: labelSelector})
+					assert.NoError(t, err)
+					for _, pvc := range pvcList.Items {
+						annotationKey := cloudv1beta1.GetClusterBindingDeletingAnnotation("test-cluster")
+						assert.Equal(t, "test-cluster-binding", pvc.Annotations[annotationKey])
+					}
+				}
 			}
 		})
 	}

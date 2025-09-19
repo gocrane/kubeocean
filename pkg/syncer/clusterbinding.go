@@ -161,7 +161,20 @@ func (r *ClusterBindingReconciler) handleClusterBindingDeletion(ctx context.Cont
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// 不存在虚拟节点，检查物理集群中是否有 kubeocean 管理的资源
+	// 继续根据 managedByClusterIDLabel 在虚拟集群中查找 configmap、secret、pv、pvc，并添加删除注解
+	managedByClusterIDLabel := topdown.GetManagedByClusterIDLabel(clusterBinding.Spec.ClusterID)
+	resourcesNames, err := r.checkAndCleanVirtualResources(ctx, managedByClusterIDLabel, clusterBinding)
+	if err != nil {
+		logger.Error(err, "Failed to check and clean virtual resources")
+		return ctrl.Result{}, err
+	}
+
+	if len(resourcesNames) > 0 {
+		logger.Error(fmt.Errorf("virtual resources still exist"), "Virtual resources still exist, cannot complete deletion", "resources", resourcesNames)
+		return ctrl.Result{}, fmt.Errorf("virtual resources still exist, cannot complete deletion, resources: %s", resourcesNames)
+	}
+
+	// 不存在虚拟节点和虚拟资源，检查物理集群中是否有 kubeocean 管理的资源
 	physicalResourcesNames, err := r.checkPhysicalResourcesExist(ctx)
 	if err != nil {
 		logger.Error(err, "Failed to check physical resources")
@@ -171,19 +184,6 @@ func (r *ClusterBindingReconciler) handleClusterBindingDeletion(ctx context.Cont
 	if len(physicalResourcesNames) > 0 {
 		logger.Error(fmt.Errorf("physical resources still exist"), "Physical resources still exist, cannot complete deletion", "resources", physicalResourcesNames)
 		return ctrl.Result{}, fmt.Errorf("physical resources still exist, cannot complete deletion, resources: %s", physicalResourcesNames)
-	}
-
-	// 继续根据 managedByClusterIDLabel 在虚拟集群中查找 configmap、secret、pv、pvc
-	managedByClusterIDLabel := topdown.GetManagedByClusterIDLabel(clusterBinding.Spec.ClusterID)
-	resourcesNames, err := r.checkVirtualResourcesExist(ctx, managedByClusterIDLabel)
-	if err != nil {
-		logger.Error(err, "Failed to check virtual resources")
-		return ctrl.Result{}, err
-	}
-
-	if len(resourcesNames) > 0 {
-		logger.Error(fmt.Errorf("virtual resources still exist"), "Virtual resources still exist, cannot complete deletion", "resources", resourcesNames)
-		return ctrl.Result{}, fmt.Errorf("virtual resources still exist, cannot complete deletion, resources: %s", resourcesNames)
 	}
 
 	// 移除 finalizer
@@ -340,69 +340,103 @@ func (r *ClusterBindingReconciler) getPhysicalNodesFromVirtualNodes(_ context.Co
 	return physicalNodeNames
 }
 
-// checkVirtualResourcesExist checks if any virtual resources exist with the given label
-func (r *ClusterBindingReconciler) checkVirtualResourcesExist(ctx context.Context, labelKey string) (string, error) {
-
+// checkAndCleanVirtualResources checks virtual resources and adds clusterbinding-deleting annotation
+func (r *ClusterBindingReconciler) checkAndCleanVirtualResources(ctx context.Context, labelKey string, clusterBinding *cloudv1beta1.ClusterBinding) (string, error) {
 	labelSelector := labels.SelectorFromSet(map[string]string{labelKey: cloudv1beta1.LabelValueTrue})
 
-	// Check ConfigMaps
+	var allResourceNames []string
+
+	// Check and clean ConfigMaps
 	var configMapList corev1.ConfigMapList
 	err := r.List(ctx, &configMapList, client.MatchingLabelsSelector{Selector: labelSelector})
 	if err != nil {
 		return "", fmt.Errorf("failed to list configmaps: %w", err)
 	}
+
 	configMapNames := make([]string, 0, len(configMapList.Items))
-	for _, configMap := range configMapList.Items {
+	for i := range configMapList.Items {
+		configMap := &configMapList.Items[i]
 		configMapNames = append(configMapNames, configMap.Name)
+
+		// Add clusterbinding-deleting annotation using common function
+		if err := topdown.AddClusterBindingDeletingAnnotation(ctx, configMap, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
+			return "", fmt.Errorf("failed to update ConfigMap %s with clusterbinding-deleting annotation: %w", configMap.Name, err)
+		}
 	}
-	if len(configMapList.Items) > 0 {
-		r.Log.Info("Found virtual configmaps", "count", len(configMapList.Items))
-		return fmt.Sprintf("configmaps: [%s]", strings.Join(configMapNames, ", ")), nil
+	if len(configMapNames) > 0 {
+		r.Log.Info("Found virtual configmaps", "count", len(configMapNames))
+		allResourceNames = append(allResourceNames, fmt.Sprintf("configmaps: [%s]", strings.Join(configMapNames, ", ")))
 	}
 
-	// Check Secrets
+	// Check and clean Secrets
 	var secretList corev1.SecretList
 	err = r.List(ctx, &secretList, client.MatchingLabelsSelector{Selector: labelSelector})
 	if err != nil {
 		return "", fmt.Errorf("failed to list secrets: %w", err)
 	}
+
 	secretNames := make([]string, 0, len(secretList.Items))
-	for _, secret := range secretList.Items {
+	for i := range secretList.Items {
+		secret := &secretList.Items[i]
 		secretNames = append(secretNames, secret.Name)
+
+		// Add clusterbinding-deleting annotation using common function
+		if err := topdown.AddClusterBindingDeletingAnnotation(ctx, secret, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
+			return "", fmt.Errorf("failed to update Secret %s with clusterbinding-deleting annotation: %w", secret.Name, err)
+		}
 	}
-	if len(secretList.Items) > 0 {
-		r.Log.Info("Found virtual secrets", "count", len(secretList.Items))
-		return fmt.Sprintf("secrets: [%s]", strings.Join(secretNames, ", ")), nil
+	if len(secretNames) > 0 {
+		r.Log.Info("Found virtual secrets", "count", len(secretNames))
+		allResourceNames = append(allResourceNames, fmt.Sprintf("secrets: [%s]", strings.Join(secretNames, ", ")))
 	}
 
-	// Check PVs
+	// Check and clean PVs
 	var pvList corev1.PersistentVolumeList
 	err = r.List(ctx, &pvList, client.MatchingLabelsSelector{Selector: labelSelector})
 	if err != nil {
 		return "", fmt.Errorf("failed to list persistent volumes: %w", err)
 	}
+
 	pvNames := make([]string, 0, len(pvList.Items))
-	for _, pv := range pvList.Items {
+	for i := range pvList.Items {
+		pv := &pvList.Items[i]
 		pvNames = append(pvNames, pv.Name)
+
+		// Add clusterbinding-deleting annotation using common function
+		if err := topdown.AddClusterBindingDeletingAnnotation(ctx, pv, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
+			return "", fmt.Errorf("failed to update PV %s with clusterbinding-deleting annotation: %w", pv.Name, err)
+		}
 	}
-	if len(pvList.Items) > 0 {
-		r.Log.Info("Found virtual persistent volumes", "count", len(pvList.Items))
-		return fmt.Sprintf("persistent volumes: [%s]", strings.Join(pvNames, ", ")), nil
+	if len(pvNames) > 0 {
+		r.Log.Info("Found virtual persistent volumes", "count", len(pvNames))
+		allResourceNames = append(allResourceNames, fmt.Sprintf("persistent volumes: [%s]", strings.Join(pvNames, ", ")))
 	}
 
-	// Check PVCs
+	// Check and clean PVCs
 	var pvcList corev1.PersistentVolumeClaimList
 	err = r.List(ctx, &pvcList, client.MatchingLabelsSelector{Selector: labelSelector})
 	if err != nil {
 		return "", fmt.Errorf("failed to list persistent volume claims: %w", err)
 	}
+
 	pvcNames := make([]string, 0, len(pvcList.Items))
-	for _, pvc := range pvcList.Items {
+	for i := range pvcList.Items {
+		pvc := &pvcList.Items[i]
 		pvcNames = append(pvcNames, pvc.Name)
+
+		// Add clusterbinding-deleting annotation using common function
+		if err := topdown.AddClusterBindingDeletingAnnotation(ctx, pvc, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
+			return "", fmt.Errorf("failed to update PVC %s with clusterbinding-deleting annotation: %w", pvc.Name, err)
+		}
 	}
-	if len(pvcList.Items) > 0 {
-		r.Log.Info("Found virtual persistent volume claims", "count", len(pvcList.Items))
-		return fmt.Sprintf("persistent volume claims: [%s]", strings.Join(pvcNames, ", ")), nil
+	if len(pvcNames) > 0 {
+		r.Log.Info("Found virtual persistent volume claims", "count", len(pvcNames))
+		allResourceNames = append(allResourceNames, fmt.Sprintf("persistent volume claims: [%s]", strings.Join(pvcNames, ", ")))
+	}
+
+	// Return combined resource names
+	if len(allResourceNames) > 0 {
+		return strings.Join(allResourceNames, "; "), nil
 	}
 
 	return "", nil

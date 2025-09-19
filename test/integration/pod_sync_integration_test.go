@@ -68,7 +68,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 
 		// Setup test environment
 		setupPodSyncTestEnvironment(testCtx, clusterBindingName, physicalNodeName)
-		_ = createAndStartSyncer(testCtx, clusterBindingName)
+		createAndStartSyncer(testCtx, clusterBindingName)
 	})
 
 	ginkgo.AfterEach(func() {
@@ -624,11 +624,11 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			waitForVirtualNodeReady(ctx, virtualNodeName)
 
 			ginkgo.By("Creating virtual ConfigMap")
-			virtualConfigMap := createTestVirtualConfigMap("test-config", testPodNamespace)
+			virtualConfigMap := createTestVirtualConfigMap("test-config")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualConfigMap)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual Secret")
-			virtualSecret := createTestVirtualSecret("test-secret", testPodNamespace)
+			virtualSecret := createTestVirtualSecret("test-secret")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualSecret)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual ConfigMap for init container")
@@ -640,11 +640,11 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(k8sVirtual.Create(ctx, virtualSecretInit)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual PV")
-			virtualPV := createTestVirtualPV("test-pv", "test-pvc", testPodNamespace)
+			virtualPV := createTestVirtualPV("test-pv", "test-pvc")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPV)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual PVC")
-			virtualPVC := createTestVirtualPVC("test-pvc", testPodNamespace, "test-pv")
+			virtualPVC := createTestVirtualPVC("test-pvc", "test-pv")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPVC)).To(gomega.Succeed())
 
 			ginkgo.By("Manually updating virtual PVC to be bound")
@@ -660,7 +660,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
 			ginkgo.By("Creating a virtual pod with resource references")
-			virtualPod := createTestVirtualPodWithResources("test-pod-refs", testPodNamespace, virtualNodeName, "test-config", "test-secret", "test-pvc")
+			virtualPod := createTestVirtualPodWithResources("test-pod-refs", virtualNodeName, "test-config", "test-secret", "test-pvc")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
 
 			ginkgo.By("Waiting for physical pod to be created")
@@ -1253,7 +1253,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(k8sPhysical.Create(ctx, physicalNamespace)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual CSI Secret")
-			virtualCSISecret := createTestVirtualSecret("test-csi-secret", testPodNamespace)
+			virtualCSISecret := createTestVirtualSecret("test-csi-secret")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualCSISecret)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual PV with CSI NodePublishSecretRef")
@@ -1261,7 +1261,7 @@ var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPV)).To(gomega.Succeed())
 
 			ginkgo.By("Creating virtual PVC")
-			virtualPVC := createTestVirtualPVC("test-csi-pvc", testPodNamespace, "test-csi-pv")
+			virtualPVC := createTestVirtualPVC("test-csi-pvc", "test-csi-pv")
 			gomega.Expect(k8sVirtual.Create(ctx, virtualPVC)).To(gomega.Succeed())
 
 			ginkgo.By("Manually updating virtual PVC to be bound")
@@ -2003,7 +2003,7 @@ func setupPodSyncTestEnvironment(ctx context.Context, clusterBindingName, physic
 	gomega.Expect(k8sPhysical.Create(ctx, policy)).To(gomega.Succeed())
 }
 
-func createAndStartSyncer(ctx context.Context, clusterBindingName string) *syncerpkg.KubeoceanSyncer {
+func createAndStartSyncer(ctx context.Context, clusterBindingName string) {
 	ginkgo.By("Creating and starting KubeoceanSyncer")
 
 	syncer, err := syncerpkg.NewKubeoceanSyncer(mgrVirtual, k8sVirtual, scheme, clusterBindingName, 100, 150)
@@ -2017,8 +2017,6 @@ func createAndStartSyncer(ctx context.Context, clusterBindingName string) *synce
 			ginkgo.Fail(fmt.Sprintf("KubeoceanSyncer failed: %v", err))
 		}
 	}()
-
-	return syncer
 }
 
 // waitForVirtualNodeReady waits for the virtual node to be created and ready
@@ -2096,11 +2094,11 @@ func cleanupPodSyncTestResources(ctx context.Context, clusterBindingName string)
 	}
 }
 
-func createTestVirtualConfigMap(name, namespace string) *corev1.ConfigMap {
+func createTestVirtualConfigMap(name string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: namespace,
+			Namespace: testPodNamespace,
 			Labels: map[string]string{
 				"app": "test-app",
 			},
@@ -2112,11 +2110,11 @@ func createTestVirtualConfigMap(name, namespace string) *corev1.ConfigMap {
 	}
 }
 
-func createTestVirtualSecret(name, namespace string) *corev1.Secret {
+func createTestVirtualSecret(name string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: namespace,
+			Namespace: testPodNamespace,
 			Labels: map[string]string{
 				"app": "test-app",
 			},
@@ -2160,7 +2158,7 @@ func createTestVirtualSecretInit(name, namespace string) *corev1.Secret {
 	}
 }
 
-func createTestVirtualPV(name, pvcName, namespace string) *corev1.PersistentVolume {
+func createTestVirtualPV(name, pvcName string) *corev1.PersistentVolume {
 	return &corev1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -2182,7 +2180,7 @@ func createTestVirtualPV(name, pvcName, namespace string) *corev1.PersistentVolu
 				APIVersion: "v1",
 				Kind:       "PersistentVolumeClaim",
 				Name:       pvcName,
-				Namespace:  namespace,
+				Namespace:  testPodNamespace,
 			},
 		},
 		Status: corev1.PersistentVolumeStatus{
@@ -2227,11 +2225,11 @@ func createTestVirtualPVWithCSI(name, pvcName, namespace, csiSecretName string) 
 	}
 }
 
-func createTestVirtualPVC(name, namespace, pvName string) *corev1.PersistentVolumeClaim {
+func createTestVirtualPVC(name, pvName string) *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: namespace,
+			Namespace: testPodNamespace,
 			Labels: map[string]string{
 				"app": "test-app",
 			},
@@ -2251,11 +2249,11 @@ func createTestVirtualPVC(name, namespace, pvName string) *corev1.PersistentVolu
 	}
 }
 
-func createTestVirtualPodWithResources(name, namespace, nodeName, configMapName, secretName, pvcName string) *corev1.Pod {
+func createTestVirtualPodWithResources(name, nodeName, configMapName, secretName, pvcName string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: namespace,
+			Namespace: testPodNamespace,
 			Labels: map[string]string{
 				"app": "test-app",
 			},

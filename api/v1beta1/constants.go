@@ -49,6 +49,9 @@ const (
 	AnnotationVirtualName       = "kubeocean.io/virtual-name"
 	AnnotationVirtualNamespace  = "kubeocean.io/virtual-namespace"
 
+	// ClusterBinding deletion annotation prefix
+	AnnotationClusterBindingDeletingPrefix = "kubeocean.io/deleting-"
+
 	// PV-related labels
 	LabelUsedByPV = "kubeocean.io/used-by-pv"
 
@@ -59,3 +62,8 @@ const (
 	// PriorityClass
 	DefaultPriorityClassName = "kubeocean-default"
 )
+
+// GetClusterBindingDeletingAnnotation returns the cluster-specific deleting annotation key
+func GetClusterBindingDeletingAnnotation(clusterID string) string {
+	return AnnotationClusterBindingDeletingPrefix + clusterID
+}

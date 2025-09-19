@@ -507,7 +507,8 @@ func TestVirtualConfigMapReconciler_ClusterIDFunctionality(t *testing.T) {
 		require.NoError(t, err)
 
 		// Test removing the clusterID finalizer
-		result, err := reconciler.removeSyncedResourceFinalizer(context.Background(), virtualConfigMap)
+		err = RemoveSyncedResourceFinalizerAndLabels(context.Background(), virtualConfigMap, virtualClient, reconciler.Log, reconciler.clusterID)
+		result := ctrl.Result{}
 		require.NoError(t, err)
 		assert.Equal(t, ctrl.Result{}, result)
 
