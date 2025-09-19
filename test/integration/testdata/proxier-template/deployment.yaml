@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{.DeploymentName}}"
+  namespace: "{{.ProxierNamespace}}"
+  labels:
+    app: kubeocean-proxier
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubeocean-proxier
+  template:
+    metadata:
+      labels:
+        app: kubeocean-proxier
+    spec:
+      serviceAccountName: "{{.ServiceAccountName}}"
+      containers:
+      - name: proxier
+        image: kubeocean-proxier:latest
+        args: ["--cluster-binding-name", "{{.ClusterBindingName}}"]
+

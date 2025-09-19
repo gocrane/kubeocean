@@ -46,6 +46,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 	}, ginkgo.SpecTimeout(1*time.Minute))
 
 	ginkgo.It("ClusterBindingReconciler：添加 finalizer、状态变更与 Syncer 模板缺失失败", func(ctx context.Context) {
+		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
 		// 启动 manager 并注册 ClusterBindingReconciler（仅一次）
 		reconciler := &controllerpkg.ClusterBindingReconciler{
 			Client:   k8sVirtual,
@@ -97,6 +98,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 	ginkgo.It("ClusterBindingReconciler：成功部署 syncer（注入模板目录）", func(ctx context.Context) {
 		// 设置测试模板目录环境变量（以 test/e2e 为工作目录）
 		_ = os.Setenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR", "testdata/syncer-template")
+		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
 
 		// 注册 controller（一次）并启动 manager
 		reconciler := &controllerpkg.ClusterBindingReconciler{

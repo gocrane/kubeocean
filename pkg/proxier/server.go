@@ -37,6 +37,12 @@ import (
 	localremotecommand "github.com/TKEColocation/kubeocean/pkg/proxier/remotecommand"
 )
 
+const (
+	// Boolean string values for query parameters
+	trueStr = "true"
+	oneStr  = "1"
+)
+
 // server implements HTTPServer interface
 type server struct {
 	config       *Config
@@ -340,19 +346,19 @@ func (s *server) getExecOptions(req *http.Request) (*remoteCommandOptions, error
 
 	// TTY 参数
 	ttyStr := query.Get("tty")
-	tty := ttyStr == "true" || ttyStr == "1"
+	tty := ttyStr == trueStr || ttyStr == oneStr
 
 	// Stdin 参数 - 与tke_vnode一致使用"input"
 	stdinStr := query.Get("input")
-	stdin := stdinStr == "true" || stdinStr == "1"
+	stdin := stdinStr == trueStr || stdinStr == oneStr
 
 	// Stdout 参数 - 与tke_vnode一致使用"output"
 	stdoutStr := query.Get("output")
-	stdout := stdoutStr == "true" || stdoutStr == "1"
+	stdout := stdoutStr == trueStr || stdoutStr == oneStr
 
 	// Stderr 参数 - 与tke_vnode一致使用"stderr"
 	stderrStr := query.Get("stderr")
-	stderr := stderrStr == "true" || stderrStr == "1"
+	stderr := stderrStr == trueStr || stderrStr == oneStr
 
 	s.log.Info("Parsed exec params",
 		"tty", fmt.Sprintf("%s(%t)", ttyStr, tty),

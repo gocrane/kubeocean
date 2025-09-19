@@ -101,7 +101,7 @@ func (r *PhysicalNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Handle deletion
 	if physicalNode.DeletionTimestamp != nil {
-		return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
+		return r.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 	}
 
 	// Process the node
