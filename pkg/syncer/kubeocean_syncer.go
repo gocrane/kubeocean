@@ -379,6 +379,7 @@ func (ts *KubeoceanSyncer) setupClusterBindingController(_ context.Context) erro
 		Log:                ts.Log.WithName("clusterbinding-reconciler"),
 		ClusterBindingName: ts.ClusterBindingName,
 		BottomUpSyncer:     ts.bottomUpSyncer,
+		PhysicalClient:     ts.physicalManager.GetClient(),
 	}
 
 	if err := reconciler.SetupWithManager(ts.manager); err != nil {

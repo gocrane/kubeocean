@@ -25,13 +25,15 @@ func setupTestEnvironment(t *testing.T) *ClusterBindingReconciler {
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	virtualClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	reconciler := &ClusterBindingReconciler{
-		Client:                  client,
+		Client:                  virtualClient,
 		Log:                     zap.New(zap.UseDevMode(true)),
 		ClusterBindingName:      "test-cluster-binding",
 		ClusterBindingNamespace: "default",
+		PhysicalClient:          physicalClient,
 		BottomUpSyncer: &bottomup.BottomUpSyncer{
 			ClusterBinding: nil, // Start with nil to test first time loading
 		},
@@ -46,7 +48,8 @@ func setupTestEnvironmentWithExistingBinding(t *testing.T) *ClusterBindingReconc
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	virtualClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	existingBinding := &cloudv1beta1.ClusterBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -73,10 +76,11 @@ func setupTestEnvironmentWithExistingBinding(t *testing.T) *ClusterBindingReconc
 	}
 
 	reconciler := &ClusterBindingReconciler{
-		Client:                  client,
+		Client:                  virtualClient,
 		Log:                     zap.New(zap.UseDevMode(true)),
 		ClusterBindingName:      "test-cluster-binding",
 		ClusterBindingNamespace: "default",
+		PhysicalClient:          physicalClient,
 		BottomUpSyncer: &bottomup.BottomUpSyncer{
 			ClusterBinding: existingBinding,
 		},
@@ -408,6 +412,139 @@ func TestClusterBindingReconciler_Reconcile(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
+}
+
+// TestClusterBindingReconciler_checkVirtualResourcesExist tests the checkVirtualResourcesExist method
+func TestClusterBindingReconciler_checkVirtualResourcesExist(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupResources func(*ClusterBindingReconciler)
+		labelKey       string
+		expectedResult string
+		expectError    bool
+	}{
+		{
+			name: "no resources found",
+			setupResources: func(r *ClusterBindingReconciler) {
+				// No resources to create
+			},
+			labelKey:       "kubeocean.io/synced-by-test-cluster",
+			expectedResult: "",
+			expectError:    false,
+		},
+		{
+			name: "configmaps found",
+			setupResources: func(r *ClusterBindingReconciler) {
+				cm1 := &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-cm1",
+						Namespace: "default",
+						Labels: map[string]string{
+							"kubeocean.io/synced-by-test-cluster": "true",
+						},
+					},
+				}
+				cm2 := &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-cm2",
+						Namespace: "default",
+						Labels: map[string]string{
+							"kubeocean.io/synced-by-test-cluster": "true",
+						},
+					},
+				}
+				r.Create(context.Background(), cm1)
+				r.Create(context.Background(), cm2)
+			},
+			labelKey:       "kubeocean.io/synced-by-test-cluster",
+			expectedResult: "configmaps: [test-cm1, test-cm2]",
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := setupTestEnvironment(t)
+			tt.setupResources(reconciler)
+
+			result, err := reconciler.checkVirtualResourcesExist(context.Background(), tt.labelKey)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedResult, result)
+			}
+		})
+	}
+}
+
+// TestClusterBindingReconciler_checkPhysicalResourcesExist tests the checkPhysicalResourcesExist method
+func TestClusterBindingReconciler_checkPhysicalResourcesExist(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupResources func(*ClusterBindingReconciler)
+		expectedResult string
+		expectError    bool
+	}{
+		{
+			name: "no resources found",
+			setupResources: func(r *ClusterBindingReconciler) {
+				// No resources to create
+			},
+			expectedResult: "",
+			expectError:    false,
+		},
+		{
+			name: "pods found",
+			setupResources: func(r *ClusterBindingReconciler) {
+				pod1 := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod1",
+						Namespace: "default",
+						Labels: map[string]string{
+							"kubeocean.io/managed-by": "kubeocean",
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "test",
+								Image: "test:latest",
+							},
+						},
+					},
+				}
+				r.PhysicalClient.Create(context.Background(), pod1)
+			},
+			expectedResult: "pods: [test-pod1]",
+			expectError:    false,
+		},
+		{
+			name: "physical client not available",
+			setupResources: func(r *ClusterBindingReconciler) {
+				r.PhysicalClient = nil
+			},
+			expectedResult: "",
+			expectError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := setupTestEnvironment(t)
+			tt.setupResources(reconciler)
+
+			result, err := reconciler.checkPhysicalResourcesExist(context.Background())
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedResult, result)
+			}
 		})
 	}
 }

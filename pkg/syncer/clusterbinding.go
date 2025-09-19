@@ -4,18 +4,28 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown"
+)
+
+const (
+	// ClusterBindingSyncerFinalizer is the finalizer for clusterbinding-syncer
+	ClusterBindingSyncerFinalizer = "kubeocean.io/clusterbinding-syncer"
 )
 
 // ClusterBindingReconciler reconciles ClusterBinding objects for this specific KubeoceanSyncer
@@ -25,6 +35,7 @@ type ClusterBindingReconciler struct {
 	ClusterBindingName      string
 	ClusterBindingNamespace string
 	BottomUpSyncer          *bottomup.BottomUpSyncer
+	PhysicalClient          client.Client
 }
 
 //+kubebuilder:rbac:groups=cloud.tencent.com,resources=clusterbindings,verbs=get;list;watch
@@ -46,12 +57,36 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	err := r.Get(ctx, req.NamespacedName, clusterBinding)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// ClusterBinding was deleted, trigger cleanup
-			logger.Info("ClusterBinding deleted, triggering cleanup")
-			return r.handleClusterBindingDeletion(ctx)
+			// ClusterBinding 不存在，不做任何事
+			logger.Info("ClusterBinding not found, doing nothing")
+			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get ClusterBinding")
 		return ctrl.Result{}, err
+	}
+
+	// 添加 finalizer，如果失败则重新入队重试
+	if !controllerutil.ContainsFinalizer(clusterBinding, ClusterBindingSyncerFinalizer) {
+		clusterBindingCopy := clusterBinding.DeepCopy()
+		controllerutil.AddFinalizer(clusterBindingCopy, ClusterBindingSyncerFinalizer)
+		if err := r.Update(ctx, clusterBindingCopy); err != nil {
+			logger.Error(err, "Failed to add finalizer to ClusterBinding")
+			return ctrl.Result{Requeue: true}, err
+		}
+		logger.Info("Added finalizer to ClusterBinding")
+		clusterBinding = clusterBindingCopy
+	}
+
+	// 检查是否正在删除
+	if clusterBinding.DeletionTimestamp != nil {
+		if !controllerutil.ContainsFinalizer(clusterBinding, ClusterBindingSyncerFinalizer) {
+			// finalizer 不存在，不做任何事
+			logger.Info("ClusterBinding is being deleted but finalizer not found, doing nothing")
+			return ctrl.Result{}, nil
+		}
+		// 进入删除处理逻辑
+		logger.Info("ClusterBinding is being deleted with finalizer, handling deletion")
+		return r.handleClusterBindingDeletion(ctx, clusterBinding)
 	}
 
 	// Check if nodeSelector changed
@@ -94,16 +129,71 @@ func (r *ClusterBindingReconciler) hasDisableNodeDefaultTaintChanged(newBinding 
 }
 
 // handleClusterBindingDeletion handles ClusterBinding deletion
-func (r *ClusterBindingReconciler) handleClusterBindingDeletion(_ context.Context) (ctrl.Result, error) {
-	r.Log.Info("Handling ClusterBinding deletion")
+func (r *ClusterBindingReconciler) handleClusterBindingDeletion(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) (ctrl.Result, error) {
+	logger := r.Log.WithValues("clusterbinding", clusterBinding.Name)
+	logger.Info("Handling ClusterBinding deletion")
 
-	// Signal the KubeoceanSyncer to stop
-	if r.BottomUpSyncer != nil {
-		// Trigger cleanup of all virtual nodes
-		r.Log.Info("Triggering cleanup of all virtual nodes")
-		// The bottomUpSyncer should handle cleanup when it detects the binding is gone
+	// 根据 LabelClusterBinding 在虚拟集群中查询所有 clusterbinding 关联的虚拟节点
+	virtualNodes, err := r.getVirtualNodesByClusterBinding(ctx, r.ClusterBindingName)
+	if err != nil {
+		logger.Error(err, "Failed to get virtual nodes by cluster binding")
+		return ctrl.Result{}, err
 	}
 
+	if len(virtualNodes) > 0 {
+		// 存在虚拟节点，查询所有虚拟节点对应的物理节点，然后调用 bottomUpSyncer 的 RequeueNodes
+		physicalNodeNames := r.getPhysicalNodesFromVirtualNodes(ctx, virtualNodes)
+
+		if len(physicalNodeNames) > 0 {
+			logger.Info("Requeuing physical nodes for cleanup", "nodes", physicalNodeNames)
+			if err := r.BottomUpSyncer.RequeueNodes(physicalNodeNames); err != nil {
+				logger.Error(err, "Failed to requeue nodes")
+				return ctrl.Result{}, err
+			}
+		}
+
+		virtualNames := make([]string, 0, len(virtualNodes))
+		for _, virtualNode := range virtualNodes {
+			virtualNames = append(virtualNames, virtualNode.Name)
+		}
+
+		logger.Info("Virtual nodes still exist, requeuing after 5 seconds", "count", len(virtualNodes), "nodes", virtualNames)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// 不存在虚拟节点，检查物理集群中是否有 kubeocean 管理的资源
+	physicalResourcesNames, err := r.checkPhysicalResourcesExist(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to check physical resources")
+		return ctrl.Result{}, err
+	}
+
+	if len(physicalResourcesNames) > 0 {
+		logger.Error(fmt.Errorf("physical resources still exist"), "Physical resources still exist, cannot complete deletion", "resources", physicalResourcesNames)
+		return ctrl.Result{}, fmt.Errorf("physical resources still exist, cannot complete deletion, resources: %s", physicalResourcesNames)
+	}
+
+	// 继续根据 managedByClusterIDLabel 在虚拟集群中查找 configmap、secret、pv、pvc
+	managedByClusterIDLabel := topdown.GetManagedByClusterIDLabel(clusterBinding.Spec.ClusterID)
+	resourcesNames, err := r.checkVirtualResourcesExist(ctx, managedByClusterIDLabel)
+	if err != nil {
+		logger.Error(err, "Failed to check virtual resources")
+		return ctrl.Result{}, err
+	}
+
+	if len(resourcesNames) > 0 {
+		logger.Error(fmt.Errorf("virtual resources still exist"), "Virtual resources still exist, cannot complete deletion", "resources", resourcesNames)
+		return ctrl.Result{}, fmt.Errorf("virtual resources still exist, cannot complete deletion, resources: %s", resourcesNames)
+	}
+
+	// 移除 finalizer
+	controllerutil.RemoveFinalizer(clusterBinding, ClusterBindingSyncerFinalizer)
+	if err := r.Update(ctx, clusterBinding); err != nil {
+		logger.Error(err, "Failed to remove finalizer from ClusterBinding")
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("Successfully completed ClusterBinding deletion")
 	return ctrl.Result{}, nil
 }
 
@@ -224,10 +314,199 @@ func (r *ClusterBindingReconciler) unionAndDeduplicateNodes(oldNodes, newNodes [
 	return result
 }
 
+// getVirtualNodesByClusterBinding gets virtual nodes by cluster binding name from virtual cluster
+func (r *ClusterBindingReconciler) getVirtualNodesByClusterBinding(ctx context.Context, clusterBindingName string) ([]corev1.Node, error) {
+	var nodeList corev1.NodeList
+	labelSelector := labels.SelectorFromSet(map[string]string{cloudv1beta1.LabelClusterBinding: clusterBindingName})
+
+	err := r.List(ctx, &nodeList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list virtual nodes by cluster binding: %w", err)
+	}
+
+	return nodeList.Items, nil
+}
+
+// getPhysicalNodesFromVirtualNodes extracts physical node names from virtual nodes
+func (r *ClusterBindingReconciler) getPhysicalNodesFromVirtualNodes(_ context.Context, virtualNodes []corev1.Node) []string {
+	var physicalNodeNames []string
+
+	for _, virtualNode := range virtualNodes {
+		if physicalNodeName, exists := virtualNode.Labels[cloudv1beta1.LabelPhysicalNodeName]; exists {
+			physicalNodeNames = append(physicalNodeNames, physicalNodeName)
+		}
+	}
+
+	return physicalNodeNames
+}
+
+// checkVirtualResourcesExist checks if any virtual resources exist with the given label
+func (r *ClusterBindingReconciler) checkVirtualResourcesExist(ctx context.Context, labelKey string) (string, error) {
+
+	labelSelector := labels.SelectorFromSet(map[string]string{labelKey: cloudv1beta1.LabelValueTrue})
+
+	// Check ConfigMaps
+	var configMapList corev1.ConfigMapList
+	err := r.List(ctx, &configMapList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return "", fmt.Errorf("failed to list configmaps: %w", err)
+	}
+	configMapNames := make([]string, 0, len(configMapList.Items))
+	for _, configMap := range configMapList.Items {
+		configMapNames = append(configMapNames, configMap.Name)
+	}
+	if len(configMapList.Items) > 0 {
+		r.Log.Info("Found virtual configmaps", "count", len(configMapList.Items))
+		return fmt.Sprintf("configmaps: [%s]", strings.Join(configMapNames, ", ")), nil
+	}
+
+	// Check Secrets
+	var secretList corev1.SecretList
+	err = r.List(ctx, &secretList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return "", fmt.Errorf("failed to list secrets: %w", err)
+	}
+	secretNames := make([]string, 0, len(secretList.Items))
+	for _, secret := range secretList.Items {
+		secretNames = append(secretNames, secret.Name)
+	}
+	if len(secretList.Items) > 0 {
+		r.Log.Info("Found virtual secrets", "count", len(secretList.Items))
+		return fmt.Sprintf("secrets: [%s]", strings.Join(secretNames, ", ")), nil
+	}
+
+	// Check PVs
+	var pvList corev1.PersistentVolumeList
+	err = r.List(ctx, &pvList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return "", fmt.Errorf("failed to list persistent volumes: %w", err)
+	}
+	pvNames := make([]string, 0, len(pvList.Items))
+	for _, pv := range pvList.Items {
+		pvNames = append(pvNames, pv.Name)
+	}
+	if len(pvList.Items) > 0 {
+		r.Log.Info("Found virtual persistent volumes", "count", len(pvList.Items))
+		return fmt.Sprintf("persistent volumes: [%s]", strings.Join(pvNames, ", ")), nil
+	}
+
+	// Check PVCs
+	var pvcList corev1.PersistentVolumeClaimList
+	err = r.List(ctx, &pvcList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return "", fmt.Errorf("failed to list persistent volume claims: %w", err)
+	}
+	pvcNames := make([]string, 0, len(pvcList.Items))
+	for _, pvc := range pvcList.Items {
+		pvcNames = append(pvcNames, pvc.Name)
+	}
+	if len(pvcList.Items) > 0 {
+		r.Log.Info("Found virtual persistent volume claims", "count", len(pvcList.Items))
+		return fmt.Sprintf("persistent volume claims: [%s]", strings.Join(pvcNames, ", ")), nil
+	}
+
+	return "", nil
+}
+
+// checkPhysicalResourcesExist checks if any kubeocean-managed resources exist in physical cluster
+func (r *ClusterBindingReconciler) checkPhysicalResourcesExist(ctx context.Context) (string, error) {
+	if r.PhysicalClient == nil {
+		return "", fmt.Errorf("physical client not available")
+	}
+
+	labelSelector := labels.SelectorFromSet(map[string]string{
+		cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+	})
+
+	// Check Pods
+	var podList corev1.PodList
+	err := r.PhysicalClient.List(ctx, &podList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return "", fmt.Errorf("failed to list pods: %w", err)
+	}
+	physicalPodNames := make([]string, 0, len(podList.Items))
+	for _, pod := range podList.Items {
+		physicalPodNames = append(physicalPodNames, pod.Name)
+	}
+	if len(podList.Items) > 0 {
+		r.Log.Info("Found kubeocean-managed pods in physical cluster", "count", len(podList.Items))
+		return fmt.Sprintf("pods: [%s]", strings.Join(physicalPodNames, ", ")), nil
+	}
+
+	// Check ConfigMaps
+	var configMapList corev1.ConfigMapList
+	err = r.PhysicalClient.List(ctx, &configMapList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return "", fmt.Errorf("failed to list configmaps: %w", err)
+	}
+	physicalConfigMapNames := make([]string, 0, len(configMapList.Items))
+	for _, configMap := range configMapList.Items {
+		physicalConfigMapNames = append(physicalConfigMapNames, configMap.Name)
+	}
+	if len(configMapList.Items) > 0 {
+		r.Log.Info("Found kubeocean-managed configmaps in physical cluster", "count", len(configMapList.Items))
+		return fmt.Sprintf("configmaps: [%s]", strings.Join(physicalConfigMapNames, ", ")), nil
+	}
+
+	// Check Secrets
+	var secretList corev1.SecretList
+	err = r.PhysicalClient.List(ctx, &secretList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return "", fmt.Errorf("failed to list secrets: %w", err)
+	}
+	physicalSecretNames := make([]string, 0, len(secretList.Items))
+	for _, secret := range secretList.Items {
+		physicalSecretNames = append(physicalSecretNames, secret.Name)
+	}
+	if len(secretList.Items) > 0 {
+		r.Log.Info("Found kubeocean-managed secrets in physical cluster", "count", len(secretList.Items))
+		return fmt.Sprintf("secrets: [%s]", strings.Join(physicalSecretNames, ", ")), nil
+	}
+
+	// Check PVCs
+	var pvcList corev1.PersistentVolumeClaimList
+	err = r.PhysicalClient.List(ctx, &pvcList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return "", fmt.Errorf("failed to list persistent volume claims: %w", err)
+	}
+	physicalPVCNames := make([]string, 0, len(pvcList.Items))
+	for _, pvc := range pvcList.Items {
+		physicalPVCNames = append(physicalPVCNames, pvc.Name)
+	}
+	if len(pvcList.Items) > 0 {
+		r.Log.Info("Found kubeocean-managed persistent volume claims in physical cluster", "count", len(pvcList.Items))
+		return fmt.Sprintf("persistent volume claims: [%s]", strings.Join(physicalPVCNames, ", ")), nil
+	}
+
+	// Check PVs
+	var pvList corev1.PersistentVolumeList
+	err = r.PhysicalClient.List(ctx, &pvList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return "", fmt.Errorf("failed to list persistent volumes: %w", err)
+	}
+	physicalPVNames := make([]string, 0, len(pvList.Items))
+	for _, pv := range pvList.Items {
+		physicalPVNames = append(physicalPVNames, pv.Name)
+	}
+	if len(pvList.Items) > 0 {
+		r.Log.Info("Found kubeocean-managed persistent volumes in physical cluster", "count", len(pvList.Items))
+		return fmt.Sprintf("persistent volumes: [%s]", strings.Join(physicalPVNames, ", ")), nil
+	}
+
+	return "", nil
+}
+
 // SetupWithManager sets up the controller with the Manager
 func (r *ClusterBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Use unique controller name to avoid conflicts when multiple KubeoceanSyncer instances are running
 	controllerName := fmt.Sprintf("clusterbinding-%s", r.ClusterBindingName)
+
+	if r.Client == nil {
+		return fmt.Errorf("client not available")
+	}
+	if r.PhysicalClient == nil {
+		return fmt.Errorf("physical client not available")
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
