@@ -50,6 +50,16 @@ rules:
 - apiGroups: ["storage.k8s.io"]
   resources: ["csinodes"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+# LogConfig CRD permissions for syncing from virtual to physical cluster
+- apiGroups: ["cls.cloud.tencent.com"]
+  resources: ["logconfigs"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["cls.cloud.tencent.com"]
+  resources: ["logconfigs/finalizers"]
+  verbs: ["update"]
+- apiGroups: ["cls.cloud.tencent.com"]
+  resources: ["logconfigs/status"]
+  verbs: ["get", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
