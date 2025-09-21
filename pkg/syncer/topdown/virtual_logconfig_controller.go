@@ -147,6 +147,16 @@ func (r *VirtualLogConfigReconciler) handleVirtualLogConfigDeletion(ctx context.
 func (r *VirtualLogConfigReconciler) reconcilePhysicalLogConfigs(ctx context.Context, virtualLogConfig *clsv1.LogConfig) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualLogConfig", virtualLogConfig.Name)
 
+	// Step 0: Add finalizer early to prevent dirty data
+	if !r.hasSyncedResourceFinalizer(virtualLogConfig) {
+		if err := r.addSyncedResourceFinalizer(ctx, virtualLogConfig); err != nil {
+			logger.Error(err, "Failed to add finalizer to virtual LogConfig")
+			return ctrl.Result{}, err
+		}
+		// Informer will automatically requeue the updated object
+		return ctrl.Result{}, nil
+	}
+
 	// Step 1: Find all existing related physical LogConfigs using labels
 	existingConfigs, err := r.findAllRelatedPhysicalLogConfigs(ctx, virtualLogConfig.Name)
 	if err != nil {
@@ -182,16 +192,6 @@ func (r *VirtualLogConfigReconciler) reconcilePhysicalLogConfigs(ctx context.Con
 			"existingCount", len(existingConfigs),
 			"newCount", len(newConfigs))
 
-		// Even if no rebuild is needed, ensure finalizer is present if physical configs exist
-		if len(existingConfigs) > 0 && !r.hasSyncedResourceFinalizer(virtualLogConfig) {
-			if err := r.addSyncedResourceFinalizer(ctx, virtualLogConfig); err != nil {
-				logger.Error(err, "Failed to add finalizer to virtual LogConfig")
-				return ctrl.Result{RequeueAfter: time.Minute}, nil
-			}
-			// Return to trigger a new reconcile with the updated object
-			return ctrl.Result{Requeue: true}, nil
-		}
-
 		return ctrl.Result{}, nil
 	}
 
@@ -212,16 +212,6 @@ func (r *VirtualLogConfigReconciler) reconcilePhysicalLogConfigs(ctx context.Con
 		"strategy", strategy,
 		"existingCount", len(existingConfigs),
 		"newCount", len(newConfigs))
-
-	// Add finalizer if not present after successful reconciliation
-	if !r.hasSyncedResourceFinalizer(virtualLogConfig) {
-		if err := r.addSyncedResourceFinalizer(ctx, virtualLogConfig); err != nil {
-			logger.Error(err, "Failed to add finalizer to virtual LogConfig after successful reconciliation")
-			return ctrl.Result{RequeueAfter: time.Minute}, nil
-		}
-		// Return to trigger a new reconcile with the updated object
-		return ctrl.Result{Requeue: true}, nil
-	}
 
 	return ctrl.Result{}, nil
 }
@@ -830,7 +820,7 @@ func (r *VirtualLogConfigReconciler) generateSinglePhysicalLogConfig(virtualLogC
 			Name: physicalName,
 			Labels: map[string]string{
 				GetManagedByClusterIDLabel(r.clusterID): cloudv1beta1.LabelValueTrue,
-				cloudv1beta1.LabelVirtualNamespace:      virtualLogConfig.Namespace,
+				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
 				"kubeocean.io/virtual-logconfig":        virtualLogConfig.Name, // Add this label for unified discovery           // Mark as single strategy
 			},
 			Annotations: map[string]string{
@@ -854,6 +844,7 @@ func (r *VirtualLogConfigReconciler) findAllRelatedPhysicalLogConfigs(ctx contex
 	err := r.PhysicalClient.List(ctx, logConfigList, client.MatchingLabels{
 		"kubeocean.io/virtual-logconfig":        virtualLogConfigName,
 		GetManagedByClusterIDLabel(r.clusterID): cloudv1beta1.LabelValueTrue,
+		cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list related physical LogConfigs: %w", err)
@@ -899,7 +890,7 @@ func (r *VirtualLogConfigReconciler) generateMultiplePhysicalLogConfigs(virtualL
 				Name: physicalName,
 				Labels: map[string]string{
 					GetManagedByClusterIDLabel(r.clusterID): cloudv1beta1.LabelValueTrue,
-					cloudv1beta1.LabelVirtualNamespace:      virtualLogConfig.Namespace,
+					cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
 					"kubeocean.io/virtual-logconfig":        virtualLogConfig.Name,
 				},
 				Annotations: map[string]string{
@@ -1031,3 +1022,4 @@ func (r *VirtualLogConfigReconciler) waitForLogConfigDeletion(ctx context.Contex
 
 	return fmt.Errorf("timeout waiting for LogConfig %s to be deleted", configName)
 }
+
