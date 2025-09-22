@@ -1,0 +1,526 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: logconfigs.cls.cloud.tencent.com
+spec:
+  group: cls.cloud.tencent.com
+  names:
+    kind: LogConfig
+    listKind: LogConfigList
+    plural: logconfigs
+    shortNames:
+    - lc
+    singular: logconfig
+  scope: Cluster
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        description: LogConfig is the Schema for the logconfigs API with correct group
+          and version
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: LogConfigSpec defines the desired state of LogConfig
+            properties:
+              clsDetail:
+                description: CLSDetail contains CLS-specific configuration
+                properties:
+                  advancedConfig:
+                    description: AdvancedConfig contains advanced CLS configuration
+                    properties:
+                      ClsAgentFileTimeout:
+                        description: CLSAgentFileTimeout defines file timeout
+                        format: int32
+                        type: integer
+                      ClsAgentMaxDepth:
+                        description: CLSAgentMaxDepth defines max depth
+                        format: int32
+                        type: integer
+                      ClsAgentParseFailMerge:
+                        description: CLSAgentParseFailMerge defines parse fail merge
+                          behavior
+                        type: boolean
+                    type: object
+                  autoIndex:
+                    description: AutoIndex configuration
+                    type: string
+                  autoSplit:
+                    description: AutoSplit configuration
+                    type: string
+                  excludePaths:
+                    description: ExcludePaths defines paths to exclude
+                    items:
+                      description: ExcludePath defines a path to exclude
+                      properties:
+                        excludeType:
+                          description: ExcludeType defines the exclude type
+                          type: string
+                        value:
+                          description: Value defines the exclude value
+                          type: string
+                      type: object
+                    type: array
+                  extractRule:
+                    description: ExtractRule defines log extraction rules
+                    properties:
+                      advancedFilters:
+                        description: AdvancedFilters defines advanced filters
+                        items:
+                          description: AdvancedFilter defines an advanced filter
+                          properties:
+                            key:
+                              description: Key defines the filter key
+                              type: string
+                            rule:
+                              description: Rule defines the filter rule
+                              format: int32
+                              type: integer
+                            value:
+                              description: Value defines the filter value
+                              type: string
+                          type: object
+                        type: array
+                      backtracking:
+                        description: Backtracking configuration
+                        type: string
+                      beginningRegex:
+                        description: BeginningRegex defines the beginning regex
+                        type: string
+                      delimiter:
+                        description: Delimiter defines the delimiter
+                        type: string
+                      filterKeys:
+                        description: FilterKeys defines filter keys
+                        items:
+                          type: string
+                        type: array
+                      filterRegex:
+                        description: FilterRegex defines filter regex patterns
+                        items:
+                          type: string
+                        type: array
+                      isGBK:
+                        description: IsGBK defines if using GBK encoding
+                        type: string
+                      jsonStandard:
+                        description: JsonStandard defines JSON standard
+                        type: string
+                      keys:
+                        description: Keys defines the keys
+                        items:
+                          type: string
+                        type: array
+                      logRegex:
+                        description: LogRegex defines the log regex
+                        type: string
+                      rawLogKey:
+                        description: RawLogKey defines the raw log key
+                        type: string
+                      timeFormat:
+                        description: TimeFormat defines the time format
+                        type: string
+                      timeKey:
+                        description: TimeKey defines the time key
+                        type: string
+                      unMatchUpload:
+                        description: UnMatchUpload defines unmatch upload behavior
+                        type: string
+                      unMatchedKey:
+                        description: UnMatchedKey defines the unmatched key
+                        type: string
+                    type: object
+                  fullTextIndex:
+                    description: FullTextIndex configuration
+                    properties:
+                      caseSensitive:
+                        description: CaseSensitive defines if case sensitive
+                        type: boolean
+                      containZH:
+                        description: ContainZH defines if contains Chinese
+                        type: boolean
+                      status:
+                        description: Status defines the index status
+                        type: string
+                      tokenizer:
+                        description: Tokenizer defines the tokenizer
+                        type: string
+                    required:
+                    - caseSensitive
+                    - containZH
+                    - status
+                    - tokenizer
+                    type: object
+                  hotPeriod:
+                    description: HotPeriod defines the hot period in days
+                    format: int32
+                    type: integer
+                  indexStatus:
+                    description: IndexStatus defines the index status
+                    type: string
+                  indexs:
+                    description: Indexs defines the index configuration
+                    items:
+                      description: Index defines index configuration
+                      properties:
+                        containZH:
+                          description: ContainZH defines if contains Chinese
+                          type: boolean
+                        indexName:
+                          description: IndexName defines the index name
+                          type: string
+                        indexType:
+                          description: IndexType defines the index type
+                          type: string
+                        sqlFlag:
+                          description: SqlFlag defines SQL flag
+                          type: boolean
+                        tokenizer:
+                          description: Tokenizer defines the tokenizer
+                          type: string
+                      type: object
+                    type: array
+                  logFormat:
+                    description: LogFormat defines the log format
+                    type: string
+                  logType:
+                    description: LogType defines the log type
+                    type: string
+                  logsetId:
+                    description: LogsetId defines the logset ID
+                    type: string
+                  logsetName:
+                    description: LogsetName defines the logset name
+                    type: string
+                  maxSplitPartitions:
+                    description: MaxSplitPartitions defines maximum split partitions
+                    format: int32
+                    type: integer
+                  partitionCount:
+                    description: PartitionCount defines the partition count
+                    format: int32
+                    type: integer
+                  period:
+                    description: Period defines the period in days
+                    format: int32
+                    type: integer
+                  region:
+                    description: Region defines the CLS region
+                    type: string
+                  storageType:
+                    description: StorageType defines the storage type
+                    type: string
+                  tags:
+                    description: Tags defines the tags
+                    items:
+                      description: Tag defines a tag
+                      properties:
+                        key:
+                          description: Key defines the tag key
+                          type: string
+                        value:
+                          description: Value defines the tag value
+                          type: string
+                      type: object
+                    type: array
+                  topicId:
+                    description: TopicId defines the topic ID
+                    type: string
+                  topicName:
+                    description: TopicName defines the topic name
+                    type: string
+                  userDefineRule:
+                    description: UserDefineRule defines user-defined rules
+                    type: string
+                type: object
+              inputDetail:
+                description: InputDetail defines the input source configuration
+                properties:
+                  containerFile:
+                    description: ContainerFile defines container file input
+                    properties:
+                      container:
+                        description: Container defines the container name
+                        type: string
+                      containerOperator:
+                        description: ContainerOperator defines the container operator
+                        type: string
+                      customLabels:
+                        additionalProperties:
+                          type: string
+                        description: CustomLabels defines custom labels
+                        type: object
+                      excludeLabels:
+                        additionalProperties:
+                          type: string
+                        description: ExcludeLabels defines labels to exclude
+                        type: object
+                      excludeNamespace:
+                        description: ExcludeNamespace defines namespace to exclude
+                        type: string
+                      filePaths:
+                        description: FilePaths defines file paths
+                        items:
+                          description: FilePath defines a file path
+                          properties:
+                            file:
+                              description: File defines the file name
+                              type: string
+                            path:
+                              description: Path defines the path
+                              type: string
+                          type: object
+                        type: array
+                      filePattern:
+                        description: FilePattern defines file pattern
+                        type: string
+                      includeLabels:
+                        additionalProperties:
+                          type: string
+                        description: IncludeLabels defines labels to include
+                        type: object
+                      logPath:
+                        description: LogPath defines the log path
+                        type: string
+                      metadataContainer:
+                        description: MetadataContainer defines metadata containers
+                        items:
+                          type: string
+                        type: array
+                      metadataLabels:
+                        description: MetadataLabels defines metadata labels
+                        items:
+                          type: string
+                        type: array
+                      namespace:
+                        description: Namespace defines the namespace
+                        type: string
+                      nsLabelSelector:
+                        description: NsLabelSelector defines namespace label selector
+                        type: string
+                      workload:
+                        description: Workload defines the workload
+                        properties:
+                          kind:
+                            description: Kind defines the workload kind
+                            type: string
+                          name:
+                            description: Name defines the workload name
+                            type: string
+                        type: object
+                    type: object
+                  containerStdout:
+                    description: ContainerStdout defines container stdout input
+                    properties:
+                      allContainers:
+                        description: AllContainers defines if all containers
+                        type: boolean
+                      container:
+                        description: Container defines the container name
+                        type: string
+                      containerOperator:
+                        description: ContainerOperator defines the container operator
+                        type: string
+                      customLabels:
+                        additionalProperties:
+                          type: string
+                        description: CustomLabels defines custom labels
+                        type: object
+                      excludeLabels:
+                        additionalProperties:
+                          type: string
+                        description: ExcludeLabels defines labels to exclude
+                        type: object
+                      excludeNamespace:
+                        description: ExcludeNamespace defines namespace to exclude
+                        type: string
+                      includeLabels:
+                        additionalProperties:
+                          type: string
+                        description: IncludeLabels defines labels to include
+                        type: object
+                      metadataContainer:
+                        description: MetadataContainer defines metadata containers
+                        items:
+                          type: string
+                        type: array
+                      metadataLabels:
+                        description: MetadataLabels defines metadata labels
+                        items:
+                          type: string
+                        type: array
+                      namespace:
+                        description: Namespace defines the namespace
+                        type: string
+                      nsLabelSelector:
+                        description: NsLabelSelector defines namespace label selector
+                        type: string
+                      workloads:
+                        description: Workloads defines the workloads
+                        items:
+                          description: WorkloadSelector defines a workload selector
+                          properties:
+                            container:
+                              description: Container defines the container name
+                              type: string
+                            containerOperator:
+                              description: ContainerOperator defines the container
+                                operator
+                              type: string
+                            kind:
+                              description: Kind defines the workload kind
+                              enum:
+                              - deployment
+                              - daemonset
+                              - statefulset
+                              - job
+                              - cronjob
+                              type: string
+                            name:
+                              description: Name defines the workload name
+                              type: string
+                            namespace:
+                              description: Namespace defines the namespace
+                              type: string
+                          type: object
+                        type: array
+                    type: object
+                  hostFile:
+                    description: HostFile defines host file input
+                    properties:
+                      customLabels:
+                        additionalProperties:
+                          type: string
+                        description: CustomLabels defines custom labels
+                        type: object
+                      filePaths:
+                        description: FilePaths defines file paths
+                        items:
+                          description: FilePath defines a file path
+                          properties:
+                            file:
+                              description: File defines the file name
+                              type: string
+                            path:
+                              description: Path defines the path
+                              type: string
+                          type: object
+                        type: array
+                      filePattern:
+                        description: FilePattern defines file pattern
+                        type: string
+                      logPath:
+                        description: LogPath defines the log path
+                        type: string
+                    type: object
+                  type:
+                    description: Type defines the input type
+                    enum:
+                    - container_stdout
+                    - container_file
+                    - host_file
+                    type: string
+                type: object
+              kafkaDetail:
+                description: KafkaDetail contains Kafka-specific configuration
+                properties:
+                  brokers:
+                    description: Brokers defines Kafka brokers
+                    type: string
+                  extractRule:
+                    description: ExtractRule defines extraction rules for Kafka
+                    properties:
+                      beginningRegex:
+                        description: BeginningRegex defines the beginning regex
+                        type: string
+                    type: object
+                  instanceId:
+                    description: InstanceId defines the Kafka instance ID
+                    type: string
+                  kafkaType:
+                    description: KafkaType defines the Kafka type
+                    type: string
+                  logType:
+                    description: LogType defines the log type for Kafka
+                    type: string
+                  messageKey:
+                    description: MessageKey defines the message key configuration
+                    properties:
+                      value:
+                        description: Value defines the static value
+                        type: string
+                      valueFrom:
+                        description: ValueFrom defines the value source
+                        properties:
+                          fieldRef:
+                            description: FieldRef defines field reference
+                            properties:
+                              fieldPath:
+                                description: FieldPath defines the field path
+                                type: string
+                            type: object
+                        type: object
+                    type: object
+                  metadata:
+                    description: Metadata defines metadata configuration
+                    properties:
+                      formatType:
+                        description: FormatType defines the format type
+                        type: string
+                    type: object
+                  outputType:
+                    description: OutputType defines the output type
+                    type: string
+                  rdKafka:
+                    additionalProperties:
+                      type: string
+                    description: RdKafka defines additional Kafka configuration
+                    type: object
+                  timestampFormat:
+                    description: TimestampFormat defines the timestamp format
+                    type: string
+                  timestampKey:
+                    description: TimestampKey defines the timestamp key
+                    type: string
+                  topic:
+                    description: Topic defines the Kafka topic
+                    type: string
+                type: object
+            type: object
+          status:
+            description: LogConfigStatus defines the observed state of LogConfig
+            properties:
+              code:
+                description: Code defines the status code
+                type: string
+              reason:
+                description: Reason defines the status reason
+                type: string
+              status:
+                description: Status defines the overall status
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
