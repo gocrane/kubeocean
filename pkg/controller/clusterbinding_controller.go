@@ -617,7 +617,8 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 	if controllerutil.ContainsFinalizer(originalClusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
 		log.Info("Waiting for syncer to remove its finalizer", "finalizer", cloudv1beta1.ClusterBindingSyncerFinalizer)
 		r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "WaitingSyncerCleanup", "Waiting for syncer to complete cleanup and remove its finalizer")
-		return ctrl.Result{}, fmt.Errorf("waiting for syncer finalizer %s to be removed", cloudv1beta1.ClusterBindingSyncerFinalizer)
+		// not requeue, wait for it updated
+		return ctrl.Result{}, nil
 	}
 
 	// Delete associated Kubeocean Syncer resources with comprehensive cleanup tracking

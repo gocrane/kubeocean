@@ -20,7 +20,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
-var _ = ginkgo.Describe("Syncer E2E Tests", func() {
+var _ = ginkgo.Describe("Syncer Integration Tests", func() {
 	ginkgo.Describe("KubeoceanSyncer Initialization", func() {
 		ginkgo.It("should create KubeoceanSyncer instance successfully", func(ctx context.Context) {
 			// Create namespace for secrets

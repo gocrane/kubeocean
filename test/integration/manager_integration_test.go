@@ -25,9 +25,9 @@ const (
 	testSystemNamespace = "kubeocean-system"
 )
 
-var _ = ginkgo.Describe("Manager E2E Tests", func() {
-	ginkgo.It("集群注册：kubeconfig 连接性校验", func(ctx context.Context) {
-		// 在 virtual 集群准备 kubeconfig Secret，并用它直连 apiserver 做连通性校验
+var _ = ginkgo.Describe("Manager Integration Tests", func() {
+	ginkgo.It("Cluster Registration: kubeconfig connectivity validation", func(ctx context.Context) {
+		// Prepare kubeconfig Secret in virtual cluster and use it to connect to apiserver for connectivity validation
 		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		ns := testSystemNamespace
@@ -35,7 +35,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "test-kubeconfig", Namespace: ns}, Data: map[string][]byte{"kubeconfig": kc}}
 		gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
 
-		// 使用该 kubeconfig 构造 client，验证 discovery ServerVersion 可用
+		// Use the kubeconfig to construct client and verify discovery ServerVersion is available
 		restCfg, err := clientcmd.RESTConfigFromKubeConfig(kc)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		cs, err := kubernetes.NewForConfig(restCfg)
@@ -45,19 +45,19 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		gomega.Expect(ver).NotTo(gomega.BeNil())
 	}, ginkgo.SpecTimeout(1*time.Minute))
 
-	ginkgo.It("ClusterBindingReconciler：添加 finalizer、状态变更与 Syncer 模板缺失失败", func(ctx context.Context) {
+	ginkgo.It("ClusterBindingReconciler: add finalizer, status change and Syncer template missing failure", func(ctx context.Context) {
 		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
-		// 启动 manager 并注册 ClusterBindingReconciler（仅一次）
+		// Start manager and register ClusterBindingReconciler (once only)
 		reconciler := &controllerpkg.ClusterBindingReconciler{
 			Client:   k8sVirtual,
 			Scheme:   scheme,
 			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
 			Recorder: record.NewFakeRecorder(100),
 		}
-		// 仅在第一次注册 controller，避免重复注册报错
+		// Register controller only once to avoid duplicate registration errors
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-finalizer")).To(gomega.Succeed())
 
-		// 准备 kubeconfig Secret
+		// Prepare kubeconfig Secret
 		ns := testSystemNamespace
 		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
@@ -65,7 +65,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cb1-kc", Namespace: ns}, Data: map[string][]byte{"kubeconfig": kc}}
 		gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
 
-		// 创建 ClusterBinding（cluster-scoped）
+		// Create ClusterBinding (cluster-scoped)
 		cb := &cloudv1beta1.ClusterBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "cb1"},
 			Spec: cloudv1beta1.ClusterBindingSpec{
@@ -76,9 +76,9 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}
 		gomega.Expect(k8sVirtual.Create(ctx, cb)).To(gomega.Succeed())
 
-		// 1) 最初应加上 finalizer（自动二次 reconcile）
+		// 1) Initially should add finalizer (automatic second reconcile)
 
-		// 2) 直接进入后续流程；由于缺少 /etc/kubeocean/syncer-template 模板，Syncer 创建会失败，Phase 变为 Failed
+		// 2) Proceed to subsequent flow; due to missing /etc/kubeocean/syncer-template template, Syncer creation will fail, Phase becomes Failed
 		type readyCheck struct {
 			HasFinalizer bool
 			Phase        string
@@ -95,12 +95,12 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}, 20*time.Second, 300*time.Millisecond).Should(gomega.Equal(readyCheck{HasFinalizer: true, Phase: "Failed", Reason: "SyncerFailed"}))
 	}, ginkgo.SpecTimeout(2*time.Minute))
 
-	ginkgo.It("ClusterBindingReconciler：成功部署 syncer（注入模板目录）", func(ctx context.Context) {
-		// 设置测试模板目录环境变量（以 test/e2e 为工作目录）
+	ginkgo.It("ClusterBindingReconciler: successfully deploy syncer and proxier (with template directories)", func(ctx context.Context) {
+		// Set test template directory environment variables (with test/e2e as working directory)
 		_ = os.Setenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR", "testdata/syncer-template")
 		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
 
-		// 注册 controller（一次）并启动 manager
+		// Register controller (once) and start manager
 		reconciler := &controllerpkg.ClusterBindingReconciler{
 			Client:   k8sVirtual,
 			Scheme:   scheme,
@@ -109,7 +109,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-syncer")).To(gomega.Succeed())
 
-		// 准备 kubeconfig Secret
+		// Prepare kubeconfig Secret
 		ns := testSystemNamespace
 		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
@@ -117,7 +117,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cb-ok-kc", Namespace: ns}, Data: map[string][]byte{"kubeconfig": kc}}
 		gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
 
-		// 创建 ClusterBinding
+		// Create ClusterBinding
 		cb := &cloudv1beta1.ClusterBinding{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "cloud.tencent.com/v1beta1", Kind: "ClusterBinding"},
 			ObjectMeta: metav1.ObjectMeta{Name: "cb-ok"},
@@ -129,25 +129,46 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}
 		gomega.Expect(k8sVirtual.Create(ctx, cb)).To(gomega.Succeed())
 
+		// Wait for ClusterBinding to be Ready
 		gomega.Eventually(func() string {
 			var got cloudv1beta1.ClusterBinding
 			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
 			return string(got.Status.Phase)
 		}, 20*time.Second, 300*time.Millisecond).Should(gomega.Equal("Ready"))
 
-		// 额外校验：Deployment 已创建且 ownerReference 指向该 ClusterBinding
-		expectedDepName := "kubeocean-syncer-" + cb.Name
-		var dep appsv1.Deployment
+		// Additional validation: Syncer Deployment is created and ownerReference points to the ClusterBinding
+		expectedSyncerDepName := "kubeocean-syncer-" + cb.Spec.ClusterID
+		var syncerDep appsv1.Deployment
 		gomega.Eventually(func() bool {
-			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedDepName}, &dep)
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedSyncerDepName}, &syncerDep)
 			return err == nil
 		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
-		gomega.Expect(dep.OwnerReferences).NotTo(gomega.BeEmpty())
-		gomega.Expect(dep.OwnerReferences[0].Name).To(gomega.Equal(cb.Name))
+		gomega.Expect(syncerDep.OwnerReferences).NotTo(gomega.BeEmpty())
+		gomega.Expect(syncerDep.OwnerReferences[0].Name).To(gomega.Equal(cb.Name))
+
+		// Additional validation: Proxier Deployment is created and ownerReference points to the ClusterBinding
+		expectedProxierDepName := "kubeocean-proxier-" + cb.Spec.ClusterID
+		var proxierDep appsv1.Deployment
+		gomega.Eventually(func() bool {
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedProxierDepName}, &proxierDep)
+			return err == nil
+		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
+		gomega.Expect(proxierDep.OwnerReferences).NotTo(gomega.BeEmpty())
+		gomega.Expect(proxierDep.OwnerReferences[0].Name).To(gomega.Equal(cb.Name))
+
+		// Additional validation: Proxier Service is created and ownerReference points to the ClusterBinding
+		expectedProxierSvcName := "kubeocean-proxier-" + cb.Spec.ClusterID + "-svc"
+		var proxierSvc corev1.Service
+		gomega.Eventually(func() bool {
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedProxierSvcName}, &proxierSvc)
+			return err == nil
+		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
+		gomega.Expect(proxierSvc.OwnerReferences).NotTo(gomega.BeEmpty())
+		gomega.Expect(proxierSvc.OwnerReferences[0].Name).To(gomega.Equal(cb.Name))
 	}, ginkgo.SpecTimeout(3*time.Minute))
 
-	ginkgo.It("ClusterBindingReconciler：kubeconfig Secret 缺少 key 导致 ConnectivityFailed", func(ctx context.Context) {
-		// 确保 manager 已启动
+	ginkgo.It("ClusterBindingReconciler: kubeconfig Secret missing key causes ConnectivityFailed", func(ctx context.Context) {
+		// Ensure manager is started
 		reconciler := &controllerpkg.ClusterBindingReconciler{
 			Client:   k8sVirtual,
 			Scheme:   scheme,
@@ -156,7 +177,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-bad-kc")).To(gomega.Succeed())
 
-		// Secret 缺少 kubeconfig 键
+		// Secret missing kubeconfig key
 		ns := testSystemNamespace
 		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		bad := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "bad-kc", Namespace: ns}, Data: map[string][]byte{"other": []byte("x")}}
@@ -172,14 +193,14 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}
 		gomega.Expect(k8sVirtual.Create(ctx, cb)).To(gomega.Succeed())
 
-		// 等 finalizer
+		// Wait for finalizer
 		gomega.Eventually(func() bool {
 			var got cloudv1beta1.ClusterBinding
 			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
 			return containsString(got.Finalizers, cloudv1beta1.ClusterBindingManagerFinalizer)
 		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
 
-		// 期望失败原因为 ConnectivityFailed
+		// Expect failure reason to be ConnectivityFailed
 		gomega.Eventually(func() string {
 			var got cloudv1beta1.ClusterBinding
 			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
@@ -187,12 +208,12 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}, 15*time.Second, 300*time.Millisecond).Should(gomega.Equal("ConnectivityFailed"))
 	}, ginkgo.SpecTimeout(2*time.Minute))
 
-	ginkgo.It("ClusterBindingReconciler：删除流程应移除 finalizer 并删除资源", func(ctx context.Context) {
-		// 设置测试模板目录环境变量（以 test/e2e 为工作目录）
+	ginkgo.It("ClusterBindingReconciler: deletion process should remove finalizer and delete resources", func(ctx context.Context) {
+		// Set test template directory environment variables (with test/e2e as working directory)
 		_ = os.Setenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR", "testdata/syncer-template")
 		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
 
-		// 确保 manager 已启动
+		// Ensure manager is started
 		reconciler := &controllerpkg.ClusterBindingReconciler{
 			Client:   k8sVirtual,
 			Scheme:   scheme,
@@ -201,7 +222,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-clean")).To(gomega.Succeed())
 
-		// 有效 kubeconfig Secret
+		// Valid kubeconfig Secret
 		ns := testSystemNamespace
 		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
 		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
@@ -219,23 +240,167 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		}
 		gomega.Expect(k8sVirtual.Create(ctx, cb)).To(gomega.Succeed())
 
-		// 等 finalizer
+		// Wait for finalizer
 		gomega.Eventually(func() bool {
 			var got cloudv1beta1.ClusterBinding
 			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
 			return containsString(got.Finalizers, cloudv1beta1.ClusterBindingManagerFinalizer)
 		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
 
-		// 触发删除
+		// Trigger deletion
 		gomega.Expect(k8sVirtual.Delete(ctx, cb)).To(gomega.Succeed())
 
-		// 应最终被删除（finalizer 被控制器移除）
+		// Should eventually be deleted (finalizer removed by controller)
 		gomega.Eventually(func() bool {
 			var got cloudv1beta1.ClusterBinding
 			err := k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
 			return apierrors.IsNotFound(err)
 		}, 20*time.Second, 300*time.Millisecond).Should(gomega.BeTrue())
 	}, ginkgo.SpecTimeout(2*time.Minute))
+
+	ginkgo.It("ClusterBindingReconciler: complete ClusterBinding lifecycle test", func(ctx context.Context) {
+		// 1. Prepare environment and create ClusterBinding
+		_ = os.Setenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR", "testdata/syncer-template")
+		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
+
+		// Register controller and start manager
+		reconciler := &controllerpkg.ClusterBindingReconciler{
+			Client:   k8sVirtual,
+			Scheme:   scheme,
+			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
+			Recorder: record.NewFakeRecorder(100),
+		}
+		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-lifecycle")).To(gomega.Succeed())
+
+		// Prepare kubeconfig Secret
+		ns := testSystemNamespace
+		_ = k8sVirtual.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+		kc, err := kubeconfigFromRestConfig(cfgPhysical, "physical")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cb-lifecycle-kc", Namespace: ns}, Data: map[string][]byte{"kubeconfig": kc}}
+		gomega.Expect(k8sVirtual.Create(ctx, secret)).To(gomega.Succeed())
+
+		// Create ClusterBinding
+		ginkgo.By("Creating ClusterBinding")
+		cb := &cloudv1beta1.ClusterBinding{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "cloud.tencent.com/v1beta1", Kind: "ClusterBinding"},
+			ObjectMeta: metav1.ObjectMeta{Name: "cb-lifecycle"},
+			Spec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID:      "cb-lifecycle",
+				SecretRef:      corev1.SecretReference{Name: "cb-lifecycle-kc", Namespace: ns},
+				MountNamespace: "default",
+			},
+		}
+		gomega.Expect(k8sVirtual.Create(ctx, cb)).To(gomega.Succeed())
+
+		// 2. Verify ClusterBinding status is Ready with manager-added finalizer
+		ginkgo.By("Verifying ClusterBinding status is Ready with manager-added finalizer")
+		gomega.Eventually(func() string {
+			var got cloudv1beta1.ClusterBinding
+			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
+			return string(got.Status.Phase)
+		}, 20*time.Second, 300*time.Millisecond).Should(gomega.Equal("Ready"))
+
+		// Verify manager finalizer is present
+		gomega.Eventually(func() bool {
+			var got cloudv1beta1.ClusterBinding
+			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
+			return containsString(got.Finalizers, cloudv1beta1.ClusterBindingManagerFinalizer)
+		}, 5*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
+
+		// 3. Verify syncer deployment, proxier deployment, and service are successfully created
+		ginkgo.By("Verifying syncer deployment, proxier deployment, and service are successfully created")
+		expectedSyncerDepName := "kubeocean-syncer-" + cb.Spec.ClusterID
+		var syncerDep appsv1.Deployment
+		gomega.Eventually(func() bool {
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedSyncerDepName}, &syncerDep)
+			return err == nil
+		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
+
+		expectedProxierDepName := "kubeocean-proxier-" + cb.Spec.ClusterID
+		var proxierDep appsv1.Deployment
+		gomega.Eventually(func() bool {
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedProxierDepName}, &proxierDep)
+			return err == nil
+		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
+
+		expectedProxierSvcName := "kubeocean-proxier-" + cb.Spec.ClusterID + "-svc"
+		var proxierSvc corev1.Service
+		gomega.Eventually(func() bool {
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedProxierSvcName}, &proxierSvc)
+			return err == nil
+		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
+
+		// 4. Add ClusterBindingSyncerFinalizer to ClusterBinding
+		ginkgo.By("Adding ClusterBindingSyncerFinalizer to ClusterBinding")
+		var currentCB cloudv1beta1.ClusterBinding
+		gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &currentCB)).To(gomega.Succeed())
+		currentCB.Finalizers = append(currentCB.Finalizers, cloudv1beta1.ClusterBindingSyncerFinalizer)
+		gomega.Expect(k8sVirtual.Update(ctx, &currentCB)).To(gomega.Succeed())
+
+		// Verify syncer finalizer is added
+		gomega.Eventually(func() bool {
+			var got cloudv1beta1.ClusterBinding
+			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
+			return containsString(got.Finalizers, cloudv1beta1.ClusterBindingSyncerFinalizer)
+		}, 5*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
+
+		// 5. Delete ClusterBinding, wait 2s, confirm ClusterBinding still exists with non-empty deletionTimestamp
+		// and confirm syncer deploy, proxier deploy, service still exist
+		ginkgo.By("Deleting ClusterBinding, waiting 2s, confirming ClusterBinding still exists with non-empty deletionTimestamp and confirming syncer deploy, proxier deploy, service still exist")
+		gomega.Expect(k8sVirtual.Delete(ctx, &currentCB)).To(gomega.Succeed())
+
+		// Wait 2 seconds as requested
+		time.Sleep(2 * time.Second)
+
+		// Verify ClusterBinding still exists with deletionTimestamp
+		var deletingCB cloudv1beta1.ClusterBinding
+		gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &deletingCB)).To(gomega.Succeed())
+		gomega.Expect(deletingCB.DeletionTimestamp).NotTo(gomega.BeNil())
+
+		// Verify resources still exist
+		gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedSyncerDepName}, &syncerDep)).To(gomega.Succeed())
+		gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedProxierDepName}, &proxierDep)).To(gomega.Succeed())
+		gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedProxierSvcName}, &proxierSvc)).To(gomega.Succeed())
+
+		// 6. Remove ClusterBindingSyncerFinalizer
+		ginkgo.By("Removing ClusterBindingSyncerFinalizer from ClusterBinding")
+		gomega.Expect(k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &deletingCB)).To(gomega.Succeed())
+
+		// Remove syncer finalizer from the list
+		var newFinalizers []string
+		for _, finalizer := range deletingCB.Finalizers {
+			if finalizer != cloudv1beta1.ClusterBindingSyncerFinalizer {
+				newFinalizers = append(newFinalizers, finalizer)
+			}
+		}
+		deletingCB.Finalizers = newFinalizers
+		gomega.Expect(k8sVirtual.Update(ctx, &deletingCB)).To(gomega.Succeed())
+
+		// 7. Confirm syncer deploy, proxier deploy, service are successfully deleted,
+		// and confirm ClusterBinding is successfully deleted
+		ginkgo.By("Confirming syncer deploy, proxier deploy, service are successfully deleted, and ClusterBinding is successfully deleted")
+		gomega.Eventually(func() bool {
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedSyncerDepName}, &syncerDep)
+			return apierrors.IsNotFound(err)
+		}, 15*time.Second, 300*time.Millisecond).Should(gomega.BeTrue())
+
+		gomega.Eventually(func() bool {
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedProxierDepName}, &proxierDep)
+			return apierrors.IsNotFound(err)
+		}, 15*time.Second, 300*time.Millisecond).Should(gomega.BeTrue())
+
+		gomega.Eventually(func() bool {
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Namespace: "kubeocean-system", Name: expectedProxierSvcName}, &proxierSvc)
+			return apierrors.IsNotFound(err)
+		}, 15*time.Second, 300*time.Millisecond).Should(gomega.BeTrue())
+
+		gomega.Eventually(func() bool {
+			var got cloudv1beta1.ClusterBinding
+			err := k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
+			return apierrors.IsNotFound(err)
+		}, 15*time.Second, 300*time.Millisecond).Should(gomega.BeTrue())
+	}, ginkgo.SpecTimeout(4*time.Minute))
 })
 
 func containsString(list []string, target string) bool {

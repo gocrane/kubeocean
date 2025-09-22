@@ -1463,9 +1463,8 @@ func TestClusterBindingReconciler_handleDeletion_WaitForSyncerFinalizer(t *testi
 	ctx := context.Background()
 	result, err := reconciler.handleDeletion(ctx, clusterBinding)
 
-	// Should return an error indicating waiting for syncer finalizer
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "waiting for syncer finalizer")
+	// Should return no error but also no requeue when waiting for syncer finalizer
+	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 }
 

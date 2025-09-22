@@ -51,7 +51,7 @@ const (
 	nodenameEnvVarConst        = "NODENAME"
 )
 
-var _ = ginkgo.Describe("Virtual Pod E2E Tests", func() {
+var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 	var (
 		testCtx            context.Context
 		testCancel         context.CancelFunc
