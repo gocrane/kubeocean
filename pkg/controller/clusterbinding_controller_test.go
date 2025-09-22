@@ -2,6 +2,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
@@ -271,11 +275,6 @@ func TestClusterBindingReconciler_finalizerMethods(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
-	reconciler := &ClusterBindingReconciler{
-		Scheme: scheme,
-		Log:    zap.New(zap.UseDevMode(true)),
-	}
-
 	clusterBinding := &cloudv1beta1.ClusterBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-binding",
@@ -286,17 +285,17 @@ func TestClusterBindingReconciler_finalizerMethods(t *testing.T) {
 	}
 
 	// Test hasFinalizer - should be false initially
-	assert.False(t, reconciler.hasFinalizer(clusterBinding))
+	assert.False(t, controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer))
 
 	// Test addFinalizer
-	reconciler.addFinalizer(clusterBinding)
-	assert.True(t, reconciler.hasFinalizer(clusterBinding))
-	assert.Contains(t, clusterBinding.Finalizers, ClusterBindingFinalizer)
+	controllerutil.AddFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer)
+	assert.True(t, controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer))
+	assert.Contains(t, clusterBinding.Finalizers, cloudv1beta1.ClusterBindingManagerFinalizer)
 
 	// Test removeFinalizer
-	reconciler.removeFinalizer(clusterBinding)
-	assert.False(t, reconciler.hasFinalizer(clusterBinding))
-	assert.NotContains(t, clusterBinding.Finalizers, ClusterBindingFinalizer)
+	controllerutil.RemoveFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer)
+	assert.False(t, controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer))
+	assert.NotContains(t, clusterBinding.Finalizers, cloudv1beta1.ClusterBindingManagerFinalizer)
 }
 
 func TestClusterBindingReconciler_Reconcile_Integration(t *testing.T) {
@@ -380,7 +379,7 @@ users:
 	var updatedBinding cloudv1beta1.ClusterBinding
 	err = fakeClient.Get(context.Background(), req.NamespacedName, &updatedBinding)
 	assert.NoError(t, err)
-	assert.Contains(t, updatedBinding.Finalizers, ClusterBindingFinalizer)
+	assert.Contains(t, updatedBinding.Finalizers, cloudv1beta1.ClusterBindingManagerFinalizer)
 
 	// Run reconcile again to test the full flow (after finalizer is added)
 	_, err2 := reconciler.Reconcile(context.Background(), req)
@@ -423,6 +422,7 @@ func TestClusterBindingReconciler_SyncerCreation(t *testing.T) {
 			UID:       "test-uid",
 		},
 		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-binding",
 			SecretRef: corev1.SecretReference{
 				Name:      "test-secret",
 				Namespace: "default",
@@ -493,7 +493,11 @@ spec:
 	err = fakeClient.Get(ctx, types.NamespacedName{Name: expectedName, Namespace: templateData.SyncerNamespace}, &createdDeployment)
 	assert.NoError(t, err)
 	assert.Equal(t, expectedName, createdDeployment.Name)
-	assert.Equal(t, int32(2), *createdDeployment.Spec.Replicas)
+	if createdDeployment.Spec.Replicas != nil {
+		assert.Equal(t, int32(2), *createdDeployment.Spec.Replicas)
+	} else {
+		t.Error("Deployment Spec.Replicas should not be nil")
+	}
 
 	// Verify that the deployment uses the shared ServiceAccount
 	assert.Equal(t, "kubeocean-syncer", createdDeployment.Spec.Template.Spec.ServiceAccountName)
@@ -542,6 +546,9 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 					Name:      "test-binding",
 					Namespace: "default",
 				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-binding",
+				},
 			},
 			expectedStatus: &ResourceCleanupStatus{
 				Deployment:         true,
@@ -566,6 +573,9 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 					Name:      "test-binding",
 					Namespace: "default",
 				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-binding",
+				},
 			},
 			expectedStatus: &ResourceCleanupStatus{
 				Deployment:         true,
@@ -574,40 +584,31 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 				ClusterRoleBinding: true,
 			},
 		},
-		{
-			name: "fallback to default names",
-			existingResources: []client.Object{
-				// Resources with base default name instead of configured names
-				&appsv1.Deployment{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "kubeocean-syncer", // Base default name
-						Namespace: "kubeocean-system",
-					},
-				},
-				&corev1.ServiceAccount{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "kubeocean-syncer",
-						Namespace: "kubeocean-system",
-					},
-				},
-			},
-			clusterBinding: &cloudv1beta1.ClusterBinding{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-binding",
-					Namespace: "default",
-				},
-			},
-			expectedStatus: &ResourceCleanupStatus{
-				Deployment:         true,
-				ServiceAccount:     true,
-				ClusterRole:        true, // Should be true even if not found
-				ClusterRoleBinding: true,
-			},
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary directory for templates
+			tempDir := t.TempDir()
+
+			// Set environment variable to use temp directory
+			t.Setenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR", tempDir)
+
+			// Create mock template files
+			deploymentTemplate := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{.DeploymentName}}"
+  namespace: "{{.SyncerNamespace}}"
+spec:
+  replicas: 1`
+
+			err := os.WriteFile(filepath.Join(tempDir, "deployment.yaml"), []byte(deploymentTemplate), 0644)
+			require.NoError(t, err)
+
+			err = os.WriteFile(filepath.Join(tempDir, "syncerNamespace"), []byte("kubeocean-system"), 0644)
+			require.NoError(t, err)
+
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(tt.existingResources...).
@@ -621,10 +622,12 @@ func TestClusterBindingReconciler_deleteSyncerResources(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			status, err := reconciler.deleteSyncerResources(ctx, tt.clusterBinding)
+			deleted, err := reconciler.deleteSyncerResources(ctx, tt.clusterBinding)
 
 			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedStatus, status)
+			// Since deleteSyncerResources now returns bool, we check if deployment was deleted
+			expectedDeleted := tt.expectedStatus.Deployment
+			assert.Equal(t, expectedDeleted, deleted)
 
 			// Verify resources are handled correctly
 			for _, resource := range tt.existingResources {
@@ -688,8 +691,11 @@ func TestClusterBindingReconciler_handleDeletion(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:              "test-binding",
 					Namespace:         "default",
-					Finalizers:        []string{ClusterBindingFinalizer},
+					Finalizers:        []string{cloudv1beta1.ClusterBindingManagerFinalizer},
 					DeletionTimestamp: &metav1.Time{Time: time.Now()},
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-binding",
 				},
 			},
 			expectRequeue: false,
@@ -701,8 +707,11 @@ func TestClusterBindingReconciler_handleDeletion(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:              "test-binding",
 					Namespace:         "default",
-					Finalizers:        []string{ClusterBindingFinalizer},
+					Finalizers:        []string{cloudv1beta1.ClusterBindingManagerFinalizer},
 					DeletionTimestamp: &metav1.Time{Time: time.Now()},
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-binding",
 				},
 			},
 			expectRequeue: false,
@@ -711,6 +720,56 @@ func TestClusterBindingReconciler_handleDeletion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary directories for templates
+			syncerTempDir := t.TempDir()
+			proxierTempDir := t.TempDir()
+
+			// Set environment variables to use temp directories
+			t.Setenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR", syncerTempDir)
+			t.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", proxierTempDir)
+
+			// Create mock syncer template files
+			syncerDeploymentTemplate := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{.DeploymentName}}"
+  namespace: "{{.SyncerNamespace}}"
+spec:
+  replicas: 1`
+
+			err := os.WriteFile(filepath.Join(syncerTempDir, "deployment.yaml"), []byte(syncerDeploymentTemplate), 0644)
+			require.NoError(t, err)
+
+			err = os.WriteFile(filepath.Join(syncerTempDir, "syncerNamespace"), []byte("kubeocean-system"), 0644)
+			require.NoError(t, err)
+
+			// Create mock proxier template files
+			proxierDeploymentTemplate := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{.DeploymentName}}"
+  namespace: "{{.ProxierNamespace}}"
+spec:
+  replicas: 1`
+
+			proxierServiceTemplate := `apiVersion: v1
+kind: Service
+metadata:
+  name: "{{.ServiceName}}"
+  namespace: "{{.ProxierNamespace}}"
+spec:
+  ports:
+  - port: 80`
+
+			err = os.WriteFile(filepath.Join(proxierTempDir, "deployment.yaml"), []byte(proxierDeploymentTemplate), 0644)
+			require.NoError(t, err)
+
+			err = os.WriteFile(filepath.Join(proxierTempDir, "service.yaml"), []byte(proxierServiceTemplate), 0644)
+			require.NoError(t, err)
+
+			err = os.WriteFile(filepath.Join(proxierTempDir, "proxierNamespace"), []byte("kubeocean-system"), 0644)
+			require.NoError(t, err)
+
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(append(tt.existingResources, tt.clusterBinding)...).
@@ -970,4 +1029,689 @@ func TestClusterBindingReconciler_createOrUpdateResource_NonDeploymentUpdates(t 
 
 	// Check that the value was updated
 	assert.Equal(t, "updated-value", actualConfigMap.Data["key"])
+}
+
+func TestClusterBindingReconciler_reconcileKubeoceanSyncer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
+
+	tests := []struct {
+		name           string
+		clusterBinding *cloudv1beta1.ClusterBinding
+		templateFiles  map[string]string
+		wantErr        bool
+		errMsg         string
+	}{
+		{
+			name: "successful syncer reconciliation",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "default",
+					UID:       "test-uid",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			templateFiles: map[string]string{
+				"serviceAccountName": "kubeocean-syncer",
+				"syncerNamespace":    "kubeocean-system",
+				"deployment.yaml": `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{.DeploymentName}}"
+  namespace: "{{.SyncerNamespace}}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: syncer
+  template:
+    metadata:
+      labels:
+        app: syncer
+    spec:
+      containers:
+      - name: syncer
+        image: "kubeocean-syncer:latest"`,
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing deployment template",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "default",
+					UID:       "test-uid",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			templateFiles: map[string]string{
+				"serviceAccountName": "kubeocean-syncer",
+				"syncerNamespace":    "kubeocean-system",
+			},
+			wantErr: true,
+			errMsg:  "failed to read template file deployment.yaml",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary directory for templates
+			tempDir := t.TempDir()
+			t.Setenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR", tempDir)
+
+			// Create template files in temp directory
+			for filename, content := range tt.templateFiles {
+				err := os.WriteFile(filepath.Join(tempDir, filename), []byte(content), 0644)
+				require.NoError(t, err)
+			}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := &ClusterBindingReconciler{
+				Client:   fakeClient,
+				Scheme:   scheme,
+				Log:      zap.New(zap.UseDevMode(true)),
+				Recorder: record.NewFakeRecorder(10),
+			}
+
+			ctx := context.Background()
+			err := reconciler.reconcileKubeoceanSyncer(ctx, tt.clusterBinding)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+
+				// Verify deployment was created
+				expectedName := fmt.Sprintf("kubeocean-syncer-%s", tt.clusterBinding.Spec.ClusterID)
+				var deployment appsv1.Deployment
+				err = fakeClient.Get(ctx, types.NamespacedName{
+					Name:      expectedName,
+					Namespace: tt.templateFiles["syncerNamespace"],
+				}, &deployment)
+				assert.NoError(t, err)
+				assert.Equal(t, expectedName, deployment.Name)
+
+				// Verify owner reference is set
+				require.Len(t, deployment.OwnerReferences, 1)
+				ownerRef := deployment.OwnerReferences[0]
+				assert.Equal(t, tt.clusterBinding.Name, ownerRef.Name)
+				assert.Equal(t, tt.clusterBinding.UID, ownerRef.UID)
+				assert.True(t, *ownerRef.Controller)
+			}
+		})
+	}
+}
+
+func TestClusterBindingReconciler_reconcileKubeoceanProxier(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
+
+	tests := []struct {
+		name           string
+		clusterBinding *cloudv1beta1.ClusterBinding
+		templateFiles  map[string]string
+		wantErr        bool
+		errMsg         string
+	}{
+		{
+			name: "successful proxier reconciliation",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "default",
+					UID:       "test-uid",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			templateFiles: map[string]string{
+				"serviceAccountName": "kubeocean-proxier",
+				"proxierNamespace":   "kubeocean-system",
+				"deployment.yaml": `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{.DeploymentName}}"
+  namespace: "{{.ProxierNamespace}}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: proxier
+  template:
+    metadata:
+      labels:
+        app: proxier
+    spec:
+      containers:
+      - name: proxier
+        image: "kubeocean-proxier:latest"`,
+				"service.yaml": `apiVersion: v1
+kind: Service
+metadata:
+  name: "{{.ServiceName}}"
+  namespace: "{{.ProxierNamespace}}"
+spec:
+  selector:
+    app: proxier
+  ports:
+  - port: 8080`,
+			},
+			wantErr: false,
+		},
+		{
+			name: "proxier with TLS enabled",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "default",
+					UID:       "test-uid",
+					Annotations: map[string]string{
+						"kubeocean.io/logs-proxy-enabled":          "true",
+						"kubeocean.io/logs-proxy-secret-name":      "tls-secret",
+						"kubeocean.io/logs-proxy-secret-namespace": "custom-ns",
+					},
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			templateFiles: map[string]string{
+				"serviceAccountName": "kubeocean-proxier",
+				"proxierNamespace":   "kubeocean-system",
+				"deployment.yaml": `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{.DeploymentName}}"
+  namespace: "{{.ProxierNamespace}}"
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: proxier
+        image: "kubeocean-proxier:latest"
+        {{if .TLSEnabled}}
+        env:
+        - name: TLS_ENABLED
+          value: "true"
+        - name: TLS_SECRET_NAME
+          value: "{{.TLSSecretName}}"
+        {{end}}`,
+				"service.yaml": `apiVersion: v1
+kind: Service
+metadata:
+  name: "{{.ServiceName}}"
+  namespace: "{{.ProxierNamespace}}"
+spec:
+  ports:
+  - port: 8080`,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary directory for templates
+			tempDir := t.TempDir()
+			t.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", tempDir)
+
+			// Create template files in temp directory
+			for filename, content := range tt.templateFiles {
+				err := os.WriteFile(filepath.Join(tempDir, filename), []byte(content), 0644)
+				require.NoError(t, err)
+			}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := &ClusterBindingReconciler{
+				Client:   fakeClient,
+				Scheme:   scheme,
+				Log:      zap.New(zap.UseDevMode(true)),
+				Recorder: record.NewFakeRecorder(10),
+			}
+
+			ctx := context.Background()
+			err := reconciler.reconcileKubeoceanProxier(ctx, tt.clusterBinding)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+
+				// Verify deployment was created
+				expectedDeploymentName := fmt.Sprintf("%s-%s", DefaultProxierName, tt.clusterBinding.Spec.ClusterID)
+				var deployment appsv1.Deployment
+				err = fakeClient.Get(ctx, types.NamespacedName{
+					Name:      expectedDeploymentName,
+					Namespace: tt.templateFiles["proxierNamespace"],
+				}, &deployment)
+				assert.NoError(t, err)
+
+				// Verify service was created
+				expectedServiceName := fmt.Sprintf("%s-%s-svc", DefaultProxierName, tt.clusterBinding.Spec.ClusterID)
+				var service corev1.Service
+				err = fakeClient.Get(ctx, types.NamespacedName{
+					Name:      expectedServiceName,
+					Namespace: tt.templateFiles["proxierNamespace"],
+				}, &service)
+				assert.NoError(t, err)
+
+				// Verify owner references are set
+				require.Len(t, deployment.OwnerReferences, 1)
+				assert.Equal(t, tt.clusterBinding.Name, deployment.OwnerReferences[0].Name)
+				require.Len(t, service.OwnerReferences, 1)
+				assert.Equal(t, tt.clusterBinding.Name, service.OwnerReferences[0].Name)
+			}
+		})
+	}
+}
+
+func TestClusterBindingReconciler_prepareProxierTemplateData_TLS(t *testing.T) {
+	tests := []struct {
+		name           string
+		clusterBinding *cloudv1beta1.ClusterBinding
+		templateFiles  map[string]string
+		expectedTLS    struct {
+			enabled    bool
+			secretName string
+			secretNS   string
+		}
+	}{
+		{
+			name: "TLS disabled",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-binding",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			templateFiles: map[string]string{
+				"proxierNamespace": "kubeocean-system",
+			},
+			expectedTLS: struct {
+				enabled    bool
+				secretName string
+				secretNS   string
+			}{
+				enabled:    false,
+				secretName: "",
+				secretNS:   "",
+			},
+		},
+		{
+			name: "TLS enabled with custom secret",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-binding",
+					Annotations: map[string]string{
+						"kubeocean.io/logs-proxy-enabled":          "true",
+						"kubeocean.io/logs-proxy-secret-name":      "custom-tls-secret",
+						"kubeocean.io/logs-proxy-secret-namespace": "custom-namespace",
+					},
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			templateFiles: map[string]string{
+				"proxierNamespace": "kubeocean-system",
+			},
+			expectedTLS: struct {
+				enabled    bool
+				secretName string
+				secretNS   string
+			}{
+				enabled:    true,
+				secretName: "custom-tls-secret",
+				secretNS:   "custom-namespace",
+			},
+		},
+		{
+			name: "TLS enabled with default namespace",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-binding",
+					Annotations: map[string]string{
+						"kubeocean.io/logs-proxy-enabled":     "true",
+						"kubeocean.io/logs-proxy-secret-name": "tls-secret",
+					},
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			},
+			templateFiles: map[string]string{
+				"proxierNamespace": "kubeocean-system",
+			},
+			expectedTLS: struct {
+				enabled    bool
+				secretName string
+				secretNS   string
+			}{
+				enabled:    true,
+				secretName: "tls-secret",
+				secretNS:   "kubeocean-system", // Should default to proxier namespace
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+			reconciler := &ClusterBindingReconciler{
+				Log: zap.New(zap.UseDevMode(true)),
+			}
+
+			templateData := reconciler.prepareProxierTemplateData(tt.clusterBinding, tt.templateFiles)
+
+			assert.Equal(t, tt.expectedTLS.enabled, templateData.TLSEnabled)
+			assert.Equal(t, tt.expectedTLS.secretName, templateData.TLSSecretName)
+			assert.Equal(t, tt.expectedTLS.secretNS, templateData.TLSSecretNamespace)
+		})
+	}
+}
+
+func TestClusterBindingReconciler_handleDeletion_WaitForSyncerFinalizer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-binding",
+			Namespace: "default",
+			Finalizers: []string{
+				cloudv1beta1.ClusterBindingManagerFinalizer,
+				cloudv1beta1.ClusterBindingSyncerFinalizer, // Syncer finalizer still present
+			},
+			DeletionTimestamp: &metav1.Time{Time: time.Now()},
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster",
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(clusterBinding).
+		Build()
+
+	reconciler := &ClusterBindingReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Log:      zap.New(zap.UseDevMode(true)),
+		Recorder: record.NewFakeRecorder(100),
+	}
+
+	ctx := context.Background()
+	result, err := reconciler.handleDeletion(ctx, clusterBinding)
+
+	// Should return an error indicating waiting for syncer finalizer
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for syncer finalizer")
+	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestClusterBindingReconciler_updateCondition(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	reconciler := &ClusterBindingReconciler{
+		Log: zap.New(zap.UseDevMode(true)),
+	}
+
+	tests := []struct {
+		name               string
+		existingConditions []metav1.Condition
+		conditionType      string
+		status             metav1.ConditionStatus
+		reason             string
+		message            string
+		expectedLength     int
+		shouldUpdateTime   bool
+	}{
+		{
+			name:               "add new condition",
+			existingConditions: []metav1.Condition{},
+			conditionType:      "Ready",
+			status:             metav1.ConditionTrue,
+			reason:             "AllGood",
+			message:            "Everything is working",
+			expectedLength:     1,
+			shouldUpdateTime:   true,
+		},
+		{
+			name: "update existing condition with different status",
+			existingConditions: []metav1.Condition{
+				{
+					Type:               "Ready",
+					Status:             metav1.ConditionFalse,
+					Reason:             "NotReady",
+					Message:            "Not ready yet",
+					LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Hour)),
+				},
+			},
+			conditionType:    "Ready",
+			status:           metav1.ConditionTrue,
+			reason:           "AllGood",
+			message:          "Everything is working",
+			expectedLength:   1,
+			shouldUpdateTime: true,
+		},
+		{
+			name: "update existing condition with same status",
+			existingConditions: []metav1.Condition{
+				{
+					Type:               "Ready",
+					Status:             metav1.ConditionTrue,
+					Reason:             "AllGood",
+					Message:            "Everything is working",
+					LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Hour)),
+				},
+			},
+			conditionType:    "Ready",
+			status:           metav1.ConditionTrue,
+			reason:           "StillGood",
+			message:          "Still working fine",
+			expectedLength:   1,
+			shouldUpdateTime: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clusterBinding := &cloudv1beta1.ClusterBinding{
+				Status: cloudv1beta1.ClusterBindingStatus{
+					Conditions: tt.existingConditions,
+				},
+			}
+
+			oldTime := metav1.Time{}
+			if len(tt.existingConditions) > 0 {
+				for _, cond := range tt.existingConditions {
+					if cond.Type == tt.conditionType {
+						oldTime = cond.LastTransitionTime
+						break
+					}
+				}
+			}
+
+			reconciler.updateCondition(clusterBinding, tt.conditionType, tt.status, tt.reason, tt.message)
+
+			assert.Len(t, clusterBinding.Status.Conditions, tt.expectedLength)
+
+			// Find the updated condition
+			var updatedCondition *metav1.Condition
+			for i, cond := range clusterBinding.Status.Conditions {
+				if cond.Type == tt.conditionType {
+					updatedCondition = &clusterBinding.Status.Conditions[i]
+					break
+				}
+			}
+
+			require.NotNil(t, updatedCondition)
+			assert.Equal(t, tt.conditionType, updatedCondition.Type)
+			assert.Equal(t, tt.status, updatedCondition.Status)
+			assert.Equal(t, tt.reason, updatedCondition.Reason)
+			assert.Equal(t, tt.message, updatedCondition.Message)
+
+			if tt.shouldUpdateTime {
+				if !oldTime.IsZero() {
+					assert.True(t, updatedCondition.LastTransitionTime.After(oldTime.Time))
+				}
+			} else {
+				if !oldTime.IsZero() {
+					assert.Equal(t, oldTime, updatedCondition.LastTransitionTime)
+				}
+			}
+		})
+	}
+}
+
+func TestClusterBindingReconciler_Reconcile_ResourceNotFound(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := &ClusterBindingReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Log:      zap.New(zap.UseDevMode(true)),
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "nonexistent-binding",
+			Namespace: "default",
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestClusterBindingReconciler_Reconcile_ValidationFailure(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Create invalid ClusterBinding (missing ClusterID)
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "invalid-binding",
+			Namespace:  "default",
+			Finalizers: []string{cloudv1beta1.ClusterBindingManagerFinalizer},
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			// ClusterID is missing - should cause validation failure
+			SecretRef: corev1.SecretReference{
+				Name:      "test-secret",
+				Namespace: "default",
+			},
+			MountNamespace: "test-mount",
+		},
+		Status: cloudv1beta1.ClusterBindingStatus{
+			Phase: "Pending", // Already initialized
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(clusterBinding).
+		WithStatusSubresource(clusterBinding).
+		Build()
+
+	reconciler := &ClusterBindingReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Log:      zap.New(zap.UseDevMode(true)),
+		Recorder: record.NewFakeRecorder(100),
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      clusterBinding.Name,
+			Namespace: clusterBinding.Namespace,
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	// Should return error due to validation failure
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "clusterID is required")
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify status was updated to Failed
+	var updatedBinding cloudv1beta1.ClusterBinding
+	err = fakeClient.Get(context.Background(), req.NamespacedName, &updatedBinding)
+	assert.NoError(t, err)
+	assert.Equal(t, cloudv1beta1.ClusterBindingPhase(PhaseFailed), updatedBinding.Status.Phase)
+
+	// Verify Ready condition is set to False
+	readyCondition := findCondition(updatedBinding.Status.Conditions, "Ready")
+	require.NotNil(t, readyCondition)
+	assert.Equal(t, metav1.ConditionFalse, readyCondition.Status)
+	assert.Equal(t, "ValidationFailed", readyCondition.Reason)
+}
+
+func TestClusterBindingReconciler_SetupWithManager(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	reconciler := &ClusterBindingReconciler{
+		Scheme: scheme,
+		Log:    zap.New(zap.UseDevMode(true)),
+	}
+
+	// This is a basic test to ensure the method doesn't panic
+	// In a real environment, this would set up with an actual manager
+	err := reconciler.SetupWithManager(nil)
+	// We expect this to fail since we're passing nil, but it shouldn't panic
+	assert.Error(t, err)
+}
+
+func TestClusterBindingReconciler_SetupWithManagerAndName(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	reconciler := &ClusterBindingReconciler{
+		Scheme: scheme,
+		Log:    zap.New(zap.UseDevMode(true)),
+	}
+
+	// This is a basic test to ensure the method doesn't panic
+	err := reconciler.SetupWithManagerAndName(nil, "test-controller")
+	// We expect this to fail since we're passing nil, but it shouldn't panic
+	assert.Error(t, err)
+}
+
+// Helper function to find a condition by type
+func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i, condition := range conditions {
+		if condition.Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
 }

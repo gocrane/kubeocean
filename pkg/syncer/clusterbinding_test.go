@@ -689,7 +689,7 @@ func TestClusterBindingReconciler_handleClusterBindingDeletion(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-cluster-binding",
 					Namespace:  "default",
-					Finalizers: []string{ClusterBindingSyncerFinalizer},
+					Finalizers: []string{cloudv1beta1.ClusterBindingSyncerFinalizer},
 				},
 				Spec: cloudv1beta1.ClusterBindingSpec{
 					ClusterID: "test-cluster",
@@ -729,7 +729,7 @@ func TestClusterBindingReconciler_handleClusterBindingDeletion(t *testing.T) {
 					Namespace: tt.clusterBinding.Namespace,
 				}, &updatedBinding)
 				assert.NoError(t, err)
-				assert.NotContains(t, updatedBinding.Finalizers, ClusterBindingSyncerFinalizer)
+				assert.NotContains(t, updatedBinding.Finalizers, cloudv1beta1.ClusterBindingSyncerFinalizer)
 			}
 		})
 	}

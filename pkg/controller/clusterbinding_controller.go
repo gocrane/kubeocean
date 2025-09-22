@@ -26,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -35,9 +36,6 @@ import (
 )
 
 const (
-	// ClusterBindingFinalizer is the finalizer used for ClusterBinding resources
-	ClusterBindingFinalizer = "clusterbinding.cloud.tencent.com/finalizer"
-
 	// Phase constants
 	PhaseFailed = "Failed"
 
@@ -135,8 +133,8 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Add finalizer if not present
-	if !r.hasFinalizer(clusterBinding) {
-		r.addFinalizer(clusterBinding)
+	if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer) {
+		controllerutil.AddFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer)
 		if err := r.Update(ctx, clusterBinding); err != nil {
 			log.Error(err, "unable to add finalizer")
 			return ctrl.Result{}, err
@@ -594,7 +592,7 @@ func (r *ClusterBindingReconciler) createOrUpdateResource(ctx context.Context, o
 
 // getSyncerName returns the name for the Kubeocean Syncer resources
 func (r *ClusterBindingReconciler) getSyncerName(clusterBinding *cloudv1beta1.ClusterBinding) string {
-	return fmt.Sprintf("kubeocean-syncer-%s", clusterBinding.Name)
+	return fmt.Sprintf("kubeocean-syncer-%s", clusterBinding.Spec.ClusterID)
 }
 
 // getSyncerLabels returns the labels for the Kubeocean Syncer resources
@@ -614,23 +612,29 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(originalClusterBinding))
 	log.Info("Handling ClusterBinding deletion")
 
+	// Check if kubeocean.io/clusterbinding-syncer finalizer exists
+	// If it exists, we need to wait for syncer to remove it before proceeding
+	if controllerutil.ContainsFinalizer(originalClusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
+		log.Info("Waiting for syncer to remove its finalizer", "finalizer", cloudv1beta1.ClusterBindingSyncerFinalizer)
+		r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "WaitingSyncerCleanup", "Waiting for syncer to complete cleanup and remove its finalizer")
+		return ctrl.Result{}, fmt.Errorf("waiting for syncer finalizer %s to be removed", cloudv1beta1.ClusterBindingSyncerFinalizer)
+	}
+
 	// Delete associated Kubeocean Syncer resources with comprehensive cleanup tracking
-	cleanupStatus, err := r.deleteSyncerResources(ctx, originalClusterBinding)
+	syncerCleanupStatus, err := r.deleteSyncerResources(ctx, originalClusterBinding)
 	if err != nil {
 		log.Error(err, "Failed to delete syncer resources")
 		r.Recorder.Event(originalClusterBinding, corev1.EventTypeWarning, "CleanupFailed", fmt.Sprintf("Failed to cleanup syncer resources: %v", err))
 		return ctrl.Result{}, err
 	}
 
-	// Check if all resources are cleaned up
-	if !r.isCleanupComplete(cleanupStatus) {
-		log.Info("Resource cleanup still in progress", "status", cleanupStatus)
-		r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "CleanupInProgress", "Resource cleanup still in progress")
-		return ctrl.Result{}, fmt.Errorf("resource cleanup still in progress: %+v", cleanupStatus)
+	// Delete associated Kubeocean Proxier resources
+	proxierCleanupStatus, err := r.deleteProxierResources(ctx, originalClusterBinding)
+	if err != nil {
+		log.Error(err, "Failed to delete proxier resources")
+		r.Recorder.Event(originalClusterBinding, corev1.EventTypeWarning, "ProxierCleanupFailed", fmt.Sprintf("Failed to cleanup proxier resources: %v", err))
+		return ctrl.Result{}, err
 	}
-
-	log.Info("Syncer Deployment cleaned up successfully, RBAC resources preserved", "status", cleanupStatus)
-	r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "Cleanup", "Syncer Deployment cleaned up successfully, RBAC resources preserved")
 
 	// Cleanup auto-managed certificates
 	if err := r.cleanupAutoManagedCertificates(ctx, originalClusterBinding); err != nil {
@@ -640,11 +644,24 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 		// as orphaned certificates will eventually expire
 	}
 
+	// Check if all resources are cleaned up
+	if !syncerCleanupStatus || !proxierCleanupStatus {
+		log.Info("Resource cleanup still in progress",
+			"syncerCleanupStatus", syncerCleanupStatus, "proxierCleanupStatus", proxierCleanupStatus)
+		r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "CleanupInProgress",
+			fmt.Sprintf("Resource cleanup still in progress: Syncer=%t, Proxier=%t", syncerCleanupStatus, proxierCleanupStatus))
+		return ctrl.Result{}, fmt.Errorf("resource cleanup still in progress: Syncer=%t, Proxier=%t", syncerCleanupStatus, proxierCleanupStatus)
+	}
+
+	log.Info("Syncer and Proxier cleaned up successfully, RBAC resources preserved",
+		"syncerCleanupStatus", syncerCleanupStatus, "proxierCleanupStatus", proxierCleanupStatus)
+	r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "Cleanup", "Syncer and Proxier cleaned up successfully, RBAC resources preserved")
+
 	// Create a deep copy for modification
 	clusterBinding := originalClusterBinding.DeepCopy()
 
 	// Remove the finalizer only after all resources are cleaned up
-	r.removeFinalizer(clusterBinding)
+	controllerutil.RemoveFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer)
 	if err := r.Update(ctx, clusterBinding); err != nil {
 		log.Error(err, "unable to remove finalizer")
 		return ctrl.Result{}, err
@@ -657,48 +674,85 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 
 // deleteSyncerResources deletes only the Deployment created for the Kubeocean Syncer
 // RBAC resources (ServiceAccount, Role, RoleBinding) are left intact for reuse
-func (r *ClusterBindingReconciler) deleteSyncerResources(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) (*ResourceCleanupStatus, error) {
+func (r *ClusterBindingReconciler) deleteSyncerResources(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) (bool, error) {
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding))
 	log.Info("Starting syncer resource cleanup (Deployment only)")
-
-	status := &ResourceCleanupStatus{}
 
 	// Load the syncer template from mounted files to get resource names
 	templateFiles, err := r.loadSyncerTemplate()
 	var templateData *SyncerTemplateData
 
 	if err != nil {
-		// If template files are not found, use default names for cleanup
-		log.V(1).Info("Template files not found, using default names for cleanup", "error", err)
-		templateData = r.prepareSyncerTemplateDataWithDefaults(clusterBinding)
-	} else {
-		templateData = r.prepareSyncerTemplateData(clusterBinding, templateFiles)
+		return false, fmt.Errorf("failed to load syncer template: %w", err)
 	}
+	templateData = r.prepareSyncerTemplateData(clusterBinding, templateFiles)
 
+	cleanupStatus := false
 	// Delete only the Deployment
-	status.Deployment, err = r.deleteResourceWithFallback(ctx, clusterBinding, "Deployment",
+	cleanupStatus, err = r.deleteResourceWithFallback(ctx, clusterBinding, "Deployment",
 		func(name, namespace string) client.Object {
 			return &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			}
-		}, templateData.DeploymentName, templateData.SyncerNamespace)
+		}, templateData.DeploymentName, templateData.SyncerNamespace, "kubeocean-syncer")
 	if err != nil {
-		return status, fmt.Errorf("failed to delete Deployment: %w", err)
+		return false, fmt.Errorf("failed to delete Deployment: %w", err)
 	}
 
-	// Mark RBAC resources as cleaned up (but don't actually delete them)
-	// This allows the cleanup completion check to pass
-	status.ServiceAccount = true
-	status.ClusterRole = true
-	status.ClusterRoleBinding = true
+	log.Info("Syncer resource cleanup completed (Deployment deleted, RBAC resources preserved)", "deleted", cleanupStatus)
+	return cleanupStatus, nil
+}
 
-	log.Info("Syncer resource cleanup completed (Deployment deleted, RBAC resources preserved)", "status", status)
-	return status, nil
+// deleteProxierResources deletes the Deployment and Service created for the Kubeocean Proxier
+// RBAC resources (ServiceAccount, ClusterRole, ClusterRoleBinding) are left intact for reuse
+func (r *ClusterBindingReconciler) deleteProxierResources(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) (bool, error) {
+	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding))
+	log.Info("Starting proxier resource cleanup (Deployment and Service only)")
+
+	// Load the proxier template from mounted files to get resource names
+	templateFiles, err := r.loadProxierTemplate()
+	var templateData *ProxierTemplateData
+
+	if err != nil {
+		return false, fmt.Errorf("failed to load proxier template: %w", err)
+	}
+	templateData = r.prepareProxierTemplateData(clusterBinding, templateFiles)
+
+	var lastError error
+
+	// Delete the Deployment
+	deploymentDeleted, err := r.deleteResourceWithFallback(ctx, clusterBinding, "Deployment",
+		func(name, namespace string) client.Object {
+			return &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			}
+		}, templateData.DeploymentName, templateData.ProxierNamespace, "kubeocean-proxier")
+	if err != nil {
+		return false, fmt.Errorf("failed to delete Deployment: %w", err)
+	}
+
+	// Delete the Service
+	serviceDeleted, err := r.deleteResourceWithFallback(ctx, clusterBinding, "Service",
+		func(name, namespace string) client.Object {
+			return &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			}
+		}, templateData.ServiceName, templateData.ProxierNamespace, "kubeocean-proxier")
+	if err != nil {
+		return false, fmt.Errorf("failed to delete Service: %w", err)
+	}
+
+	finalStatus := deploymentDeleted && serviceDeleted
+
+	log.Info("Proxier resource cleanup completed (Deployment and Service deleted, RBAC resources preserved)",
+		"deploymentDeleted", deploymentDeleted, "serviceDeleted", serviceDeleted, "finalStatus", finalStatus)
+
+	return finalStatus, lastError
 }
 
 // deleteResourceWithFallback attempts to delete a resource by configured name, then by default names
 func (r *ClusterBindingReconciler) deleteResourceWithFallback(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding,
-	resourceType string, createResource func(string, string) client.Object, configuredName, namespace string) (bool, error) {
+	resourceType string, createResource func(string, string) client.Object, configuredName, namespace, defaultPrefix string) (bool, error) {
 
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding), "resourceType", resourceType)
 
@@ -715,7 +769,7 @@ func (r *ClusterBindingReconciler) deleteResourceWithFallback(ctx context.Contex
 	}
 
 	// Try default pattern: kubeocean-syncer-{clusterbinding-name}
-	defaultName := fmt.Sprintf("kubeocean-syncer-%s", clusterBinding.Name)
+	defaultName := fmt.Sprintf("%s-%s", defaultPrefix, clusterBinding.Spec.ClusterID)
 	if defaultName != configuredName {
 		log.V(1).Info("Checking if resource exists with default pattern name", "name", defaultName)
 		if deleted, found, err := r.findAndDeleteResource(ctx, createResource(defaultName, namespace), resourceType, defaultName); found {
@@ -731,24 +785,7 @@ func (r *ClusterBindingReconciler) deleteResourceWithFallback(ctx context.Contex
 		log.V(1).Info("Skipping default pattern name as it's same as configured name", "name", defaultName)
 	}
 
-	// Try base default name: kubeocean-syncer
-	baseName := "kubeocean-syncer"
-	if baseName != configuredName && baseName != defaultName {
-		log.V(1).Info("Checking if resource exists with base default name", "name", baseName)
-		if deleted, found, err := r.findAndDeleteResource(ctx, createResource(baseName, namespace), resourceType, baseName); found {
-			if err != nil {
-				return false, fmt.Errorf("failed to delete %s with base default name %s: %w", resourceType, baseName, err)
-			}
-			if deleted {
-				log.Info("Successfully deleted resource with base default name", "name", baseName)
-			}
-			return deleted, nil
-		}
-	} else {
-		log.V(1).Info("Skipping base default name", "baseName", baseName, "configuredName", configuredName, "defaultName", defaultName)
-	}
-
-	log.Info("Resource not found with any naming pattern, considering as cleaned up", "configuredName", configuredName, "defaultName", defaultName, "baseName", baseName)
+	log.Info("Resource not found with any naming pattern, considering as cleaned up", "configuredName", configuredName, "defaultName", defaultName)
 	return true, nil
 }
 
@@ -789,47 +826,9 @@ func (r *ClusterBindingReconciler) findAndDeleteResource(ctx context.Context, re
 	return true, true, nil // deleted, found, no error
 }
 
-// prepareSyncerTemplateDataWithDefaults prepares template data using default values
-func (r *ClusterBindingReconciler) prepareSyncerTemplateDataWithDefaults(clusterBinding *cloudv1beta1.ClusterBinding) *SyncerTemplateData {
-	return &SyncerTemplateData{
-		ClusterBindingName:     clusterBinding.Name,
-		DeploymentName:         r.getSyncerName(clusterBinding),
-		ServiceAccountName:     DefaultSyncerName,
-		ClusterRoleName:        DefaultSyncerName,
-		ClusterRoleBindingName: DefaultSyncerName,
-		SyncerNamespace:        "kubeocean-system",
-	}
-}
-
 // isCleanupComplete checks if all resources have been successfully cleaned up
 func (r *ClusterBindingReconciler) isCleanupComplete(status *ResourceCleanupStatus) bool {
 	return status.Deployment && status.ServiceAccount && status.ClusterRole && status.ClusterRoleBinding
-}
-
-// hasFinalizer checks if the ClusterBinding has the finalizer
-func (r *ClusterBindingReconciler) hasFinalizer(clusterBinding *cloudv1beta1.ClusterBinding) bool {
-	for _, finalizer := range clusterBinding.Finalizers {
-		if finalizer == ClusterBindingFinalizer {
-			return true
-		}
-	}
-	return false
-}
-
-// addFinalizer adds the finalizer to the ClusterBinding
-func (r *ClusterBindingReconciler) addFinalizer(clusterBinding *cloudv1beta1.ClusterBinding) {
-	clusterBinding.Finalizers = append(clusterBinding.Finalizers, ClusterBindingFinalizer)
-}
-
-// removeFinalizer removes the finalizer from the ClusterBinding
-func (r *ClusterBindingReconciler) removeFinalizer(clusterBinding *cloudv1beta1.ClusterBinding) {
-	var finalizers []string
-	for _, finalizer := range clusterBinding.Finalizers {
-		if finalizer != ClusterBindingFinalizer {
-			finalizers = append(finalizers, finalizer)
-		}
-	}
-	clusterBinding.Finalizers = finalizers
 }
 
 // reconcileKubeoceanProxier creates or updates the Kubeocean Proxier for the ClusterBinding

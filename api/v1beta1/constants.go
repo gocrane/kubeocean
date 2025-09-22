@@ -23,10 +23,12 @@ const (
 	AnnotationExpectedMetadata = "kubeocean.io/expected-metadata"
 
 	// Finalizers
-	VirtualPodFinalizer     = "kubeocean.io/virtual-pod"
-	VirtualNodeFinalizer    = "kubeocean.io/vnode"
-	PolicyFinalizerName     = "policy.kubeocean.io/finalizer"
-	SyncedResourceFinalizer = "kubeocean.io/synced-resource"
+	VirtualPodFinalizer            = "kubeocean.io/virtual-pod"
+	VirtualNodeFinalizer           = "kubeocean.io/vnode"
+	PolicyFinalizerName            = "policy.kubeocean.io/finalizer"
+	SyncedResourceFinalizer        = "kubeocean.io/synced-resource"
+	ClusterBindingManagerFinalizer = "kubeocean.io/clusterbinding-manager"
+	ClusterBindingSyncerFinalizer  = "kubeocean.io/clusterbinding-syncer"
 
 	// Taints
 	TaintVnodeDefaultTaint         = "kubeocean.io/vnode"

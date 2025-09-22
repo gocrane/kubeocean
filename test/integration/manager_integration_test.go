@@ -88,7 +88,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 			var got cloudv1beta1.ClusterBinding
 			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
 			return readyCheck{
-				HasFinalizer: containsString(got.Finalizers, controllerpkg.ClusterBindingFinalizer),
+				HasFinalizer: containsString(got.Finalizers, cloudv1beta1.ClusterBindingManagerFinalizer),
 				Phase:        string(got.Status.Phase),
 				Reason:       getReadyReason(&got),
 			}
@@ -176,7 +176,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		gomega.Eventually(func() bool {
 			var got cloudv1beta1.ClusterBinding
 			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
-			return containsString(got.Finalizers, controllerpkg.ClusterBindingFinalizer)
+			return containsString(got.Finalizers, cloudv1beta1.ClusterBindingManagerFinalizer)
 		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
 
 		// 期望失败原因为 ConnectivityFailed
@@ -188,6 +188,10 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 	}, ginkgo.SpecTimeout(2*time.Minute))
 
 	ginkgo.It("ClusterBindingReconciler：删除流程应移除 finalizer 并删除资源", func(ctx context.Context) {
+		// 设置测试模板目录环境变量（以 test/e2e 为工作目录）
+		_ = os.Setenv("KUBEOCEAN_SYNCER_TEMPLATE_DIR", "testdata/syncer-template")
+		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
+
 		// 确保 manager 已启动
 		reconciler := &controllerpkg.ClusterBindingReconciler{
 			Client:   k8sVirtual,
@@ -219,7 +223,7 @@ var _ = ginkgo.Describe("Manager E2E Tests", func() {
 		gomega.Eventually(func() bool {
 			var got cloudv1beta1.ClusterBinding
 			_ = k8sVirtual.Get(ctx, types.NamespacedName{Name: cb.Name}, &got)
-			return containsString(got.Finalizers, controllerpkg.ClusterBindingFinalizer)
+			return containsString(got.Finalizers, cloudv1beta1.ClusterBindingManagerFinalizer)
 		}, 10*time.Second, 200*time.Millisecond).Should(gomega.BeTrue())
 
 		// 触发删除

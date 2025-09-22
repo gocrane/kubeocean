@@ -499,13 +499,13 @@ func verifyClusterBindingFinalizer(ctx context.Context, clusterBindingName strin
 
 		// Check if finalizer exists
 		for _, finalizer := range clusterBinding.Finalizers {
-			if finalizer == "kubeocean.io/clusterbinding-syncer" {
+			if finalizer == cloudv1beta1.ClusterBindingSyncerFinalizer {
 				return true
 			}
 		}
 		return false
 	}, testTimeout, testPollingInterval).Should(gomega.BeTrue(),
-		"ClusterBinding should have kubeocean.io/clusterbinding-syncer finalizer")
+		"ClusterBinding should have ClusterBindingSyncerFinalizer")
 }
 
 func createVirtualResourcesForDeletion(ctx context.Context, virtualNodeName string) (configMapName, secretName, pvName, pvcName, serviceAccountName string) {

@@ -23,11 +23,6 @@ import (
 	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown"
 )
 
-const (
-	// ClusterBindingSyncerFinalizer is the finalizer for clusterbinding-syncer
-	ClusterBindingSyncerFinalizer = "kubeocean.io/clusterbinding-syncer"
-)
-
 // ClusterBindingReconciler reconciles ClusterBinding objects for this specific KubeoceanSyncer
 type ClusterBindingReconciler struct {
 	client.Client
@@ -66,9 +61,9 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// 添加 finalizer，如果失败则重新入队重试
-	if !controllerutil.ContainsFinalizer(clusterBinding, ClusterBindingSyncerFinalizer) {
+	if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
 		clusterBindingCopy := clusterBinding.DeepCopy()
-		controllerutil.AddFinalizer(clusterBindingCopy, ClusterBindingSyncerFinalizer)
+		controllerutil.AddFinalizer(clusterBindingCopy, cloudv1beta1.ClusterBindingSyncerFinalizer)
 		if err := r.Update(ctx, clusterBindingCopy); err != nil {
 			logger.Error(err, "Failed to add finalizer to ClusterBinding")
 			return ctrl.Result{Requeue: true}, err
@@ -79,7 +74,7 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// 检查是否正在删除
 	if clusterBinding.DeletionTimestamp != nil {
-		if !controllerutil.ContainsFinalizer(clusterBinding, ClusterBindingSyncerFinalizer) {
+		if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
 			// finalizer 不存在，不做任何事
 			logger.Info("ClusterBinding is being deleted but finalizer not found, doing nothing")
 			return ctrl.Result{}, nil
@@ -187,7 +182,7 @@ func (r *ClusterBindingReconciler) handleClusterBindingDeletion(ctx context.Cont
 	}
 
 	// 移除 finalizer
-	controllerutil.RemoveFinalizer(clusterBinding, ClusterBindingSyncerFinalizer)
+	controllerutil.RemoveFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer)
 	if err := r.Update(ctx, clusterBinding); err != nil {
 		logger.Error(err, "Failed to remove finalizer from ClusterBinding")
 		return ctrl.Result{}, err
