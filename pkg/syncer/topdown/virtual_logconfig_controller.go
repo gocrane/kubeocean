@@ -119,7 +119,7 @@ func (r *VirtualLogConfigReconciler) handleVirtualLogConfigDeletion(ctx context.
 	relatedConfigs, err := r.findAllRelatedPhysicalLogConfigs(ctx, virtualLogConfig.Name)
 	if err != nil {
 		logger.Error(err, "Failed to find related physical LogConfigs for deletion")
-		return ctrl.Result{RequeueAfter: time.Minute}, nil // Retry with backoff
+		return ctrl.Result{}, err // Let controller-runtime handle retry with exponential backoff
 	}
 
 	// Delete all related physical LogConfigs
@@ -130,8 +130,8 @@ func (r *VirtualLogConfigReconciler) handleVirtualLogConfigDeletion(ctx context.
 			err := r.PhysicalClient.Delete(ctx, physicalConfig)
 			if err != nil && !apierrors.IsNotFound(err) {
 				logger.Error(err, "Failed to delete physical LogConfig", "physicalName", physicalConfig.Name)
-				// If physical cluster is unreachable, use exponential backoff
-				return ctrl.Result{RequeueAfter: time.Minute}, nil
+				// Let controller-runtime handle retry with exponential backoff
+				return ctrl.Result{}, err
 			}
 			deletedCount++
 		}
