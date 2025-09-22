@@ -35,6 +35,7 @@ type TopDownSyncer struct {
 	virtualSecretController    *VirtualSecretReconciler
 	virtualPVCController       *VirtualPVCReconciler
 	virtualPVController        *VirtualPVReconciler
+	virtualLogConfigController *VirtualLogConfigReconciler
 }
 
 // NewTopDownSyncer creates a new TopDownSyncer instance
@@ -176,11 +177,27 @@ func (tds *TopDownSyncer) setupControllers() error {
 		return fmt.Errorf("failed to setup virtual pv controller: %w", err)
 	}
 
+	// Setup Virtual LogConfig Controller
+	tds.virtualLogConfigController = &VirtualLogConfigReconciler{
+		VirtualClient:     tds.virtualManager.GetClient(),
+		PhysicalClient:    tds.physicalManager.GetClient(),
+		PhysicalK8sClient: physicalK8sClient,
+		Scheme:            tds.Scheme,
+		ClusterBinding:    tds.ClusterBinding,
+		clusterID:         tds.ClusterBinding.Spec.ClusterID,
+		Log:               tds.Log.WithName("virtual-logconfig-controller"),
+	}
+
+	if err := tds.virtualLogConfigController.SetupWithManager(tds.virtualManager, tds.physicalManager); err != nil {
+		return fmt.Errorf("failed to setup virtual logconfig controller: %w", err)
+	}
+
 	tds.Log.Info("Controllers setup completed",
 		"virtualPodController", "enabled",
 		"virtualConfigMapController", "enabled",
 		"virtualSecretController", "enabled",
 		"virtualPVCController", "enabled",
-		"virtualPVController", "enabled")
+		"virtualPVController", "enabled",
+		"virtualLogConfigController", "enabled")
 	return nil
 }
