@@ -23,13 +23,47 @@ import (
 	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown"
 )
 
+// BottomUpSyncerInterface defines the interface for BottomUpSyncer operations needed by ClusterBindingReconciler
+type BottomUpSyncerInterface interface {
+	GetNodesMatchingSelector(ctx context.Context, selector *corev1.NodeSelector) ([]string, error)
+	RequeueNodes(nodeNames []string) error
+	GetClusterBinding() *cloudv1beta1.ClusterBinding
+	SetClusterBinding(binding *cloudv1beta1.ClusterBinding)
+}
+
+// BottomUpSyncerAdapter wraps the concrete BottomUpSyncer to implement the interface
+type BottomUpSyncerAdapter struct {
+	syncer *bottomup.BottomUpSyncer
+}
+
+// NewBottomUpSyncerAdapter creates a new adapter for the concrete BottomUpSyncer
+func NewBottomUpSyncerAdapter(syncer *bottomup.BottomUpSyncer) *BottomUpSyncerAdapter {
+	return &BottomUpSyncerAdapter{syncer: syncer}
+}
+
+func (a *BottomUpSyncerAdapter) GetNodesMatchingSelector(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
+	return a.syncer.GetNodesMatchingSelector(ctx, selector)
+}
+
+func (a *BottomUpSyncerAdapter) RequeueNodes(nodeNames []string) error {
+	return a.syncer.RequeueNodes(nodeNames)
+}
+
+func (a *BottomUpSyncerAdapter) GetClusterBinding() *cloudv1beta1.ClusterBinding {
+	return a.syncer.ClusterBinding
+}
+
+func (a *BottomUpSyncerAdapter) SetClusterBinding(binding *cloudv1beta1.ClusterBinding) {
+	a.syncer.ClusterBinding = binding
+}
+
 // ClusterBindingReconciler reconciles ClusterBinding objects for this specific KubeoceanSyncer
 type ClusterBindingReconciler struct {
 	client.Client
 	Log                     logr.Logger
 	ClusterBindingName      string
 	ClusterBindingNamespace string
-	BottomUpSyncer          *bottomup.BottomUpSyncer
+	BottomUpSyncer          BottomUpSyncerInterface
 	PhysicalClient          client.Client
 }
 
@@ -101,11 +135,16 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 // hasNodeSelectorChanged checks if the nodeSelector has changed
 func (r *ClusterBindingReconciler) hasNodeSelectorChanged(newBinding *cloudv1beta1.ClusterBinding) bool {
-	if r.BottomUpSyncer.ClusterBinding == nil {
+	if r.BottomUpSyncer == nil {
 		return true // First time loading
 	}
 
-	oldSelector := r.BottomUpSyncer.ClusterBinding.Spec.NodeSelector
+	oldBinding := r.BottomUpSyncer.GetClusterBinding()
+	if oldBinding == nil {
+		return true // First time loading
+	}
+
+	oldSelector := oldBinding.Spec.NodeSelector
 	newSelector := newBinding.Spec.NodeSelector
 
 	return !reflect.DeepEqual(oldSelector, newSelector)
@@ -113,11 +152,16 @@ func (r *ClusterBindingReconciler) hasNodeSelectorChanged(newBinding *cloudv1bet
 
 // hasDisableNodeDefaultTaintChanged checks if the disableNodeDefaultTaint has changed
 func (r *ClusterBindingReconciler) hasDisableNodeDefaultTaintChanged(newBinding *cloudv1beta1.ClusterBinding) bool {
-	if r.BottomUpSyncer.ClusterBinding == nil {
+	if r.BottomUpSyncer == nil {
 		return true // First time loading
 	}
 
-	oldValue := r.BottomUpSyncer.ClusterBinding.Spec.DisableNodeDefaultTaint
+	oldBinding := r.BottomUpSyncer.GetClusterBinding()
+	if oldBinding == nil {
+		return true // First time loading
+	}
+
+	oldValue := oldBinding.Spec.DisableNodeDefaultTaint
 	newValue := newBinding.Spec.DisableNodeDefaultTaint
 
 	return oldValue != newValue
@@ -198,8 +242,11 @@ func (r *ClusterBindingReconciler) handleNodeSelectorChange(ctx context.Context,
 
 	// Get old and new nodeSelectors
 	var oldSelector *corev1.NodeSelector
-	if r.BottomUpSyncer.ClusterBinding != nil {
-		oldSelector = r.BottomUpSyncer.ClusterBinding.Spec.NodeSelector
+	if r.BottomUpSyncer != nil {
+		oldBinding := r.BottomUpSyncer.GetClusterBinding()
+		if oldBinding != nil {
+			oldSelector = oldBinding.Spec.NodeSelector
+		}
 	}
 	newSelector := newBinding.Spec.NodeSelector
 
@@ -227,7 +274,9 @@ func (r *ClusterBindingReconciler) handleNodeSelectorChange(ctx context.Context,
 	r.Log.Info("Found affected nodes", "count", len(affectedNodes), "nodes", affectedNodes)
 
 	// Update the cached ClusterBinding
-	r.BottomUpSyncer.ClusterBinding = newBinding
+	if r.BottomUpSyncer != nil {
+		r.BottomUpSyncer.SetClusterBinding(newBinding)
+	}
 
 	// Trigger node re-evaluation in bottomUpSyncer
 	if r.BottomUpSyncer != nil && len(affectedNodes) > 0 {
@@ -259,7 +308,9 @@ func (r *ClusterBindingReconciler) handleDisableNodeDefaultTaintChange(ctx conte
 	r.Log.Info("Found affected nodes for disableNodeDefaultTaint change", "count", len(affectedNodes), "nodes", affectedNodes)
 
 	// Update the cached ClusterBinding
-	r.BottomUpSyncer.ClusterBinding = newBinding
+	if r.BottomUpSyncer != nil {
+		r.BottomUpSyncer.SetClusterBinding(newBinding)
+	}
 
 	// Trigger node re-evaluation in bottomUpSyncer
 	if r.BottomUpSyncer != nil && len(affectedNodes) > 0 {
@@ -275,11 +326,11 @@ func (r *ClusterBindingReconciler) handleDisableNodeDefaultTaintChange(ctx conte
 
 // getNodesMatchingSelector gets all nodes that match the given selector from physical cluster
 func (r *ClusterBindingReconciler) getNodesMatchingSelector(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
+	r.Log.Info("Getting nodes matching selector", "selector", selector)
+
 	if r.BottomUpSyncer == nil {
 		return nil, fmt.Errorf("BottomUpSyncer not available")
 	}
-
-	r.Log.Info("Getting nodes matching selector", "selector", selector)
 
 	// Use BottomUpSyncer to get nodes from physical cluster
 	return r.BottomUpSyncer.GetNodesMatchingSelector(ctx, selector)

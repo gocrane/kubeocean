@@ -378,7 +378,7 @@ func (ts *KubeoceanSyncer) setupClusterBindingController(_ context.Context) erro
 		Client:             ts.manager.GetClient(),
 		Log:                ts.Log.WithName("clusterbinding-reconciler"),
 		ClusterBindingName: ts.ClusterBindingName,
-		BottomUpSyncer:     ts.bottomUpSyncer,
+		BottomUpSyncer:     NewBottomUpSyncerAdapter(ts.bottomUpSyncer),
 		PhysicalClient:     ts.physicalManager.GetClient(),
 	}
 

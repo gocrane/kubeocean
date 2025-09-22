@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -19,8 +20,44 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup"
 )
+
+// mockBottomUpSyncer is a test mock that implements BottomUpSyncerInterface
+type mockBottomUpSyncer struct {
+	clusterBinding   *cloudv1beta1.ClusterBinding
+	getNodesFunc     func(ctx context.Context, selector *corev1.NodeSelector) ([]string, error)
+	requeueNodesFunc func(nodeNames []string) error
+}
+
+func newMockBottomUpSyncer(binding *cloudv1beta1.ClusterBinding) *mockBottomUpSyncer {
+	return &mockBottomUpSyncer{
+		clusterBinding: binding,
+	}
+}
+
+func (m *mockBottomUpSyncer) GetNodesMatchingSelector(ctx context.Context, selector *corev1.NodeSelector) ([]string, error) {
+	if m.getNodesFunc != nil {
+		return m.getNodesFunc(ctx, selector)
+	}
+	// Default behavior: return empty list for tests
+	return []string{}, nil
+}
+
+func (m *mockBottomUpSyncer) RequeueNodes(nodeNames []string) error {
+	if m.requeueNodesFunc != nil {
+		return m.requeueNodesFunc(nodeNames)
+	}
+	// Default behavior: do nothing for tests
+	return nil
+}
+
+func (m *mockBottomUpSyncer) GetClusterBinding() *cloudv1beta1.ClusterBinding {
+	return m.clusterBinding
+}
+
+func (m *mockBottomUpSyncer) SetClusterBinding(binding *cloudv1beta1.ClusterBinding) {
+	m.clusterBinding = binding
+}
 
 // setupTestEnvironment creates a test environment for ClusterBindingReconciler tests
 func setupTestEnvironment(t *testing.T) *ClusterBindingReconciler {
@@ -31,15 +68,16 @@ func setupTestEnvironment(t *testing.T) *ClusterBindingReconciler {
 	virtualClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	physicalClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
+	// Create a mock BottomUpSyncer for testing
+	mockBottomUp := newMockBottomUpSyncer(nil) // Start with nil to test first time loading
+
 	reconciler := &ClusterBindingReconciler{
 		Client:                  virtualClient,
 		Log:                     zap.New(zap.UseDevMode(true)),
 		ClusterBindingName:      "test-cluster-binding",
 		ClusterBindingNamespace: "default",
 		PhysicalClient:          physicalClient,
-		BottomUpSyncer: &bottomup.BottomUpSyncer{
-			ClusterBinding: nil, // Start with nil to test first time loading
-		},
+		BottomUpSyncer:          mockBottomUp,
 	}
 
 	return reconciler
@@ -78,15 +116,16 @@ func setupTestEnvironmentWithExistingBinding(t *testing.T) *ClusterBindingReconc
 		},
 	}
 
+	// Create a mock BottomUpSyncer with existing binding
+	mockBottomUp := newMockBottomUpSyncer(existingBinding)
+
 	reconciler := &ClusterBindingReconciler{
 		Client:                  virtualClient,
 		Log:                     zap.New(zap.UseDevMode(true)),
 		ClusterBindingName:      "test-cluster-binding",
 		ClusterBindingNamespace: "default",
 		PhysicalClient:          physicalClient,
-		BottomUpSyncer: &bottomup.BottomUpSyncer{
-			ClusterBinding: existingBinding,
-		},
+		BottomUpSyncer:          mockBottomUp,
 	}
 
 	return reconciler
@@ -419,6 +458,226 @@ func TestClusterBindingReconciler_Reconcile(t *testing.T) {
 	}
 }
 
+// TestClusterBindingReconciler_Reconcile_FinalizerLogic tests the finalizer addition logic
+func TestClusterBindingReconciler_Reconcile_FinalizerLogic(t *testing.T) {
+	tests := []struct {
+		name                 string
+		setupClusterBinding  func() *cloudv1beta1.ClusterBinding
+		expectFinalizerAdded bool
+		expectError          bool
+	}{
+		{
+			name: "add finalizer to ClusterBinding without finalizer",
+			setupClusterBinding: func() *cloudv1beta1.ClusterBinding {
+				return &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-cluster-binding",
+						Namespace: "default",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID: "test-cluster",
+					},
+				}
+			},
+			expectFinalizerAdded: true,
+			expectError:          false,
+		},
+		{
+			name: "skip finalizer addition when already present",
+			setupClusterBinding: func() *cloudv1beta1.ClusterBinding {
+				return &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       "test-cluster-binding",
+						Namespace:  "default",
+						Finalizers: []string{cloudv1beta1.ClusterBindingSyncerFinalizer},
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID: "test-cluster",
+					},
+				}
+			},
+			expectFinalizerAdded: false,
+			expectError:          false,
+		},
+		{
+			name: "handle ClusterBinding not found",
+			setupClusterBinding: func() *cloudv1beta1.ClusterBinding {
+				return nil // Don't create the ClusterBinding
+			},
+			expectFinalizerAdded: false,
+			expectError:          false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := setupTestEnvironment(t)
+
+			var originalClusterBinding *cloudv1beta1.ClusterBinding
+			if tt.setupClusterBinding != nil {
+				originalClusterBinding = tt.setupClusterBinding()
+				if originalClusterBinding != nil {
+					err := reconciler.Create(context.Background(), originalClusterBinding)
+					require.NoError(t, err)
+				}
+			}
+
+			req := ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      "test-cluster-binding",
+					Namespace: "default",
+				},
+			}
+
+			result, err := reconciler.Reconcile(context.Background(), req)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			if originalClusterBinding != nil {
+				// Verify the finalizer state
+				updatedClusterBinding := &cloudv1beta1.ClusterBinding{}
+				err = reconciler.Get(context.Background(), types.NamespacedName{
+					Name:      "test-cluster-binding",
+					Namespace: "default",
+				}, updatedClusterBinding)
+				require.NoError(t, err)
+
+				hasFinalizer := false
+				for _, finalizer := range updatedClusterBinding.Finalizers {
+					if finalizer == cloudv1beta1.ClusterBindingSyncerFinalizer {
+						hasFinalizer = true
+						break
+					}
+				}
+
+				if tt.expectFinalizerAdded || (originalClusterBinding != nil && len(originalClusterBinding.Finalizers) > 0) {
+					assert.True(t, hasFinalizer, "Expected finalizer to be present")
+				}
+			}
+
+			// For the case where ClusterBinding is not found, we expect no requeue
+			if originalClusterBinding == nil {
+				assert.Equal(t, ctrl.Result{}, result)
+			}
+		})
+	}
+}
+
+// TestClusterBindingReconciler_getVirtualNodesByClusterBinding tests the getVirtualNodesByClusterBinding method
+func TestClusterBindingReconciler_getVirtualNodesByClusterBinding(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupNodes     func(*ClusterBindingReconciler)
+		clusterBinding string
+		expectedCount  int
+		expectError    bool
+	}{
+		{
+			name: "no nodes found",
+			setupNodes: func(r *ClusterBindingReconciler) {
+				// No nodes to create
+			},
+			clusterBinding: "test-cluster-binding",
+			expectedCount:  0,
+			expectError:    false,
+		},
+		{
+			name: "single node found",
+			setupNodes: func(r *ClusterBindingReconciler) {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-node-1",
+						Labels: map[string]string{
+							cloudv1beta1.LabelClusterBinding: "test-cluster-binding",
+						},
+					},
+				}
+				err := r.Create(context.Background(), node)
+				require.NoError(t, err)
+			},
+			clusterBinding: "test-cluster-binding",
+			expectedCount:  1,
+			expectError:    false,
+		},
+		{
+			name: "multiple nodes found",
+			setupNodes: func(r *ClusterBindingReconciler) {
+				for i := 1; i <= 3; i++ {
+					node := &corev1.Node{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: fmt.Sprintf("test-node-%d", i),
+							Labels: map[string]string{
+								cloudv1beta1.LabelClusterBinding: "test-cluster-binding",
+							},
+						},
+					}
+					err := r.Create(context.Background(), node)
+					require.NoError(t, err)
+				}
+			},
+			clusterBinding: "test-cluster-binding",
+			expectedCount:  3,
+			expectError:    false,
+		},
+		{
+			name: "nodes with different cluster binding",
+			setupNodes: func(r *ClusterBindingReconciler) {
+				// Node with matching label
+				node1 := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-node-1",
+						Labels: map[string]string{
+							cloudv1beta1.LabelClusterBinding: "test-cluster-binding",
+						},
+					},
+				}
+				err := r.Create(context.Background(), node1)
+				require.NoError(t, err)
+
+				// Node with different cluster binding
+				node2 := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-node-2",
+						Labels: map[string]string{
+							cloudv1beta1.LabelClusterBinding: "other-cluster-binding",
+						},
+					},
+				}
+				err = r.Create(context.Background(), node2)
+				require.NoError(t, err)
+			},
+			clusterBinding: "test-cluster-binding",
+			expectedCount:  1,
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := setupTestEnvironment(t)
+			tt.setupNodes(reconciler)
+
+			nodes, err := reconciler.getVirtualNodesByClusterBinding(context.Background(), tt.clusterBinding)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tt.expectedCount, len(nodes))
+
+			// Verify all returned nodes have the correct label
+			for _, node := range nodes {
+				assert.Equal(t, tt.clusterBinding, node.Labels[cloudv1beta1.LabelClusterBinding])
+			}
+		})
+	}
+}
+
 // TestClusterBindingReconciler_checkAndCleanVirtualResources tests the checkAndCleanVirtualResources method
 func TestClusterBindingReconciler_checkAndCleanVirtualResources(t *testing.T) {
 	tests := []struct {
@@ -587,7 +846,7 @@ func TestClusterBindingReconciler_handleClusterBindingDeletion(t *testing.T) {
 		errorContains  string
 	}{
 		{
-			name: "virtual nodes exist - should return error due to uninitialized reconciler",
+			name: "virtual nodes exist - should requeue after 5 seconds",
 			setupResources: func(r *ClusterBindingReconciler) {
 				// Create virtual nodes with cluster binding label
 				virtualNode1 := &corev1.Node{
@@ -620,9 +879,9 @@ func TestClusterBindingReconciler_handleClusterBindingDeletion(t *testing.T) {
 					ClusterID: "test-cluster",
 				},
 			},
-			expectedResult: ctrl.Result{},
-			expectError:    true,
-			errorContains:  "", // We expect some error from uninitialized reconciler
+			expectedResult: ctrl.Result{RequeueAfter: 5 * time.Second},
+			expectError:    false,
+			errorContains:  "",
 		},
 		{
 			name: "virtual resources exist - should add annotations and return error",
@@ -762,7 +1021,7 @@ func TestClusterBindingReconciler_Reconcile_DeletionScenarios(t *testing.T) {
 				r.Create(context.Background(), binding)
 
 				// Set the existing ClusterBinding to avoid nodeSelector change detection
-				r.BottomUpSyncer.ClusterBinding = binding
+				r.BottomUpSyncer.SetClusterBinding(binding)
 				return binding
 			},
 			setupResources: func(r *ClusterBindingReconciler) {
@@ -788,7 +1047,7 @@ func TestClusterBindingReconciler_Reconcile_DeletionScenarios(t *testing.T) {
 				r.Create(context.Background(), binding)
 
 				// Set the existing ClusterBinding to avoid nodeSelector change detection
-				r.BottomUpSyncer.ClusterBinding = binding
+				r.BottomUpSyncer.SetClusterBinding(binding)
 				return binding
 			},
 			setupResources: func(r *ClusterBindingReconciler) {
@@ -813,7 +1072,7 @@ func TestClusterBindingReconciler_Reconcile_DeletionScenarios(t *testing.T) {
 				r.Create(context.Background(), binding)
 
 				// Set the existing ClusterBinding to avoid nodeSelector change detection
-				r.BottomUpSyncer.ClusterBinding = binding
+				r.BottomUpSyncer.SetClusterBinding(binding)
 				return binding
 			},
 			setupResources: func(r *ClusterBindingReconciler) {
