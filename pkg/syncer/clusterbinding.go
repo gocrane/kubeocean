@@ -94,6 +94,18 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// 检查是否正在删除
+	if clusterBinding.DeletionTimestamp != nil {
+		if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
+			// finalizer 不存在，不做任何事
+			logger.Info("ClusterBinding is being deleted but finalizer not found, doing nothing")
+			return r.handleClusterBindingDeletion(ctx, clusterBinding)
+		}
+		// 进入删除处理逻辑
+		logger.Info("ClusterBinding is being deleted with finalizer, handling deletion")
+		return r.handleClusterBindingDeletion(ctx, clusterBinding)
+	}
+
 	// 添加 finalizer，如果失败则重新入队重试
 	if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
 		clusterBindingCopy := clusterBinding.DeepCopy()
@@ -104,18 +116,6 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		logger.Info("Added finalizer to ClusterBinding")
 		clusterBinding = clusterBindingCopy
-	}
-
-	// 检查是否正在删除
-	if clusterBinding.DeletionTimestamp != nil {
-		if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
-			// finalizer 不存在，不做任何事
-			logger.Info("ClusterBinding is being deleted but finalizer not found, doing nothing")
-			return ctrl.Result{}, nil
-		}
-		// 进入删除处理逻辑
-		logger.Info("ClusterBinding is being deleted with finalizer, handling deletion")
-		return r.handleClusterBindingDeletion(ctx, clusterBinding)
 	}
 
 	// Check if nodeSelector changed
@@ -223,6 +223,11 @@ func (r *ClusterBindingReconciler) handleClusterBindingDeletion(ctx context.Cont
 	if len(physicalResourcesNames) > 0 {
 		logger.Error(fmt.Errorf("physical resources still exist"), "Physical resources still exist, cannot complete deletion", "resources", physicalResourcesNames)
 		return ctrl.Result{}, fmt.Errorf("physical resources still exist, cannot complete deletion, resources: %s", physicalResourcesNames)
+	}
+
+	if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
+		logger.Info("ClusterBinding is being deleted but finalizer not found, doing nothing")
+		return ctrl.Result{}, nil
 	}
 
 	// 移除 finalizer
