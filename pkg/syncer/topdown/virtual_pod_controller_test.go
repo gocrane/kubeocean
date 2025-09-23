@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/utils"
 	authenticationv1 "k8s.io/api/authentication/v1"
 )
 
@@ -1576,7 +1577,7 @@ func TestVirtualPodReconciler_IsSystemPod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isSystemPod(tt.pod)
+			result := utils.IsSystemPod(tt.pod)
 			assert.Equal(t, tt.isSystem, result)
 		})
 	}
@@ -1846,7 +1847,7 @@ func TestVirtualPodReconciler_PodFiltering(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Simulate the filter logic used in SetupWithManager
-			shouldSync := !isSystemPod(tt.pod) && !isDaemonSetPod(tt.pod) && tt.pod.Spec.NodeName != ""
+			shouldSync := !utils.IsSystemPod(tt.pod) && !isDaemonSetPod(tt.pod) && tt.pod.Spec.NodeName != ""
 
 			assert.Equal(t, tt.shouldSync, shouldSync)
 		})

@@ -31,6 +31,7 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/token"
+	"github.com/TKEColocation/kubeocean/pkg/utils"
 	authenticationv1 "k8s.io/api/authentication/v1"
 )
 
@@ -1082,7 +1083,7 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 			pod := obj.(*corev1.Pod)
 
 			// Skip system pods
-			if isSystemPod(pod) {
+			if utils.IsSystemPod(pod) {
 				return false
 			}
 
@@ -1147,25 +1148,6 @@ func (r *VirtualPodReconciler) handlePhysicalPodEvent(pod *corev1.Pod, eventType
 			"eventType", eventType,
 		)
 	}
-}
-
-// isSystemPod checks if a pod is a system pod that should be ignored
-func isSystemPod(pod *corev1.Pod) bool {
-	// Skip system namespaces
-	systemNamespaces := []string{
-		"kube-system",
-		"kube-public",
-		"kube-node-lease",
-		"kubeocean-system",
-	}
-
-	for _, ns := range systemNamespaces {
-		if pod.Namespace == ns {
-			return true
-		}
-	}
-
-	return false
 }
 
 // isDaemonSetPod checks if a pod is managed by a DaemonSet

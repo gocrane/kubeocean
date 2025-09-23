@@ -324,7 +324,7 @@ func (r *PhysicalNodeReconciler) checkPodsOnVirtualNode(ctx context.Context, vir
 
 	// Check for pods in Pending or Running state
 	for _, pod := range podList.Items {
-		if pod.Namespace == "kubeocean-system" || pod.Namespace == "kube-system" {
+		if utils.IsSystemPod(&pod) {
 			logger.V(1).Info("skip system pod on virtual node", "pod", pod.Name, "namespace", pod.Namespace, "phase", pod.Status.Phase)
 			continue
 		}
