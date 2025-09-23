@@ -115,13 +115,19 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	// Load latest ClusterBinding and check nodeSelector match first
 	var clusterBinding cloudv1beta1.ClusterBinding
 	if err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: r.getClusterBindingName()}, &clusterBinding); err != nil {
+		// return error if cluster binding is not found
 		log.Error(err, "Failed to get cluster binding")
 		return ctrl.Result{}, err
 	}
 
+	if clusterBinding.DeletionTimestamp != nil {
+		log.Info("Cluster binding is being deleted, triggering deletion, delete virtual node")
+		return r.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
+	}
+
 	// If node does not match ClusterBinding selector, ensure virtual node is deleted
 	if !r.nodeMatchesSelector(physicalNode, clusterBinding.Spec.NodeSelector) {
-		log.V(1).Info("Node does not match ClusterBinding selector; deleting virtual node")
+		log.Info("Node does not match ClusterBinding selector; deleting virtual node")
 		return r.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 	}
 

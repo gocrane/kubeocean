@@ -253,6 +253,220 @@ func TestPhysicalNodeReconciler_Reconcile(t *testing.T) {
 	}
 }
 
+func TestPhysicalNodeReconciler_ProcessNode_ClusterBinding(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Set up logger
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	// Common test physical node
+	physicalNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-node",
+			UID:  "test-node-uid-123",
+			Labels: map[string]string{
+				"node-type": "worker",
+			},
+		},
+		Status: corev1.NodeStatus{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("4"),
+				corev1.ResourceMemory: resource.MustParse("8Gi"),
+			},
+			Conditions: []corev1.NodeCondition{
+				{
+					Type:   corev1.NodeReady,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		},
+	}
+
+	// Common test policy
+	testPolicy := cloudv1beta1.ResourceLeasingPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-policy",
+		},
+		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+			Cluster: "test-cluster",
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "node-type",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"worker"},
+							},
+						},
+					},
+				},
+			},
+			ResourceLimits: []cloudv1beta1.ResourceLimit{
+				{Resource: "cpu", Quantity: &[]resource.Quantity{resource.MustParse("2")}[0]},
+				{Resource: "memory", Quantity: &[]resource.Quantity{resource.MustParse("4Gi")}[0]},
+			},
+		},
+	}
+
+	tests := []struct {
+		name                   string
+		setupClusterBinding    bool
+		clusterBindingDeleting bool
+		expectedHandleDeletion bool
+		expectedError          bool
+	}{
+		{
+			name:                   "cluster_binding_not_found",
+			setupClusterBinding:    false,
+			clusterBindingDeleting: false,
+			expectedHandleDeletion: false,
+			expectedError:          true,
+		},
+		{
+			name:                   "cluster_binding_being_deleted",
+			setupClusterBinding:    true,
+			clusterBindingDeleting: true,
+			expectedHandleDeletion: true,
+			expectedError:          false,
+		},
+		{
+			name:                   "cluster_binding_normal",
+			setupClusterBinding:    true,
+			clusterBindingDeleting: false,
+			expectedHandleDeletion: false,
+			expectedError:          false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create physical objects
+			physicalObjs := []client.Object{physicalNode, &testPolicy}
+
+			// Create virtual objects
+			virtualObjs := []client.Object{}
+			if tt.setupClusterBinding {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID: "test-cluster",
+						NodeSelector: &corev1.NodeSelector{
+							NodeSelectorTerms: []corev1.NodeSelectorTerm{
+								{
+									MatchExpressions: []corev1.NodeSelectorRequirement{
+										{
+											Key:      "node-type",
+											Operator: corev1.NodeSelectorOpIn,
+											Values:   []string{"worker"},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+				if tt.clusterBindingDeleting {
+					now := metav1.Now()
+					clusterBinding.DeletionTimestamp = &now
+					// Add finalizer to prevent fake client error
+					clusterBinding.Finalizers = []string{"test-finalizer"}
+				}
+				virtualObjs = append(virtualObjs, clusterBinding)
+			}
+
+			// Create clients with Pod index for spec.nodeName
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(physicalObjs...).
+				WithIndex(&corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
+					pod := rawObj.(*corev1.Pod)
+					if pod.Spec.NodeName == "" {
+						return nil
+					}
+					return []string{pod.Spec.NodeName}
+				}).Build()
+
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualObjs...).Build()
+
+			// Create reconciler
+			clusterBindingForReconciler := &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			}
+			reconciler := &PhysicalNodeReconciler{
+				PhysicalClient:     physicalClient,
+				VirtualClient:      virtualClient,
+				KubeClient:         fake.NewSimpleClientset(),
+				Scheme:             scheme,
+				ClusterBinding:     clusterBindingForReconciler,
+				ClusterBindingName: "test-cluster",
+				Log:                ctrl.Log.WithName("test-physical-node-reconciler"),
+			}
+
+			// Initialize lease controllers
+			reconciler.initLeaseControllers()
+
+			// Test processNode
+			ctx := context.Background()
+			result, err := reconciler.processNode(ctx, physicalNode)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			// Check result based on expected behavior
+			if tt.expectedHandleDeletion {
+				// When handleNodeDeletion is called, it should return with no requeue
+				assert.Equal(t, time.Duration(0), result.RequeueAfter, "Should not requeue when handling deletion")
+
+				// Verify virtual node creation/deletion based on expected behavior
+				virtualNodeName := reconciler.generateVirtualNodeName(physicalNode.Name)
+				virtualNode := &corev1.Node{}
+				err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
+
+				// Virtual node should not exist or should be marked for deletion
+				if err == nil {
+					// If virtual node exists, it should have deletion timestamp or taint
+					if virtualNode.DeletionTimestamp == nil {
+						// Check for deletion taint
+						hasDeletionTaint := false
+						for _, taint := range virtualNode.Spec.Taints {
+							if taint.Key == "kubeocean.io/vnode-deleting" {
+								hasDeletionTaint = true
+								break
+							}
+						}
+						assert.True(t, hasDeletionTaint, "Virtual node should have deletion taint when deletion is triggered")
+					}
+				}
+				// It's okay if virtual node doesn't exist yet as handleNodeDeletion might not create it
+			} else if !tt.expectedError {
+				// Normal processing should have requeue for status updates
+				assert.True(t, result.RequeueAfter > 0, "Should requeue for status updates")
+
+				// Virtual node should be created successfully
+				virtualNodeName := reconciler.generateVirtualNodeName(physicalNode.Name)
+				virtualNode := &corev1.Node{}
+				err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
+				assert.NoError(t, err, "Virtual node should exist for normal processing")
+				assert.Equal(t, virtualNodeName, virtualNode.Name)
+				assert.Equal(t, physicalNode.Name, virtualNode.Labels[cloudv1beta1.LabelPhysicalNodeName])
+			}
+		})
+	}
+}
+
 func TestPhysicalNodeReconciler_NodeMatchesSelector(t *testing.T) {
 	reconciler := &PhysicalNodeReconciler{
 		Log: ctrl.Log.WithName("test"),

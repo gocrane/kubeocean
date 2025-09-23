@@ -241,8 +241,8 @@ var _ = ginkgo.Describe("Syncer Integration Tests", func() {
 			verifyPhysicalResourcesExistAndReferenced(ctx, physicalPodNames)
 
 			// Step 5: Delete ClusterBinding and ResourceLeasingPolicy
-			ginkgo.By("Step 5: Deleting ClusterBinding and ResourceLeasingPolicy")
-			deleteClusterBindingAndPolicy(ctx, clusterBindingName, policyName)
+			ginkgo.By("Step 5: Deleting ClusterBinding")
+			deleteClusterBinding(ctx, clusterBindingName)
 
 			// Step 6: Verify physical pods have deletion timestamp and force delete them
 			ginkgo.By("Step 6: Verifying physical pods have deletion timestamp and force deleting them")
@@ -301,8 +301,8 @@ var _ = ginkgo.Describe("Syncer Integration Tests", func() {
 			verifyPhysicalResourcesExistAndReferenced(ctx, physicalPodNames)
 
 			// Step 5: Delete ClusterBinding and ResourceLeasingPolicy
-			ginkgo.By("Step 5: Deleting ClusterBinding and ResourceLeasingPolicy")
-			deleteClusterBindingAndPolicy(ctx, clusterBindingName, policyName)
+			ginkgo.By("Step 5: Deleting ClusterBinding")
+			deleteClusterBinding(ctx, clusterBindingName)
 
 			// Step 6: Verify physical pods have deletion timestamp and force delete them
 			ginkgo.By("Step 6: Verifying physical pods have deletion timestamp and force deleting them")
@@ -362,7 +362,7 @@ var _ = ginkgo.Describe("Syncer Integration Tests", func() {
 
 			// Step 5: Delete ClusterBinding and ResourceLeasingPolicy
 			ginkgo.By("Step 5: Deleting ClusterBinding and ResourceLeasingPolicy")
-			deleteClusterBindingAndPolicy(ctx, clusterBindingName, policyName)
+			deleteClusterBinding(ctx, clusterBindingName)
 
 			// Step 6: Verify physical pods have deletion timestamp and force delete them
 			ginkgo.By("Step 6: Verifying physical pods have deletion timestamp and force deleting them")
@@ -873,26 +873,11 @@ func verifyPhysicalResourcesExistAndReferenced(ctx context.Context, physicalPodN
 	}
 }
 
-func deleteClusterBindingAndPolicy(ctx context.Context, clusterBindingName, policyName string) {
-	// Delete ResourceLeasingPolicy first
-	policy := &cloudv1beta1.ResourceLeasingPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: policyName},
-	}
-	err := k8sPhysical.Delete(ctx, policy)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-	// Verify ResourceLeasingPolicy is deleted
-	gomega.Eventually(func() bool {
-		var deletedPolicy cloudv1beta1.ResourceLeasingPolicy
-		err := k8sPhysical.Get(ctx, types.NamespacedName{Name: policyName}, &deletedPolicy)
-		return apierrors.IsNotFound(err)
-	}, testTimeout, testPollingInterval).Should(gomega.BeTrue(), "ResourceLeasingPolicy should be deleted")
-
-	// Delete ClusterBinding
+func deleteClusterBinding(ctx context.Context, clusterBindingName string) {
 	clusterBinding := &cloudv1beta1.ClusterBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: clusterBindingName},
 	}
-	err = k8sVirtual.Delete(ctx, clusterBinding)
+	err := k8sVirtual.Delete(ctx, clusterBinding)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
