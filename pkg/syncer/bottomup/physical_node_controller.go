@@ -1401,7 +1401,15 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 			if len(policy.Spec.ResourceLimits) > 0 {
 				var limits []string
 				for _, limit := range policy.Spec.ResourceLimits {
-					limits = append(limits, limit.Resource+"="+limit.Quantity.String())
+					quantity := ""
+					if limit.Quantity != nil {
+						quantity = limit.Quantity.String()
+					}
+					percent := ""
+					if limit.Percent != nil {
+						percent = fmt.Sprintf("%d%%", *limit.Percent)
+					}
+					limits = append(limits, limit.Resource+"="+quantity+"/"+percent)
 				}
 				policyDetail += "(" + strings.Join(limits, ",") + ")"
 			}
