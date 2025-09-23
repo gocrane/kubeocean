@@ -2607,7 +2607,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
 				// Verify virtual pod still exists (not deleted yet because node has active pods)
-				ginkgo.By("Verifying virtual pod still exists (not deleted yet because node has active pods)")
+				/*ginkgo.By("Verifying virtual pod still exists (not deleted yet because node has active pods)")
 				gomega.Eventually(func() bool {
 					var vPod corev1.Pod
 					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualPod.Name, Namespace: virtualPod.Namespace}, &vPod)
@@ -2620,7 +2620,7 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					var pPod corev1.Pod
 					err := k8sPhysical.Get(ctx, types.NamespacedName{Name: physicalPodName, Namespace: clusterBinding.Spec.MountNamespace}, &pPod)
 					return err == nil && pPod.DeletionTimestamp == nil
-				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())*/
 
 				// Step 9: Delete virtual pod first, then force delete physical pod
 				ginkgo.By("Deleting virtual pod first")

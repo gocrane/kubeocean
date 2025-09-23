@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	clsv1 "github.com/TKEColocation/kubeocean/api/cls/v1"
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -16,6 +17,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -62,6 +64,8 @@ var _ = ginkgo.BeforeSuite(func(ctx context.Context) {
 	gomega.Expect(rbacv1.AddToScheme(scheme)).To(gomega.Succeed())
 	gomega.Expect(coordinationv1.AddToScheme(scheme)).To(gomega.Succeed())
 	gomega.Expect(storagev1.AddToScheme(scheme)).To(gomega.Succeed())
+	gomega.Expect(schedulingv1.AddToScheme(scheme)).To(gomega.Succeed())
+	gomega.Expect(clsv1.AddToScheme(scheme)).To(gomega.Succeed())
 })
 
 var _ = ginkgo.BeforeEach(func(ctx context.Context) {

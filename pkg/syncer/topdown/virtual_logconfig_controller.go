@@ -1022,4 +1022,3 @@ func (r *VirtualLogConfigReconciler) waitForLogConfigDeletion(ctx context.Contex
 
 	return fmt.Errorf("timeout waiting for LogConfig %s to be deleted", configName)
 }
-

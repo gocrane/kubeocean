@@ -105,6 +105,18 @@ rules:
   - patch
   - update
 - apiGroups:
+  - cls.cloud.tencent.com
+  resources:
+  - logconfigs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -124,6 +136,17 @@ rules:
   verbs:
   - create
   - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - priorityclasses
+  verbs:
+  - create
   - get
   - list
   - patch

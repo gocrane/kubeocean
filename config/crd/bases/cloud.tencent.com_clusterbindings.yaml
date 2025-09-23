@@ -153,6 +153,11 @@ spec:
                 - nodeSelectorTerms
                 type: object
                 x-kubernetes-map-type: atomic
+              podPriorityClassName:
+                description: |-
+                  PodPriorityClassName specifies the priority class name for physical pods
+                  If empty, kubeocean-default will be used
+                type: string
               secretRef:
                 description: SecretRef references the secret containing kubeconfig
                   for the target cluster

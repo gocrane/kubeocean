@@ -3,6 +3,7 @@ package topdown
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +15,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+)
+
+// ResourceType represents the type of Kubernetes resource
+type ResourceType string
+
+const (
+	ResourceTypeConfigMap ResourceType = "ConfigMap"
+	ResourceTypeSecret    ResourceType = "Secret"
+	ResourceTypePVC       ResourceType = "PVC"
+	ResourceTypePV        ResourceType = "PV"
 )
 
 // SyncResourceOpt contains options for resource synchronization
@@ -291,4 +302,209 @@ func RemoveSyncedResourceFinalizerWithClusterID(ctx context.Context, obj client.
 // GetManagedByClusterIDLabel returns the cluster-specific managed-by label key
 func GetManagedByClusterIDLabel(clusterID string) string {
 	return fmt.Sprintf("%s%s", cloudv1beta1.LabelManagedByClusterIDPrefix, clusterID)
+}
+
+// RemoveSyncedResourceFinalizerAndLabels removes the cluster-specific synced resource finalizer,
+// related labels and annotations from a virtual resource that were added during sync process
+func RemoveSyncedResourceFinalizerAndLabels(ctx context.Context, obj client.Object, virtualClient client.Client, logger logr.Logger, clusterID string) error {
+	logger = logger.WithValues("resourceKind", obj.GetObjectKind().GroupVersionKind().Kind, "resource", fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName()))
+
+	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, clusterID)
+	managedByClusterIDLabel := GetManagedByClusterIDLabel(clusterID)
+
+	// Check what needs to be removed
+	finalizerExists := controllerutil.ContainsFinalizer(obj, clusterSpecificFinalizer)
+	clusterIDLabelExists := obj.GetLabels() != nil && obj.GetLabels()[managedByClusterIDLabel] != ""
+	usedByPVLabelExists := obj.GetLabels() != nil && obj.GetLabels()[cloudv1beta1.LabelUsedByPV] != ""
+	physicalNameAnnotationExists := obj.GetAnnotations() != nil && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] != ""
+	physicalNamespaceAnnotationExists := obj.GetAnnotations() != nil && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalNamespace] != ""
+
+	// If nothing needs to be removed, return early
+	if !finalizerExists && !clusterIDLabelExists && !usedByPVLabelExists && !physicalNameAnnotationExists && !physicalNamespaceAnnotationExists {
+		logger.V(1).Info("No synced resource finalizer, labels or annotations found, nothing to remove", "clusterID", clusterID)
+		return nil
+	}
+
+	// Create a copy of the object to modify
+	updatedObj := obj.DeepCopyObject().(client.Object)
+
+	// Remove finalizer
+	if finalizerExists {
+		controllerutil.RemoveFinalizer(updatedObj, clusterSpecificFinalizer)
+		logger.V(1).Info("Removed cluster-specific finalizer", "clusterID", clusterID)
+	}
+
+	// Remove labels
+	if updatedObj.GetLabels() != nil {
+		labelsToRemove := []string{managedByClusterIDLabel, cloudv1beta1.LabelUsedByPV}
+
+		// Check if this is the last FinalizerClusterIDPrefix finalizer
+		// If so, also remove LabelManagedBy=LabelManagedByValue
+		if finalizerExists {
+			remainingClusterFinalizers := 0
+			for _, finalizer := range updatedObj.GetFinalizers() {
+				if strings.HasPrefix(finalizer, cloudv1beta1.FinalizerClusterIDPrefix) && finalizer != clusterSpecificFinalizer {
+					remainingClusterFinalizers++
+				}
+			}
+
+			// If this is the last cluster-specific finalizer, remove LabelManagedBy
+			if remainingClusterFinalizers == 0 {
+				labelsToRemove = append(labelsToRemove, cloudv1beta1.LabelManagedBy)
+				logger.V(1).Info("This is the last cluster-specific finalizer, will also remove LabelManagedBy", "clusterID", clusterID)
+			}
+		}
+
+		for _, labelKey := range labelsToRemove {
+			if _, exists := updatedObj.GetLabels()[labelKey]; exists {
+				delete(updatedObj.GetLabels(), labelKey)
+				logger.V(1).Info("Removed label", "labelKey", labelKey)
+			}
+		}
+
+		// If labels map is now empty, set it to nil to clean up
+		if len(updatedObj.GetLabels()) == 0 {
+			updatedObj.SetLabels(nil)
+		}
+	}
+
+	// Remove annotations
+	if updatedObj.GetAnnotations() != nil {
+		annotationsToRemove := []string{
+			cloudv1beta1.AnnotationPhysicalName,
+			cloudv1beta1.AnnotationPhysicalNamespace,
+			cloudv1beta1.GetClusterBindingDeletingAnnotation(clusterID), // Remove cluster-specific deleting annotation
+		}
+		for _, annotationKey := range annotationsToRemove {
+			if _, exists := updatedObj.GetAnnotations()[annotationKey]; exists {
+				delete(updatedObj.GetAnnotations(), annotationKey)
+				logger.V(1).Info("Removed annotation", "annotationKey", annotationKey)
+			}
+		}
+
+		// If annotations map is now empty, set it to nil to clean up
+		if len(updatedObj.GetAnnotations()) == 0 {
+			updatedObj.SetAnnotations(nil)
+		}
+	}
+
+	// Update the resource
+	if err := virtualClient.Update(ctx, updatedObj); err != nil {
+		logger.Error(err, "Failed to remove synced resource finalizer, labels and annotations from virtual resource", "clusterID", clusterID)
+		return err
+	}
+
+	logger.Info("Successfully removed synced resource finalizer, labels and annotations from virtual resource", "clusterID", clusterID)
+	return nil
+}
+
+// DeletePhysicalResourceParams contains parameters for deleting physical resources
+type DeletePhysicalResourceParams struct {
+	ResourceType      ResourceType
+	PhysicalName      string
+	PhysicalNamespace string
+	PhysicalResource  client.Object
+	PhysicalClient    client.Client
+	Logger            logr.Logger
+}
+
+// DeletePhysicalResource deletes a physical resource with UID precondition
+// This is a common function that can be used by different reconcilers for handling virtual resource deletion
+func DeletePhysicalResource(ctx context.Context, params DeletePhysicalResourceParams) error {
+	if params.PhysicalResource == nil {
+		params.Logger.V(1).Info(fmt.Sprintf("Physical %s doesn't exist, nothing to delete", params.ResourceType))
+		return nil
+	}
+
+	// Create the appropriate resource object for deletion
+	var deleteObj client.Object
+	switch params.ResourceType {
+	case ResourceTypeConfigMap:
+		deleteObj = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      params.PhysicalName,
+				Namespace: params.PhysicalNamespace,
+			},
+		}
+	case ResourceTypeSecret:
+		deleteObj = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      params.PhysicalName,
+				Namespace: params.PhysicalNamespace,
+			},
+		}
+	case ResourceTypePVC:
+		deleteObj = &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      params.PhysicalName,
+				Namespace: params.PhysicalNamespace,
+			},
+		}
+	case ResourceTypePV:
+		deleteObj = &corev1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: params.PhysicalName,
+			},
+		}
+	default:
+		return fmt.Errorf("unsupported resource type: %s", params.ResourceType)
+	}
+
+	// Delete physical resource with UID precondition
+	uid := params.PhysicalResource.GetUID()
+	err := params.PhysicalClient.Delete(ctx, deleteObj, &client.DeleteOptions{
+		Preconditions: &metav1.Preconditions{
+			UID: &uid,
+		},
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			params.Logger.V(1).Info(fmt.Sprintf("Physical %s already deleted", params.ResourceType))
+			return nil
+		}
+		params.Logger.Error(err, fmt.Sprintf("Failed to delete physical %s", params.ResourceType))
+		return err
+	}
+
+	var resourcePath string
+	if params.PhysicalNamespace != "" {
+		resourcePath = fmt.Sprintf("%s/%s", params.PhysicalNamespace, params.PhysicalName)
+	} else {
+		resourcePath = params.PhysicalName
+	}
+	params.Logger.Info(fmt.Sprintf("Successfully deleted physical %s", params.ResourceType),
+		fmt.Sprintf("physical%s", params.ResourceType), resourcePath)
+
+	return nil
+}
+
+// AddClusterBindingDeletingAnnotation adds the cluster-specific deleting annotation to a virtual resource
+func AddClusterBindingDeletingAnnotation(ctx context.Context, obj client.Object, virtualClient client.Client, logger logr.Logger, clusterID, clusterBindingName string) error {
+	logger = logger.WithValues("resourceKind", obj.GetObjectKind().GroupVersionKind().Kind, "resource", fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName()))
+
+	annotationKey := cloudv1beta1.GetClusterBindingDeletingAnnotation(clusterID)
+
+	// Check if annotation already exists
+	if obj.GetAnnotations() != nil && obj.GetAnnotations()[annotationKey] == clusterBindingName {
+		logger.V(1).Info("ClusterBinding deleting annotation already exists, skipping")
+		return nil
+	}
+
+	// Create a copy of the object to modify
+	updatedObj := obj.DeepCopyObject().(client.Object)
+
+	// Add clusterbinding-deleting annotation
+	if updatedObj.GetAnnotations() == nil {
+		updatedObj.SetAnnotations(make(map[string]string))
+	}
+	updatedObj.GetAnnotations()[annotationKey] = clusterBindingName
+
+	// Update the resource
+	if err := virtualClient.Update(ctx, updatedObj); err != nil {
+		logger.Error(err, "Failed to add clusterbinding-deleting annotation", "clusterID", clusterID, "clusterBindingName", clusterBindingName)
+		return fmt.Errorf("failed to add clusterbinding-deleting annotation: %w", err)
+	}
+
+	logger.Info("Successfully added clusterbinding-deleting annotation", "clusterID", clusterID, "clusterBindingName", clusterBindingName)
+	return nil
 }

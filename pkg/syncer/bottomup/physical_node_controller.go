@@ -125,7 +125,7 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	// If node does not match ClusterBinding selector, ensure virtual node is deleted
 	if !r.nodeMatchesSelector(physicalNode, clusterBinding.Spec.NodeSelector) {
 		log.V(1).Info("Node does not match ClusterBinding selector; deleting virtual node")
-		return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
+		return r.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 	}
 
 	// Check virtual node UID and deletion timestamp before processing policies
@@ -143,13 +143,13 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 			log.Info("Virtual node UID mismatch, triggering deletion",
 				"virtualNodeUID", existingVirtualNode.Labels[cloudv1beta1.LabelPhysicalNodeUID],
 				"physicalNodeUID", string(physicalNode.UID))
-			return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
+			return r.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 		}
 
 		// Check if virtual node has deletion timestamp
 		if existingVirtualNode.DeletionTimestamp != nil {
 			log.Info("Virtual node has deletion timestamp, calling handleNodeDeletion")
-			return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
+			return r.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 		}
 	} else if !errors.IsNotFound(err) {
 		log.Error(err, "Failed to get virtual node")
@@ -165,7 +165,7 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 
 	if len(policies) == 0 {
 		log.Info("No matching ResourceLeasingPolicy found; deleting virtual node")
-		return r.handleNodeDeletion(ctx, physicalNode.Name, false, 0)
+		return r.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 	}
 
 	var policy *cloudv1beta1.ResourceLeasingPolicy

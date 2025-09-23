@@ -2,6 +2,7 @@ package topdown
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1039,6 +1040,149 @@ func TestGetManagedByClusterIDLabel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := GetManagedByClusterIDLabel(tt.clusterID)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestRemoveSyncedResourceFinalizerAndLabels(t *testing.T) {
+	tests := []struct {
+		name                          string
+		setupObject                   func() client.Object
+		clusterID                     string
+		expectedLabelManagedByRemoved bool
+		expectedError                 bool
+	}{
+		{
+			name: "remove last cluster finalizer should also remove LabelManagedBy",
+			setupObject: func() client.Object {
+				return &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-config",
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							cloudv1beta1.LabelManagedBy:       cloudv1beta1.LabelManagedByValue,
+							"kubeocean.io/synced-by-cluster1": cloudv1beta1.LabelValueTrue,
+							cloudv1beta1.LabelUsedByPV:        "test-pv",
+						},
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationPhysicalName:      "physical-config",
+							cloudv1beta1.AnnotationPhysicalNamespace: "physical-namespace",
+						},
+						Finalizers: []string{
+							"kubeocean.io/finalizer-cluster1",
+						},
+					},
+				}
+			},
+			clusterID:                     "cluster1",
+			expectedLabelManagedByRemoved: true,
+			expectedError:                 false,
+		},
+		{
+			name: "remove non-last cluster finalizer should keep LabelManagedBy",
+			setupObject: func() client.Object {
+				return &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-config",
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							cloudv1beta1.LabelManagedBy:       cloudv1beta1.LabelManagedByValue,
+							"kubeocean.io/synced-by-cluster1": cloudv1beta1.LabelValueTrue,
+							"kubeocean.io/synced-by-cluster2": cloudv1beta1.LabelValueTrue,
+							cloudv1beta1.LabelUsedByPV:        "test-pv",
+						},
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationPhysicalName:      "physical-config",
+							cloudv1beta1.AnnotationPhysicalNamespace: "physical-namespace",
+						},
+						Finalizers: []string{
+							"kubeocean.io/finalizer-cluster1",
+							"kubeocean.io/finalizer-cluster2",
+						},
+					},
+				}
+			},
+			clusterID:                     "cluster1",
+			expectedLabelManagedByRemoved: false,
+			expectedError:                 false,
+		},
+		{
+			name: "no cluster finalizer to remove",
+			setupObject: func() client.Object {
+				return &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-config",
+						Namespace: "test-namespace",
+						Labels: map[string]string{
+							cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						},
+					},
+				}
+			},
+			clusterID:                     "cluster1",
+			expectedLabelManagedByRemoved: false,
+			expectedError:                 false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(scheme))
+			require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+			obj := tt.setupObject()
+			client := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(obj).Build()
+
+			logger := ctrl.Log.WithName("test")
+			ctx := context.Background()
+
+			err := RemoveSyncedResourceFinalizerAndLabels(ctx, obj, client, logger, tt.clusterID)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+
+				// Get the updated object
+				var updatedObj corev1.ConfigMap
+				err = client.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, &updatedObj)
+				require.NoError(t, err)
+
+				// Check if LabelManagedBy was removed or kept
+				if tt.expectedLabelManagedByRemoved {
+					_, exists := updatedObj.Labels[cloudv1beta1.LabelManagedBy]
+					assert.False(t, exists, "LabelManagedBy should be removed when it's the last cluster finalizer")
+				} else {
+					// If we expect it to be kept, check if it exists (only if it existed in the original object)
+					if obj.GetLabels() != nil && obj.GetLabels()[cloudv1beta1.LabelManagedBy] != "" {
+						value, exists := updatedObj.Labels[cloudv1beta1.LabelManagedBy]
+						assert.True(t, exists, "LabelManagedBy should be kept when there are other cluster finalizers")
+						assert.Equal(t, cloudv1beta1.LabelManagedByValue, value)
+					}
+				}
+
+				// Check that cluster-specific finalizer was removed
+				clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, tt.clusterID)
+				for _, finalizer := range updatedObj.Finalizers {
+					assert.NotEqual(t, clusterSpecificFinalizer, finalizer, "Cluster-specific finalizer should be removed")
+				}
+
+				// Check that cluster-specific labels were removed
+				managedByClusterIDLabel := GetManagedByClusterIDLabel(tt.clusterID)
+				_, exists := updatedObj.Labels[managedByClusterIDLabel]
+				assert.False(t, exists, "Cluster-specific managed-by label should be removed")
+
+				_, exists = updatedObj.Labels[cloudv1beta1.LabelUsedByPV]
+				assert.False(t, exists, "LabelUsedByPV should be removed")
+
+				// Check that annotations were removed
+				_, exists = updatedObj.Annotations[cloudv1beta1.AnnotationPhysicalName]
+				assert.False(t, exists, "AnnotationPhysicalName should be removed")
+
+				_, exists = updatedObj.Annotations[cloudv1beta1.AnnotationPhysicalNamespace]
+				assert.False(t, exists, "AnnotationPhysicalNamespace should be removed")
+			}
 		})
 	}
 }

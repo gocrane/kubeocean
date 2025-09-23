@@ -23,10 +23,12 @@ const (
 	AnnotationExpectedMetadata = "kubeocean.io/expected-metadata"
 
 	// Finalizers
-	VirtualPodFinalizer     = "kubeocean.io/virtual-pod"
-	VirtualNodeFinalizer    = "kubeocean.io/vnode"
-	PolicyFinalizerName     = "policy.kubeocean.io/finalizer"
-	SyncedResourceFinalizer = "kubeocean.io/synced-resource"
+	VirtualPodFinalizer            = "kubeocean.io/virtual-pod"
+	VirtualNodeFinalizer           = "kubeocean.io/vnode"
+	PolicyFinalizerName            = "policy.kubeocean.io/finalizer"
+	SyncedResourceFinalizer        = "kubeocean.io/synced-resource"
+	ClusterBindingManagerFinalizer = "kubeocean.io/clusterbinding-manager"
+	ClusterBindingSyncerFinalizer  = "kubeocean.io/clusterbinding-syncer"
 
 	// Taints
 	TaintVnodeDefaultTaint         = "kubeocean.io/vnode"
@@ -51,10 +53,21 @@ const (
 	AnnotationVirtualName       = "kubeocean.io/virtual-name"
 	AnnotationVirtualNamespace  = "kubeocean.io/virtual-namespace"
 
+	// ClusterBinding deletion annotation prefix
+	AnnotationClusterBindingDeletingPrefix = "kubeocean.io/deleting-"
+
 	// PV-related labels
 	LabelUsedByPV = "kubeocean.io/used-by-pv"
 
 	// Cluster-specific labels and finalizers
 	LabelManagedByClusterIDPrefix = "kubeocean.io/synced-by-"
 	FinalizerClusterIDPrefix      = "kubeocean.io/finalizer-"
+
+	// PriorityClass
+	DefaultPriorityClassName = "kubeocean-default"
 )
+
+// GetClusterBindingDeletingAnnotation returns the cluster-specific deleting annotation key
+func GetClusterBindingDeletingAnnotation(clusterID string) string {
+	return AnnotationClusterBindingDeletingPrefix + clusterID
+}

@@ -8,7 +8,6 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -83,9 +82,16 @@ func (r *VirtualConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	// 5. Check if virtual configmap is being deleted
+	// 5. Check if virtual configmap is being deleted or has clusterbinding-deleting annotation
 	if virtualConfigMap.DeletionTimestamp != nil {
 		logger.Info("Virtual ConfigMap is being deleted, handling deletion")
+		return r.handleVirtualConfigMapDeletion(ctx, virtualConfigMap, physicalName, physicalConfigMapExists, physicalConfigMap)
+	}
+
+	// 5.5. Check if clusterbinding is being deleted (indicated by annotation)
+	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.clusterID)
+	if virtualConfigMap.Annotations != nil && virtualConfigMap.Annotations[clusterBindingDeletingAnnotation] == r.ClusterBinding.Name {
+		logger.Info("ClusterBinding is being deleted, handling ConfigMap deletion")
 		return r.handleVirtualConfigMapDeletion(ctx, virtualConfigMap, physicalName, physicalConfigMapExists, physicalConfigMap)
 	}
 
@@ -106,33 +112,24 @@ func (r *VirtualConfigMapReconciler) handleVirtualConfigMapDeletion(ctx context.
 
 	if !physicalConfigMapExists {
 		logger.V(1).Info("Physical ConfigMap doesn't exist, nothing to delete")
-		return r.removeSyncedResourceFinalizer(ctx, virtualConfigMap)
+		return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualConfigMap, r.VirtualClient, r.Log, r.clusterID)
 	}
 
-	// Delete physical configmap with UID precondition
+	// Use the common deletion function
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
-	err := r.PhysicalClient.Delete(ctx, &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      physicalName,
-			Namespace: physicalNamespace,
-		},
-	}, &client.DeleteOptions{
-		Preconditions: &metav1.Preconditions{
-			UID: &physicalConfigMap.UID,
-		},
+	err := DeletePhysicalResource(ctx, DeletePhysicalResourceParams{
+		ResourceType:      ResourceTypeConfigMap,
+		PhysicalName:      physicalName,
+		PhysicalNamespace: physicalNamespace,
+		PhysicalResource:  physicalConfigMap,
+		PhysicalClient:    r.PhysicalClient,
+		Logger:            logger,
 	})
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			logger.V(1).Info("Physical ConfigMap already deleted")
-			return r.removeSyncedResourceFinalizer(ctx, virtualConfigMap)
-		}
-		logger.Error(err, "Failed to delete physical ConfigMap")
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully deleted physical ConfigMap", "physicalConfigMap", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
-
-	return r.removeSyncedResourceFinalizer(ctx, virtualConfigMap)
+	return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualConfigMap, r.VirtualClient, r.Log, r.clusterID)
 }
 
 // checkPhysicalConfigMapExists checks if physical configmap exists using both cached and direct client
@@ -212,11 +209,6 @@ func (r *VirtualConfigMapReconciler) validatePhysicalConfigMap(virtualConfigMap 
 	}
 
 	return nil
-}
-
-// removeSyncedResourceFinalizer removes the synced-resource finalizer from the virtual configmap
-func (r *VirtualConfigMapReconciler) removeSyncedResourceFinalizer(ctx context.Context, virtualConfigMap *corev1.ConfigMap) (ctrl.Result, error) {
-	return ctrl.Result{}, RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualConfigMap, r.VirtualClient, r.Log, r.clusterID)
 }
 
 // SetupWithManager sets up the controller with the Manager

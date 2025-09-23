@@ -8,7 +8,6 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -88,9 +87,16 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
-	// 5. Check if virtual secret is being deleted
+	// 5. Check if virtual secret is being deleted or has clusterbinding-deleting annotation
 	if virtualSecret.DeletionTimestamp != nil {
 		logger.Info("Virtual Secret is being deleted, handling deletion")
+		return r.handleVirtualSecretDeletion(ctx, virtualSecret, physicalNamespace, physicalName, physicalSecretExists, physicalSecret)
+	}
+
+	// 5.5. Check if clusterbinding is being deleted (indicated by annotation)
+	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.clusterID)
+	if virtualSecret.Annotations != nil && virtualSecret.Annotations[clusterBindingDeletingAnnotation] == r.ClusterBinding.Name {
+		logger.Info("ClusterBinding is being deleted, handling Secret deletion")
 		return r.handleVirtualSecretDeletion(ctx, virtualSecret, physicalNamespace, physicalName, physicalSecretExists, physicalSecret)
 	}
 
@@ -115,32 +121,23 @@ func (r *VirtualSecretReconciler) handleVirtualSecretDeletion(ctx context.Contex
 
 	if !physicalSecretExists {
 		logger.V(1).Info("Physical Secret doesn't exist, nothing to delete")
-		return r.removeSyncedResourceFinalizer(ctx, virtualSecret)
+		return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualSecret, r.VirtualClient, r.Log, r.clusterID)
 	}
 
-	// Delete physical secret with UID precondition
-	err := r.PhysicalClient.Delete(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      physicalName,
-			Namespace: physicalNamespace,
-		},
-	}, &client.DeleteOptions{
-		Preconditions: &metav1.Preconditions{
-			UID: &physicalSecret.UID,
-		},
+	// Use the common deletion function
+	err := DeletePhysicalResource(ctx, DeletePhysicalResourceParams{
+		ResourceType:      ResourceTypeSecret,
+		PhysicalName:      physicalName,
+		PhysicalNamespace: physicalNamespace,
+		PhysicalResource:  physicalSecret,
+		PhysicalClient:    r.PhysicalClient,
+		Logger:            logger,
 	})
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			logger.V(1).Info("Physical Secret already deleted")
-			return r.removeSyncedResourceFinalizer(ctx, virtualSecret)
-		}
-		logger.Error(err, "Failed to delete physical Secret")
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully deleted physical Secret", "physicalSecret", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
-
-	return r.removeSyncedResourceFinalizer(ctx, virtualSecret)
+	return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualSecret, r.VirtualClient, r.Log, r.clusterID)
 }
 
 // checkPhysicalSecretExists checks if physical secret exists using both cached and direct client
@@ -220,11 +217,6 @@ func (r *VirtualSecretReconciler) validatePhysicalSecret(virtualSecret *corev1.S
 	}
 
 	return nil
-}
-
-// removeSyncedResourceFinalizer removes the synced-resource finalizer from the virtual secret
-func (r *VirtualSecretReconciler) removeSyncedResourceFinalizer(ctx context.Context, virtualSecret *corev1.Secret) (ctrl.Result, error) {
-	return ctrl.Result{}, RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualSecret, r.VirtualClient, r.Log, r.clusterID)
 }
 
 // SetupWithManager sets up the controller with the Manager
