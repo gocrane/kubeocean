@@ -16,11 +16,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/client-go/tools/cache"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -77,9 +77,7 @@ type PhysicalNodeReconciler struct {
 	// Lease controller management
 	leaseControllers      map[string]*LeaseController // nodeName -> LeaseController
 	leaseControllersMutex sync.RWMutex
-	
 }
-
 
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=nodes/status,verbs=get;update;patch
@@ -1057,7 +1055,15 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		newNode.Status.Capacity = virtualNode.Status.Capacity
 		newNode.Status.NodeInfo = virtualNode.Status.NodeInfo
 		newNode.Spec.Taints = virtualNode.Spec.Taints
+
+		// Preserve existing proxier port to avoid port changes
+		existingProxierPort := existingNode.Labels[cloudv1beta1.LabelProxierPort]
 		newNode.Labels = virtualNode.Labels
+		if existingProxierPort != "" {
+			newNode.Labels[cloudv1beta1.LabelProxierPort] = existingProxierPort
+			logger.V(1).Info("Preserved existing proxier port", "port", existingProxierPort)
+		}
+
 		newNode.Annotations = virtualNode.Annotations
 		newNode.Status.Addresses = virtualNode.Status.Addresses
 
@@ -1321,6 +1327,26 @@ func (r *PhysicalNodeReconciler) getPhysicalNodeInternalIP(physicalNode *corev1.
 	return ""
 }
 
+// generateStableProxierPort generates a stable port number for the VNode
+// This method ensures the same node name always gets the same port
+// Port range: 10000-65535 (55536 ports total)
+func (r *PhysicalNodeReconciler) generateStableProxierPort(nodeName string) string {
+	// Use a deterministic hash based on node name + cluster ID for stability
+	stableKey := nodeName + "-" + r.getClusterID()
+	hash := r.hashString(stableKey)
+
+	// Base port in range 10000-65535
+	basePort := 10000 + int(hash%55536)
+
+	r.Log.V(2).Info("Generated stable proxier port",
+		"nodeName", nodeName,
+		"clusterID", r.getClusterID(),
+		"stableKey", stableKey,
+		"port", basePort)
+
+	return fmt.Sprintf("%d", basePort)
+}
+
 // generateProxierPort generates a unique port number for the VNode
 // Port range: 10000-65535 (55536 ports total)
 // Uses a deterministic hash based on node name to ensure consistency
@@ -1328,13 +1354,13 @@ func (r *PhysicalNodeReconciler) getPhysicalNodeInternalIP(physicalNode *corev1.
 func (r *PhysicalNodeReconciler) generateProxierPort(nodeName string) string {
 	// Use a more robust hash function to reduce collisions
 	hash := r.hashString(nodeName)
-	
+
 	// Base port in range 10000-65535
-	basePort := 10000 + int(hash % 55536)
-	
+	basePort := 10000 + int(hash%55536)
+
 	// Check for conflicts and resolve if necessary
 	port := r.resolvePortConflict(nodeName, basePort)
-	
+
 	return fmt.Sprintf("%d", port)
 }
 
@@ -1343,12 +1369,12 @@ func (r *PhysicalNodeReconciler) hashString(s string) uint32 {
 	// Use FNV-1a hash algorithm for better distribution
 	const fnvPrime = 0x01000193
 	hash := uint32(0x811c9dc5) // FNV offset basis
-	
+
 	for _, c := range s {
 		hash ^= uint32(c)
 		hash *= fnvPrime
 	}
-	
+
 	return hash
 }
 
@@ -1356,51 +1382,51 @@ func (r *PhysicalNodeReconciler) hashString(s string) uint32 {
 func (r *PhysicalNodeReconciler) resolvePortConflict(nodeName string, basePort int) int {
 	// Get existing VNode ports from informer cache
 	existingPorts := r.getExistingPortsFromInformer()
-	
+
 	// Try the base port first
 	if !r.isPortInUse(basePort, existingPorts) {
 		return basePort
 	}
-	
+
 	// If base port is in use, try with small offsets
 	for offset := 1; offset <= 100; offset++ {
 		candidatePort := basePort + offset
-		
+
 		// Ensure port is in valid range
 		if candidatePort > 65535 {
 			candidatePort = 10000 + (candidatePort % 55536)
 		}
-		
+
 		if !r.isPortInUse(candidatePort, existingPorts) {
-			r.Log.V(1).Info("Resolved port conflict", 
-				"nodeName", nodeName, 
-				"originalPort", basePort, 
+			r.Log.V(1).Info("Resolved port conflict",
+				"nodeName", nodeName,
+				"originalPort", basePort,
 				"resolvedPort", candidatePort)
 			return candidatePort
 		}
 	}
-	
+
 	// If still no available port found, use a hash-based fallback
 	fallbackHash := r.hashString(nodeName + "-fallback")
 	fallbackPort := 10000 + (int(fallbackHash) % 55536)
-	
-	r.Log.Info("Using fallback port due to conflicts", 
-		"nodeName", nodeName, 
+
+	r.Log.Info("Using fallback port due to conflicts",
+		"nodeName", nodeName,
 		"fallbackPort", fallbackPort)
-	
+
 	return fallbackPort
 }
 
 // getExistingPortsFromInformer gets ports from informer cache
 func (r *PhysicalNodeReconciler) getExistingPortsFromInformer() map[int]bool {
 	ports := make(map[int]bool)
-	
+
 	// If VirtualClient is not available, return empty map
 	if r.VirtualClient == nil {
 		r.Log.V(1).Info("VirtualClient not available, skipping port conflict detection")
 		return ports
 	}
-	
+
 	// List all VNodes in the virtual cluster
 	virtualNodes := &corev1.NodeList{}
 	err := r.VirtualClient.List(context.Background(), virtualNodes)
@@ -1408,7 +1434,7 @@ func (r *PhysicalNodeReconciler) getExistingPortsFromInformer() map[int]bool {
 		r.Log.Error(err, "Failed to list virtual nodes for port conflict detection")
 		return ports
 	}
-	
+
 	// Extract ports from VNode labels
 	for _, node := range virtualNodes.Items {
 		if portStr, exists := node.Labels[cloudv1beta1.LabelProxierPort]; exists {
@@ -1417,16 +1443,14 @@ func (r *PhysicalNodeReconciler) getExistingPortsFromInformer() map[int]bool {
 			}
 		}
 	}
-	
+
 	return ports
 }
-
 
 // isPortInUse checks if a port is already in use
 func (r *PhysicalNodeReconciler) isPortInUse(port int, existingPorts map[int]bool) bool {
 	return existingPorts[port]
 }
-
 
 // getClusterID returns a cluster identifier for the physical cluster
 func (r *PhysicalNodeReconciler) getClusterID() string {
@@ -1467,18 +1491,18 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physica
 	labels[NodeInstanceTypeLabel] = NodeInstanceTypeVNode
 	labels[NodeInstanceTypeLabelBeta] = NodeInstanceTypeVNode
 	labels["kubernetes.io/hostname"] = nodeName
-	
+
 	// Add physical node InternalIP
 	internalIP := r.getPhysicalNodeInternalIP(physicalNode)
 	if internalIP != "" {
 		labels[cloudv1beta1.LabelPhysicalNodeInnerIP] = internalIP
 	}
-	
-	// Add unique proxier port
-	proxierPort := r.generateProxierPort(nodeName)
+
+	// Add unique proxier port - use stable generation
+	proxierPort := r.generateStableProxierPort(nodeName)
 	labels[cloudv1beta1.LabelProxierPort] = proxierPort
 
-	r.Log.V(1).Info("Built virtual node labels", "physicalNode", physicalNode.Name, "labelCount", len(labels))
+	r.Log.V(1).Info("Built virtual node labels", "physicalNode", physicalNode.Name, "labelCount", len(labels), "proxierPort", proxierPort)
 
 	return labels
 }
@@ -1742,7 +1766,6 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 	if err != nil {
 		return fmt.Errorf("failed to get node informer: %w", err)
 	}
-
 
 	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {

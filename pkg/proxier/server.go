@@ -314,8 +314,8 @@ func (s *server) handleContainerExec(w http.ResponseWriter, r *http.Request) {
 		w,
 		r,
 		exec,
-		"", // 与 tke_vnode 保持一致，传递空字符串
-		"", // 与 tke_vnode 保持一致，传递空字符串
+		"", // Consistent with tke_vnode, pass empty string
+		"", // Consistent with tke_vnode, pass empty string
 		container,
 		command,
 		&localremotecommand.Options{
@@ -332,31 +332,31 @@ func (s *server) handleContainerExec(w http.ResponseWriter, r *http.Request) {
 
 // getExecOptions parses exec options from the request - same as tke_vnode
 func (s *server) getExecOptions(req *http.Request) (*remoteCommandOptions, error) {
-	// 添加调试信息，与tke_vnode保持一致
+	// Add debug info, consistent with tke_vnode
 	s.log.Info("Exec request details",
 		"method", req.Method,
 		"url", req.URL.String(),
 		"queryParams", req.URL.Query(),
 	)
 
-	// 支持两种参数格式，与tke_vnode保持一致：
-	// 1. 标准格式: stdin=true, stdout=true, stderr=true, tty=true
-	// 2. 数字格式: stdin=1, stdout=1, stderr=1, tty=1
+	// Support two parameter formats, consistent with tke_vnode:
+	// 1. Standard format: stdin=true, stdout=true, stderr=true, tty=true
+	// 2. Numeric format: stdin=1, stdout=1, stderr=1, tty=1
 	query := req.URL.Query()
 
-	// TTY 参数
+	// TTY parameter
 	ttyStr := query.Get("tty")
 	tty := ttyStr == trueStr || ttyStr == oneStr
 
-	// Stdin 参数 - 与tke_vnode一致使用"input"
+	// Stdin parameter - use "input" consistent with tke_vnode
 	stdinStr := query.Get("input")
 	stdin := stdinStr == trueStr || stdinStr == oneStr
 
-	// Stdout 参数 - 与tke_vnode一致使用"output"
+	// Stdout parameter - use "output" consistent with tke_vnode
 	stdoutStr := query.Get("output")
 	stdout := stdoutStr == trueStr || stdoutStr == oneStr
 
-	// Stderr 参数 - 与tke_vnode一致使用"stderr"
+	// Stderr parameter - use "stderr" consistent with tke_vnode
 	stderrStr := query.Get("stderr")
 	stderr := stderrStr == trueStr || stderrStr == oneStr
 

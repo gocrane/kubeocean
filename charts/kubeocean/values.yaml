@@ -215,6 +215,11 @@ proxier:
   metrics:
     enabled: false
     port: 8080
+    # Metrics collection configuration
+    collection:
+      enabled: true
+      interval: 60
+      targetNamespace: "kubeocean-worker"
   # TLS configuration
   tls:
     enabled: false

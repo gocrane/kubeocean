@@ -75,6 +75,11 @@ data:
             args:
             - --cluster-binding-name={{ "{{" }}.ClusterBindingName{{ "}}" }}
             - --listen-port={{ .Values.proxier.listenPort }}
+            {{- if .Values.proxier.metrics.collection.enabled }}
+            - --metrics-enabled={{ .Values.proxier.metrics.collection.enabled }}
+            - --metrics-collect-interval={{ .Values.proxier.metrics.collection.interval }}
+            - --metrics-target-namespace={{ .Values.proxier.metrics.collection.targetNamespace }}
+            {{- end }}
             {{- "{{" }}- if .TLSEnabled{{ "}}" }}
             - --tls-secret-name={{ "{{" }}.TLSSecretName{{ "}}" }}
             - --tls-secret-namespace={{ "{{" }}.TLSSecretNamespace{{ "}}" }}

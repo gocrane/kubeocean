@@ -17,8 +17,6 @@ package proxier
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -33,24 +31,14 @@ import (
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 )
 
-// NodeInfo represents a node's information for the nodes.txt file
-type NodeInfo struct {
-	InternalIP  string
-	ProxierPort string
-}
-
-func (n NodeInfo) String() string {
-	return fmt.Sprintf("%s:%s", n.InternalIP, n.ProxierPort)
-}
-
 // NodeController reconciles Node objects for proxier
 type NodeController struct {
 	client.Client
 	Scheme             *runtime.Scheme
 	Log                logr.Logger
 	ClusterBindingName string
-	NodesFile          string
 	CurrentNodes       map[string]NodeInfo
+	metricsCollector   NodeEventHandler // Direct reference to MetricsCollector
 	mu                 sync.RWMutex
 }
 
@@ -118,17 +106,27 @@ func (r *NodeController) shouldProcessNode(node *corev1.Node) bool {
 
 // extractNodeInfo extracts node information from a Node object
 func (r *NodeController) extractNodeInfo(node *corev1.Node) (*NodeInfo, error) {
-	// Get InternalIP
-	var internalIP string
-	for _, addr := range node.Status.Addresses {
-		if addr.Type == corev1.NodeInternalIP {
-			internalIP = addr.Address
-			break
-		}
-	}
+	// Get InternalIP from node label first
+	internalIP := node.Labels[cloudv1beta1.LabelPhysicalNodeInnerIP]
 
+	// If label doesn't exist, fallback to Status.Addresses (for backward compatibility)
 	if internalIP == "" {
-		return nil, fmt.Errorf("no InternalIP found for node %s", node.Name)
+		r.Log.V(1).Info("No physical-node-innerip label found, falling back to Status.Addresses",
+			"node", node.Name)
+
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP {
+				internalIP = addr.Address
+				break
+			}
+		}
+
+		if internalIP == "" {
+			return nil, fmt.Errorf("no InternalIP found for node %s (neither in label nor Status.Addresses)", node.Name)
+		}
+
+		r.Log.Info("Using InternalIP from Status.Addresses",
+			"node", node.Name, "internalIP", internalIP)
 	}
 
 	// Get proxier_port label
@@ -159,15 +157,22 @@ func (r *NodeController) handleNodeUpdate(node *corev1.Node) {
 	r.CurrentNodes[node.Name] = *nodeInfo
 	r.mu.Unlock()
 
-	// Log node change
-	if !existed {
-		r.Log.Info("Node added to proxier", "node", node.Name, "nodeInfo", nodeInfo)
-	} else if oldNodeInfo != *nodeInfo {
-		r.Log.Info("Node updated in proxier", "node", node.Name, "oldNodeInfo", oldNodeInfo, "newNodeInfo", nodeInfo)
-	}
-
-	if err := r.updateNodesFile(); err != nil {
-		r.Log.Error(err, "Failed to update nodes file after node update")
+	// Call MetricsCollector directly
+	if r.metricsCollector != nil {
+		if !existed {
+			r.Log.Info("Node added to proxier", "node", node.Name, "nodeInfo", nodeInfo)
+			r.metricsCollector.OnNodeAdded(node.Name, *nodeInfo)
+		} else if oldNodeInfo != *nodeInfo {
+			r.Log.Info("Node updated in proxier", "node", node.Name, "oldNodeInfo", oldNodeInfo, "newNodeInfo", nodeInfo)
+			r.metricsCollector.OnNodeUpdated(node.Name, oldNodeInfo, *nodeInfo)
+		}
+	} else {
+		// If no MetricsCollector, only log
+		if !existed {
+			r.Log.Info("Node added to proxier (no metrics collector)", "node", node.Name, "nodeInfo", nodeInfo)
+		} else if oldNodeInfo != *nodeInfo {
+			r.Log.Info("Node updated in proxier (no metrics collector)", "node", node.Name, "oldNodeInfo", oldNodeInfo, "newNodeInfo", nodeInfo)
+		}
 	}
 }
 
@@ -180,96 +185,12 @@ func (r *NodeController) handleNodeDelete(nodeName string) {
 
 	if existed {
 		r.Log.Info("Node removed from proxier", "node", nodeName, "nodeInfo", oldNodeInfo)
-	}
 
-	if err := r.updateNodesFile(); err != nil {
-		r.Log.Error(err, "Failed to update nodes file after node delete")
-	}
-}
-
-// updateNodesFile updates the nodes.txt file with current node information
-func (r *NodeController) updateNodesFile() error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	// Atomic write
-	tempFile := r.NodesFile + ".tmp"
-	file, err := os.Create(tempFile)
-	if err != nil {
-		r.Log.Error(err, "Failed to create temp file", "tempFile", tempFile, "nodesFile", r.NodesFile)
-		return fmt.Errorf("failed to create temp file %s: %w", tempFile, err)
-	}
-	defer file.Close()
-
-	// Write all current nodes
-	for _, nodeInfo := range r.CurrentNodes {
-		if _, err := file.WriteString(nodeInfo.String() + "\n"); err != nil {
-			r.Log.Error(err, "Failed to write node info", "nodeInfo", nodeInfo)
-			return err
+		// Call MetricsCollector directly
+		if r.metricsCollector != nil {
+			r.metricsCollector.OnNodeDeleted(nodeName, oldNodeInfo)
 		}
 	}
-
-	// Atomic rename
-	if err := os.Rename(tempFile, r.NodesFile); err != nil {
-		r.Log.Error(err, "Failed to rename temp file", "tempFile", tempFile, "finalFile", r.NodesFile)
-		return err
-	}
-
-	r.Log.Info("Successfully updated nodes file", "nodeCount", len(r.CurrentNodes), "file", r.NodesFile)
-	return nil
-}
-
-// updateNodesFileUnsafe updates the nodes.txt file without acquiring locks
-// This should only be called when the caller already holds the appropriate lock
-func (r *NodeController) updateNodesFileUnsafe() error {
-	// Atomic write
-	tempFile := r.NodesFile + ".tmp"
-	file, err := os.Create(tempFile)
-	if err != nil {
-		r.Log.Error(err, "Failed to create temp file", "tempFile", tempFile, "nodesFile", r.NodesFile)
-		return fmt.Errorf("failed to create temp file %s: %w", tempFile, err)
-	}
-	defer file.Close()
-
-	// Write all current nodes
-	for _, nodeInfo := range r.CurrentNodes {
-		if _, err := file.WriteString(nodeInfo.String() + "\n"); err != nil {
-			r.Log.Error(err, "Failed to write node info", "nodeInfo", nodeInfo)
-			return err
-		}
-	}
-
-	// Atomic rename
-	if err := os.Rename(tempFile, r.NodesFile); err != nil {
-		r.Log.Error(err, "Failed to rename temp file", "tempFile", tempFile, "finalFile", r.NodesFile)
-		return err
-	}
-
-	r.Log.Info("Successfully updated nodes file", "nodeCount", len(r.CurrentNodes), "file", r.NodesFile)
-	return nil
-}
-
-// ValidateNodesFile checks if the nodes file path is writable
-func (r *NodeController) ValidateNodesFile() error {
-	// Check if the directory exists and is writable
-	dir := filepath.Dir(r.NodesFile)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
-	
-	// Try to create a test file
-	testFile := r.NodesFile + ".test"
-	file, err := os.Create(testFile)
-	if err != nil {
-		return fmt.Errorf("failed to create test file %s: %w", testFile, err)
-	}
-	file.Close()
-	
-	// Clean up test file
-	os.Remove(testFile)
-	
-	r.Log.Info("Nodes file path validated", "path", r.NodesFile)
-	return nil
 }
 
 // SyncExistingNodes syncs existing nodes on startup
@@ -300,7 +221,21 @@ func (r *NodeController) SyncExistingNodes(ctx context.Context) error {
 
 	r.Log.Info("Synced existing nodes for proxier", "nodeCount", len(r.CurrentNodes))
 
-	return r.updateNodesFileUnsafe()
+	// If MetricsCollector exists, initialize it directly
+	if r.metricsCollector != nil {
+		// Create a copy of node states
+		nodeStates := make(map[string]NodeInfo)
+		for k, v := range r.CurrentNodes {
+			nodeStates[k] = v
+		}
+
+		// Initialize MetricsCollector
+		if collector, ok := r.metricsCollector.(*MetricsCollector); ok {
+			collector.InitializeWithNodes(nodeStates)
+		}
+	}
+
+	return nil
 }
 
 // GetCurrentNodes returns a copy of current nodes (for testing/debugging)
@@ -313,4 +248,11 @@ func (r *NodeController) GetCurrentNodes() map[string]NodeInfo {
 		result[k] = v
 	}
 	return result
+}
+
+// SetMetricsCollector sets the MetricsCollector reference
+func (r *NodeController) SetMetricsCollector(collector NodeEventHandler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.metricsCollector = collector
 }
