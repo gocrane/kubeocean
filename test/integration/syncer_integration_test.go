@@ -994,7 +994,7 @@ func verifyPhysicalResourcesCleanup(ctx context.Context, configMapName, secretNa
 		gomega.Eventually(func() bool {
 			var secretList corev1.SecretList
 			err := k8sPhysical.List(ctx, &secretList, client.InNamespace(testMountNamespace), client.MatchingLabels{
-				"kubeocean.io/service-account-token": "true",
+				cloudv1beta1.LabelServiceAccountToken: "true",
 			})
 			if err != nil {
 				return false
@@ -1169,7 +1169,7 @@ func verifyPhysicalResourcesCleanupMultiple(ctx context.Context, allResourceName
 	gomega.Eventually(func() bool {
 		var secretList corev1.SecretList
 		err := k8sPhysical.List(ctx, &secretList, client.InNamespace(testMountNamespace), client.MatchingLabels{
-			"kubeocean.io/service-account-token": "true",
+			cloudv1beta1.LabelServiceAccountToken: "true",
 		})
 		if err != nil {
 			return false

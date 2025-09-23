@@ -1824,8 +1824,8 @@ func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, virt
 			Name:      physicalSecretName,
 			Namespace: physicalNamespace,
 			Labels: map[string]string{
-				cloudv1beta1.LabelManagedBy:          cloudv1beta1.LabelManagedByValue,
-				"kubeocean.io/service-account-token": "true",
+				cloudv1beta1.LabelManagedBy:           cloudv1beta1.LabelManagedByValue,
+				cloudv1beta1.LabelServiceAccountToken: "true",
 			},
 			Annotations: map[string]string{
 				cloudv1beta1.AnnotationVirtualPodName:      virtualPod.Name,
