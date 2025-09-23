@@ -7,7 +7,6 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -82,9 +81,16 @@ func (r *VirtualPVCReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	// 5. Check if virtual PVC is being deleted
+	// 5. Check if virtual PVC is being deleted or has clusterbinding-deleting annotation
 	if virtualPVC.DeletionTimestamp != nil {
 		logger.Info("Virtual PVC is being deleted, handling deletion")
+		return r.handleVirtualPVCDeletion(ctx, virtualPVC, physicalName, physicalPVCExists, physicalPVC)
+	}
+
+	// 5.5. Check if clusterbinding is being deleted (indicated by annotation)
+	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.clusterID)
+	if virtualPVC.Annotations != nil && virtualPVC.Annotations[clusterBindingDeletingAnnotation] == r.ClusterBinding.Name {
+		logger.Info("ClusterBinding is being deleted, handling PVC deletion")
 		return r.handleVirtualPVCDeletion(ctx, virtualPVC, physicalName, physicalPVCExists, physicalPVC)
 	}
 
@@ -105,33 +111,24 @@ func (r *VirtualPVCReconciler) handleVirtualPVCDeletion(ctx context.Context, vir
 
 	if !physicalPVCExists {
 		logger.V(1).Info("Physical PVC doesn't exist, nothing to delete")
-		return r.removeSyncedResourceFinalizer(ctx, virtualPVC)
+		return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPVC, r.VirtualClient, r.Log, r.clusterID)
 	}
 
-	// Delete physical PVC with UID precondition
+	// Use the common deletion function
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
-	err := r.PhysicalClient.Delete(ctx, &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      physicalName,
-			Namespace: physicalNamespace,
-		},
-	}, &client.DeleteOptions{
-		Preconditions: &metav1.Preconditions{
-			UID: &physicalPVC.UID,
-		},
+	err := DeletePhysicalResource(ctx, DeletePhysicalResourceParams{
+		ResourceType:      ResourceTypePVC,
+		PhysicalName:      physicalName,
+		PhysicalNamespace: physicalNamespace,
+		PhysicalResource:  physicalPVC,
+		PhysicalClient:    r.PhysicalClient,
+		Logger:            logger,
 	})
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			logger.V(1).Info("Physical PVC already deleted")
-			return r.removeSyncedResourceFinalizer(ctx, virtualPVC)
-		}
-		logger.Error(err, "Failed to delete physical PVC")
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully deleted physical PVC", "physicalPVC", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
-
-	return r.removeSyncedResourceFinalizer(ctx, virtualPVC)
+	return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPVC, r.VirtualClient, r.Log, r.clusterID)
 }
 
 // checkPhysicalPVCExists checks if physical PVC exists using both cached and direct client
@@ -205,9 +202,4 @@ func (r *VirtualPVCReconciler) validatePhysicalPVC(virtualPVC *corev1.Persistent
 	}
 
 	return nil
-}
-
-// removeSyncedResourceFinalizer removes the synced-resource finalizer from the virtual PVC
-func (r *VirtualPVCReconciler) removeSyncedResourceFinalizer(ctx context.Context, virtualPVC *corev1.PersistentVolumeClaim) (ctrl.Result, error) {
-	return ctrl.Result{}, RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualPVC, r.VirtualClient, r.Log, r.clusterID)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -100,6 +101,7 @@ func createTestVirtualNode(name, clusterName, clusterID, physicalNodeName string
 func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, schedulingv1.AddToScheme(scheme))
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
 	clusterBinding := &cloudv1beta1.ClusterBinding{
@@ -570,6 +572,8 @@ func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 			}
 			// Add mock services for loadbalancer IPs
 			virtualObjs = append(virtualObjs, kubernetesIntranetService, kubeDnsIntranetService)
+			// Add ClusterBinding to virtual client
+			virtualObjs = append(virtualObjs, clusterBinding)
 			virtualClient := fakeclient.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(virtualObjs...).
@@ -1853,6 +1857,7 @@ func TestVirtualPodReconciler_PodFiltering(t *testing.T) {
 func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, schedulingv1.AddToScheme(scheme))
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
 	clusterBinding := &cloudv1beta1.ClusterBinding{
@@ -2491,7 +2496,7 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 			},
 		}
 
-		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualPod).Build()
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualPod, clusterBinding).Build()
 		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 		physicalK8sClient := fake.NewSimpleClientset()
 
@@ -4437,6 +4442,7 @@ func TestVirtualPodReconciler_SyncSecretsWithProjectedVolumes(t *testing.T) {
 func TestVirtualPodReconciler_BuildPhysicalPodSpecWithProjectedVolumes(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, schedulingv1.AddToScheme(scheme))
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
 	clusterBinding := &cloudv1beta1.ClusterBinding{
@@ -4689,12 +4695,22 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithProjectedVolumes(t *testin
 			// Create mock virtual client with services
 			virtualClient := fakeclient.NewClientBuilder().
 				WithScheme(scheme).
-				WithObjects(kubernetesIntranetService, kubeDnsIntranetService).
+				WithObjects(kubernetesIntranetService, kubeDnsIntranetService, clusterBinding).
+				Build()
+
+			// Create mock physical client with schedulingv1 scheme
+			physicalScheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(physicalScheme))
+			require.NoError(t, schedulingv1.AddToScheme(physicalScheme))
+			require.NoError(t, cloudv1beta1.AddToScheme(physicalScheme))
+
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(physicalScheme).
 				Build()
 
 			reconciler := &VirtualPodReconciler{
 				VirtualClient:  virtualClient,
-				PhysicalClient: nil, // Not needed for this test
+				PhysicalClient: physicalClient,
 				ClusterBinding: clusterBinding,
 				Log:            ctrl.Log.WithName("test"),
 				clusterID:      "test-cluster-id",
@@ -5315,6 +5331,8 @@ func TestVirtualPodReconciler_InjectHostnameEnvVar(t *testing.T) {
 func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, schedulingv1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
 	// Create mock services for loadbalancer IPs
 	kubernetesIntranetService := &corev1.Service{
@@ -5352,15 +5370,27 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing
 		},
 	}
 
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster",
+		},
+	}
+
 	// Create mock virtual client with services
 	virtualClient := fakeclient.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(kubernetesIntranetService, kubeDnsIntranetService).
+		WithObjects(kubernetesIntranetService, kubeDnsIntranetService, clusterBinding).
+		Build()
+
+	physicalClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
 		Build()
 
 	reconciler := &VirtualPodReconciler{
-		VirtualClient: virtualClient,
-		Log:           ctrl.Log.WithName("test"),
+		VirtualClient:  virtualClient,
+		PhysicalClient: physicalClient,
+		ClusterBinding: clusterBinding,
+		Log:            ctrl.Log.WithName("test"),
 	}
 
 	tests := []struct {
@@ -5571,6 +5601,8 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing
 func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjectionErrors(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, schedulingv1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
 	tests := []struct {
 		name          string
@@ -5620,9 +5652,33 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjectionErrors(t *t
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			clusterBinding := &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID: "test-cluster",
+				},
+			}
+
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				Build()
+
+			// Create virtual client with ClusterBinding if virtualClient is not nil
+			var virtualClient client.Client
+			if tt.virtualClient != nil {
+				virtualClient = fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+			}
+
 			reconciler := &VirtualPodReconciler{
-				VirtualClient: tt.virtualClient,
-				Log:           ctrl.Log.WithName("test"),
+				VirtualClient:  virtualClient,
+				PhysicalClient: physicalClient,
+				ClusterBinding: clusterBinding,
+				Log:            ctrl.Log.WithName("test"),
 			}
 
 			virtualPod := &corev1.Pod{
@@ -6659,6 +6715,252 @@ func TestVirtualPodReconciler_GetWorkloadInfo(t *testing.T) {
 
 			assert.Equal(t, tt.expectedType, workloadType)
 			assert.Equal(t, tt.expectedName, workloadName)
+		})
+	}
+}
+
+func TestEnsureDefaultPriorityClass(t *testing.T) {
+	tests := []struct {
+		name          string
+		existingPC    *schedulingv1.PriorityClass
+		expectCreate  bool
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:         "PriorityClass does not exist, should create",
+			existingPC:   nil,
+			expectCreate: true,
+			expectError:  false,
+		},
+		{
+			name: "PriorityClass already exists, should not create",
+			existingPC: &schedulingv1.PriorityClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: cloudv1beta1.DefaultPriorityClassName,
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+					},
+				},
+				Value:            0,
+				PreemptionPolicy: ptr.To(corev1.PreemptLowerPriority),
+				Description:      "Default PriorityClass for Kubeocean physical pods",
+			},
+			expectCreate: false,
+			expectError:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup test objects
+			scheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(scheme))
+			require.NoError(t, schedulingv1.AddToScheme(scheme))
+			require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+			var objects []client.Object
+			if tt.existingPC != nil {
+				objects = append(objects, tt.existingPC)
+			}
+
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				Build()
+
+			// Create reconciler
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient: fakeClient,
+				Log:            zap.New(zap.UseDevMode(true)),
+			}
+
+			// Test ensureDefaultPriorityClass
+			err := reconciler.ensureDefaultPriorityClass(context.Background())
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+
+			// Verify PriorityClass exists
+			priorityClass := &schedulingv1.PriorityClass{}
+			err = fakeClient.Get(context.Background(), client.ObjectKey{Name: cloudv1beta1.DefaultPriorityClassName}, priorityClass)
+			assert.NoError(t, err)
+			assert.Equal(t, cloudv1beta1.DefaultPriorityClassName, priorityClass.Name)
+			assert.Equal(t, int32(0), priorityClass.Value)
+			assert.Equal(t, corev1.PreemptLowerPriority, *priorityClass.PreemptionPolicy)
+			assert.Equal(t, "Default PriorityClass for Kubeocean physical pods", priorityClass.Description)
+			assert.Contains(t, priorityClass.Labels, cloudv1beta1.LabelManagedBy)
+			assert.Equal(t, cloudv1beta1.LabelManagedByValue, priorityClass.Labels[cloudv1beta1.LabelManagedBy])
+		})
+	}
+}
+
+func TestBuildPhysicalPodSpecWithPriorityClass(t *testing.T) {
+	tests := []struct {
+		name                  string
+		clusterBindingSpec    cloudv1beta1.ClusterBindingSpec
+		existingPriorityClass *schedulingv1.PriorityClass
+		expectedPriorityClass string
+		expectError           bool
+		errorContains         string
+	}{
+		{
+			name: "PodPriorityClassName specified, should use it",
+			clusterBindingSpec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID:            "test-cluster",
+				PodPriorityClassName: "custom-priority",
+			},
+			expectedPriorityClass: "custom-priority",
+			expectError:           false,
+		},
+		{
+			name: "PodPriorityClassName empty, should use default and create it",
+			clusterBindingSpec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID: "test-cluster",
+			},
+			expectedPriorityClass: cloudv1beta1.DefaultPriorityClassName,
+			expectError:           false,
+		},
+		{
+			name: "PodPriorityClassName empty, default already exists",
+			clusterBindingSpec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID: "test-cluster",
+			},
+			existingPriorityClass: &schedulingv1.PriorityClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: cloudv1beta1.DefaultPriorityClassName,
+				},
+				Value:            0,
+				PreemptionPolicy: ptr.To(corev1.PreemptLowerPriority),
+			},
+			expectedPriorityClass: cloudv1beta1.DefaultPriorityClassName,
+			expectError:           false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup test objects
+			scheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(scheme))
+			require.NoError(t, schedulingv1.AddToScheme(scheme))
+			require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+			var objects []client.Object
+			if tt.existingPriorityClass != nil {
+				objects = append(objects, tt.existingPriorityClass)
+			}
+
+			// Add kubernetes-intranet service for testing
+			kubernetesService := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubernetes-intranet",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Type:      corev1.ServiceTypeLoadBalancer,
+					ClusterIP: "10.96.0.1",
+					Ports: []corev1.ServicePort{
+						{
+							Port: 443,
+						},
+					},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{
+								IP: "192.168.1.100",
+							},
+						},
+					},
+				},
+			}
+			objects = append(objects, kubernetesService)
+
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				Build()
+
+			// Create virtual pod
+			virtualPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-namespace",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "test-container",
+							Image: "test-image",
+						},
+					},
+				},
+			}
+
+			// Create ClusterBinding with name
+			clusterBinding := &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+				},
+				Spec: tt.clusterBindingSpec,
+			}
+
+			// Create kubernetes-intranet service
+			kubernetesIntranetService := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubernetes-intranet",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Port: 443,
+						},
+					},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{IP: "10.0.0.1"},
+						},
+					},
+				},
+			}
+
+			// Create virtual client with ClusterBinding and service
+			virtualClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(clusterBinding, kubernetesIntranetService).
+				Build()
+
+			// Create reconciler
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient: fakeClient,
+				VirtualClient:  virtualClient,
+				ClusterBinding: clusterBinding,
+				Log:            zap.New(zap.UseDevMode(true)),
+			}
+
+			// Test buildPhysicalPodSpec
+			spec, err := reconciler.buildPhysicalPodSpec(context.Background(), virtualPod, "test-node", &ResourceMapping{})
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedPriorityClass, spec.PriorityClassName)
+			}
 		})
 	}
 }

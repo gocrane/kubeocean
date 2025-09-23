@@ -179,13 +179,32 @@ func (lc *LeaseController) sync(ctx context.Context) {
 	}
 }
 
-// getVirtualNode retrieves the virtual node from the virtual cluster
+// getVirtualNode retrieves the virtual node from the virtual cluster with retry mechanism
 func (lc *LeaseController) getVirtualNode(ctx context.Context) (*corev1.Node, error) {
-	node := &corev1.Node{}
-	err := lc.virtualClient.Get(ctx, client.ObjectKey{Name: lc.nodeName}, node)
+	var node *corev1.Node
+	var lastErr error
+
+	// Retry with 400ms interval and 1s timeout to handle virtualNode list-watch issues
+	err := wait.PollUntilContextTimeout(ctx, 400*time.Millisecond, time.Second, true, func(ctx context.Context) (bool, error) {
+		n := &corev1.Node{}
+		err := lc.virtualClient.Get(ctx, client.ObjectKey{Name: lc.nodeName}, n)
+		if err != nil {
+			lastErr = err
+			// Continue retrying for any error (including NotFound) to handle list-watch sync issues
+			lc.logger.V(1).Info("Failed to get virtual node, retrying", "error", err)
+			return false, nil
+		}
+		node = n
+		return true, nil
+	})
+
 	if err != nil {
+		if lastErr != nil {
+			return nil, fmt.Errorf("failed to get node %s after retries: %w", lc.nodeName, lastErr)
+		}
 		return nil, fmt.Errorf("failed to get node %s: %w", lc.nodeName, err)
 	}
+
 	return node, nil
 }
 

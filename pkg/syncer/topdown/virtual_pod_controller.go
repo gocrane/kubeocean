@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -66,6 +67,7 @@ type VirtualPodReconciler struct {
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch;create;update;patch
 
 // Reconcile implements the main reconciliation logic for virtual pods
 func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -310,7 +312,7 @@ func (r *VirtualPodReconciler) shouldManageVirtualPod(ctx context.Context, virtu
 	physicalClusterID := virtualNode.Labels[cloudv1beta1.LabelPhysicalClusterID]
 
 	currentClusterName := r.ClusterBinding.Name
-	currentClusterID := r.ClusterBinding.Spec.ClusterID
+	currentClusterID := r.clusterID
 
 	// Check cluster name match (preferred)
 	if physicalClusterName != "" && physicalClusterName != currentClusterName {
@@ -711,6 +713,13 @@ func (r *VirtualPodReconciler) replaceContainerDownwardAPIFieldPaths(envVars []c
 }
 
 func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtualPod *corev1.Pod, physicalNodeName string, resourceMapping *ResourceMapping) (corev1.PodSpec, error) {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	// Check if VirtualClient is available (e.g., in test environments)
+	if r.VirtualClient == nil {
+		return corev1.PodSpec{}, fmt.Errorf("VirtualClient is not available")
+	}
+
 	// Deep copy the spec to avoid modifying the original
 	spec := *virtualPod.Spec.DeepCopy()
 
@@ -732,6 +741,27 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 			},
 		},
 	}
+
+	// Get ClusterBinding
+	cb := &cloudv1beta1.ClusterBinding{}
+	if err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: r.ClusterBinding.Name}, cb); err != nil {
+		return spec, fmt.Errorf("failed to get cluster binding: %w", err)
+	}
+	r.ClusterBinding = cb
+
+	// Set PriorityClassName based on ClusterBinding configuration
+	priorityClassName := r.ClusterBinding.Spec.PodPriorityClassName
+	if priorityClassName == "" {
+		priorityClassName = cloudv1beta1.DefaultPriorityClassName
+		// Ensure default PriorityClass exists
+		if err := r.ensureDefaultPriorityClass(ctx); err != nil {
+			return spec, fmt.Errorf("failed to ensure default PriorityClass: %w", err)
+		}
+	} else {
+		logger.Info("Using custom PriorityClass", "priorityClassName", priorityClassName)
+	}
+	spec.PriorityClassName = priorityClassName
+	spec.Priority = nil
 
 	// cleanup service account related fields
 	spec.ServiceAccountName = ""
@@ -994,6 +1024,10 @@ func (r *VirtualPodReconciler) replaceContainerResourceNames(container *corev1.C
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
+	if r.VirtualClient == nil {
+		return fmt.Errorf("VirtualClient is not available")
+	}
+
 	if r.ClusterBinding == nil {
 		return fmt.Errorf("cluster binding is nil")
 	}
@@ -1552,16 +1586,6 @@ func (r *VirtualPodReconciler) syncPVCs(ctx context.Context, virtualPod *corev1.
 	return pvcMappings, nil
 }
 
-// ResourceType represents the type of Kubernetes resource
-type ResourceType string
-
-const (
-	ResourceTypeConfigMap ResourceType = "ConfigMap"
-	ResourceTypeSecret    ResourceType = "Secret"
-	ResourceTypePVC       ResourceType = "PVC"
-	ResourceTypePV        ResourceType = "PV"
-)
-
 // ResourceMapping represents the mapping from virtual resource names to physical resource names
 type ResourceMapping struct {
 	ConfigMaps              map[string]string // virtual name -> physical name
@@ -2117,4 +2141,46 @@ func (r *VirtualPodReconciler) injectHostnameEnvVar(container *corev1.Container,
 			Value: virtualPodName,
 		})
 	}
+}
+
+// ensureDefaultPriorityClass ensures that the kubeocean-default PriorityClass exists
+func (r *VirtualPodReconciler) ensureDefaultPriorityClass(ctx context.Context) error {
+	logger := r.Log.WithValues("priorityClass", cloudv1beta1.DefaultPriorityClassName)
+
+	// Check if PriorityClass already exists
+	priorityClass := &schedulingv1.PriorityClass{}
+	err := r.PhysicalClient.Get(ctx, client.ObjectKey{Name: cloudv1beta1.DefaultPriorityClassName}, priorityClass)
+	if err == nil {
+		// PriorityClass exists, nothing to do
+		logger.V(1).Info("Default PriorityClass already exists")
+		return nil
+	}
+
+	if !apierrors.IsNotFound(err) {
+		logger.Error(err, "Failed to check if default PriorityClass exists")
+		return err
+	}
+
+	// PriorityClass doesn't exist, create it
+	logger.Info("Creating default PriorityClass")
+	priorityClass = &schedulingv1.PriorityClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: cloudv1beta1.DefaultPriorityClassName,
+			Labels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+			},
+		},
+		Value:            0,
+		PreemptionPolicy: ptr.To(corev1.PreemptLowerPriority),
+		Description:      "Default PriorityClass for Kubeocean physical pods",
+	}
+
+	err = r.PhysicalClient.Create(ctx, priorityClass)
+	if err != nil {
+		logger.Error(err, "Failed to create default PriorityClass")
+		return err
+	}
+
+	logger.Info("Successfully created default PriorityClass")
+	return nil
 }

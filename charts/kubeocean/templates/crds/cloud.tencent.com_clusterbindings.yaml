@@ -55,6 +55,11 @@ spec:
                 maxLength: 24
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                 type: string
+              disableNodeDefaultTaint:
+                description: |-
+                  DisableNodeDefaultTaint controls whether to add the default kubeocean.io/vnode taint to virtual nodes
+                  If true, the default taint will not be added; if false or not set, the default taint will be added
+                type: boolean
               mountNamespace:
                 description: MountNamespace specifies the namespace to mount cluster
                   resources
@@ -148,6 +153,11 @@ spec:
                 - nodeSelectorTerms
                 type: object
                 x-kubernetes-map-type: atomic
+              podPriorityClassName:
+                description: |-
+                  PodPriorityClassName specifies the priority class name for physical pods
+                  If empty, kubeocean-default will be used
+                type: string
               secretRef:
                 description: SecretRef references the secret containing kubeconfig
                   for the target cluster
@@ -168,9 +178,6 @@ spec:
                 items:
                   type: string
                 type: array
-              disableNodeDefaultTaint:
-                description: DisableNodeDefaultTaint controls whether to add the default kubeocean.io/vnode taint to virtual nodes. If true, the default taint will not be added; if false or not set, the default taint will be added
-                type: boolean
             required:
             - clusterID
             - secretRef

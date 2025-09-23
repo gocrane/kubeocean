@@ -7,7 +7,6 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -82,9 +81,16 @@ func (r *VirtualPVReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	// 5. Check if virtual PV is being deleted
+	// 5. Check if virtual PV is being deleted or has clusterbinding-deleting annotation
 	if virtualPV.DeletionTimestamp != nil {
 		logger.Info("Virtual PV is being deleted, handling deletion")
+		return r.handleVirtualPVDeletion(ctx, virtualPV, physicalName, physicalPVExists, physicalPV)
+	}
+
+	// 5.5. Check if clusterbinding is being deleted (indicated by annotation)
+	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.clusterID)
+	if virtualPV.Annotations != nil && virtualPV.Annotations[clusterBindingDeletingAnnotation] == r.ClusterBinding.Name {
+		logger.Info("ClusterBinding is being deleted, handling PV deletion")
 		return r.handleVirtualPVDeletion(ctx, virtualPV, physicalName, physicalPVExists, physicalPV)
 	}
 
@@ -105,31 +111,23 @@ func (r *VirtualPVReconciler) handleVirtualPVDeletion(ctx context.Context, virtu
 
 	if !physicalPVExists {
 		logger.V(1).Info("Physical PV doesn't exist, nothing to delete")
-		return r.removeSyncedResourceFinalizer(ctx, virtualPV)
+		return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPV, r.VirtualClient, r.Log, r.clusterID)
 	}
 
-	// Delete physical PV with UID precondition
-	err := r.PhysicalClient.Delete(ctx, &corev1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: physicalName,
-		},
-	}, &client.DeleteOptions{
-		Preconditions: &metav1.Preconditions{
-			UID: &physicalPV.UID,
-		},
+	// Use the common deletion function
+	err := DeletePhysicalResource(ctx, DeletePhysicalResourceParams{
+		ResourceType:      ResourceTypePV,
+		PhysicalName:      physicalName,
+		PhysicalNamespace: "", // PV is cluster-scoped
+		PhysicalResource:  physicalPV,
+		PhysicalClient:    r.PhysicalClient,
+		Logger:            logger,
 	})
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			logger.V(1).Info("Physical PV already deleted")
-			return r.removeSyncedResourceFinalizer(ctx, virtualPV)
-		}
-		logger.Error(err, "Failed to delete physical PV")
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully deleted physical PV", "physicalPV", fmt.Sprintf("/%s", physicalName))
-
-	return r.removeSyncedResourceFinalizer(ctx, virtualPV)
+	return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPV, r.VirtualClient, r.Log, r.clusterID)
 }
 
 // checkPhysicalPVExists checks if physical PV exists using both cached and direct client
@@ -201,9 +199,4 @@ func (r *VirtualPVReconciler) validatePhysicalPV(virtualPV *corev1.PersistentVol
 	}
 
 	return nil
-}
-
-// removeSyncedResourceFinalizer removes the synced-resource finalizer from the virtual PV
-func (r *VirtualPVReconciler) removeSyncedResourceFinalizer(ctx context.Context, virtualPV *corev1.PersistentVolume) (ctrl.Result, error) {
-	return ctrl.Result{}, RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualPV, r.VirtualClient, r.Log, r.clusterID)
 }

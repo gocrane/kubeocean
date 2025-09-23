@@ -283,6 +283,54 @@ func TestLeaseController_GetVirtualNode(t *testing.T) {
 	}
 }
 
+func TestLeaseController_GetVirtualNode_WithRetry(t *testing.T) {
+	nodeName := testNodeName
+	lc, virtualClient := createTestLeaseController(nodeName)
+
+	// Test retry mechanism with eventual success
+	testNode := createTestNode(nodeName, true)
+
+	// Test 1: Node doesn't exist initially, should timeout after 1 second
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := lc.getVirtualNode(ctx)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("Expected error when getting non-existent node with retry")
+	}
+
+	// Should have retried for approximately 1 second
+	if elapsed < 800*time.Millisecond || elapsed > 1500*time.Millisecond {
+		t.Errorf("Expected retry duration around 1s, got %v", elapsed)
+	}
+
+	// Test 2: Node exists, should succeed immediately
+	err = virtualClient.Create(context.Background(), testNode)
+	if err != nil {
+		t.Fatalf("Failed to create test node: %v", err)
+	}
+
+	start = time.Now()
+	retrievedNode, err := lc.getVirtualNode(context.Background())
+	elapsed = time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Failed to get virtual node: %v", err)
+	}
+
+	// Should succeed quickly without retries
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("Expected quick success without retries, got %v", elapsed)
+	}
+
+	if retrievedNode.Name != nodeName {
+		t.Errorf("Expected retrieved node name %s, got %s", nodeName, retrievedNode.Name)
+	}
+}
+
 func TestLeaseController_RetryUpdateLease(t *testing.T) {
 	nodeName := testNodeName
 	lc, _ := createTestLeaseController(nodeName)
