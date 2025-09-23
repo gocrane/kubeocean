@@ -25,7 +25,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o pr
 
 # Use distroless as minimal base image to package the proxier binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+#FROM gcr.io/distroless/static:nonroot
+FROM ccr.ccs.tencentyun.com/tkeimages/ubuntu:22.04
+
+
+RUN apt update && apt-get install --no-install-recommends --no-install-suggests -y     apt-utils inetutils-tools \
+ iproute2 vim procps inetutils-ping net-tools telnet curl     iptables conntrack ipvsadm ipset kmod ca-certificates \
+ less netcat  golang-go   && apt-get clean && rm -rf /var/lib/apt/lists/* 
+
 WORKDIR /
 COPY --from=builder /workspace/proxier .
 USER 65532:65532

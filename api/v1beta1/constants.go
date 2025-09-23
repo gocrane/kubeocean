@@ -34,11 +34,13 @@ const (
 	TaintOutOfTimeWindows          = "kubeocean.io/out-of-time-windows"
 
 	// Node and CSINode labels
-	LabelClusterBinding    = "kubeocean.io/cluster-binding"
-	LabelPhysicalClusterID = "kubeocean.io/physical-cluster-id"
-	LabelPhysicalNodeName  = "kubeocean.io/physical-node-name"
-	LabelPhysicalNodeUID   = "kubeocean.io/physical-node-uid"
-	LabelValueTrue         = "true"
+	LabelClusterBinding        = "kubeocean.io/cluster-binding"
+	LabelPhysicalClusterID     = "kubeocean.io/physical-cluster-id"
+	LabelPhysicalNodeName      = "kubeocean.io/physical-node-name"
+	LabelPhysicalNodeUID       = "kubeocean.io/physical-node-uid"
+	LabelPhysicalNodeInnerIP   = "kubeocean.io/physical-node-innerip"
+	LabelProxierPort           = "kubeocean.io/proxier_port"
+	LabelValueTrue             = "true"
 
 	// Resource mapping labels
 	LabelPhysicalName = "kubeocean.io/physical-name"

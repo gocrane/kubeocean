@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -36,6 +37,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -58,6 +60,7 @@ func main() {
 	var listenPort int
 	var tlsSecretName string
 	var tlsSecretNamespace string
+	var nodesFilePath string
 
 	flag.StringVar(&clusterBindingName, "cluster-binding-name", "",
 		"The name of the ClusterBinding resource this proxier is responsible for.")
@@ -67,6 +70,8 @@ func main() {
 		"The name of the Kubernetes secret containing TLS certificates for HTTPS.")
 	flag.StringVar(&tlsSecretNamespace, "tls-secret-namespace", "",
 		"The namespace of the Kubernetes secret containing TLS certificates.")
+	flag.StringVar(&nodesFilePath, "nodes-file-path", "/tmp/nodes.txt",
+		"The path to the nodes.txt file for storing node information.")
 
 	opts := zap.Options{
 		Development:     false,
@@ -228,6 +233,72 @@ func main() {
 	} else {
 		setupLog.Info("TLS disabled - running in HTTP mode")
 	}
+
+	// Setup Node Controller for proxier
+	setupLog.Info("Setting up Node Controller for proxier", "clusterBinding", clusterBindingName)
+	
+	// Create virtual cluster manager for Node controller
+	virtualManager, err := ctrl.NewManager(virtualConfig, ctrl.Options{
+		Scheme: scheme,
+		// Only watch Node resources with specific labels
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.Node{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelClusterBinding: clusterBindingName,
+						cloudv1beta1.LabelManagedBy:      cloudv1beta1.LabelManagedByValue,
+					}),
+				},
+			},
+		},
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create virtual manager for node controller")
+		os.Exit(1)
+	}
+
+	// Create Node controller
+	nodeController := &proxier.NodeController{
+		Client:            virtualManager.GetClient(),
+		Scheme:            virtualManager.GetScheme(),
+		Log:               ctrl.Log.WithName("proxier-node-controller"),
+		ClusterBindingName: clusterBindingName,
+		NodesFile:         nodesFilePath,
+		CurrentNodes:      make(map[string]proxier.NodeInfo),
+	}
+
+	// Validate nodes file path
+	if err := nodeController.ValidateNodesFile(); err != nil {
+		setupLog.Error(err, "unable to validate nodes file path")
+		os.Exit(1)
+	}
+
+	// Setup Node controller
+	if err := nodeController.SetupWithManager(virtualManager); err != nil {
+		setupLog.Error(err, "unable to setup node controller")
+		os.Exit(1)
+	}
+
+	// Start virtual manager (runs in background)
+	go func() {
+		if err := virtualManager.Start(ctx); err != nil {
+			setupLog.Error(err, "problem running virtual manager")
+		}
+	}()
+
+	// Wait for manager cache to sync
+	if !virtualManager.GetCache().WaitForCacheSync(ctx) {
+		setupLog.Error(fmt.Errorf("failed to wait for cache sync"), "unable to sync caches")
+		os.Exit(1)
+	}
+
+	// Sync existing nodes
+	if err := nodeController.SyncExistingNodes(ctx); err != nil {
+		setupLog.Error(err, "failed to sync existing nodes")
+		os.Exit(1)
+	}
+
+	setupLog.Info("Node Controller setup completed successfully")
 
 	// Create Kubelet proxy
 	kubeletProxy := proxier.NewKubeletProxy(
