@@ -41,6 +41,7 @@ const (
 	LabelPhysicalClusterID = "kubeocean.io/physical-cluster-id"
 	LabelPhysicalNodeName  = "kubeocean.io/physical-node-name"
 	LabelPhysicalNodeUID   = "kubeocean.io/physical-node-uid"
+	LabelPolicyApplied     = "kubeocean.io/policy-applied"
 	LabelValueTrue         = "true"
 
 	// Resource mapping labels

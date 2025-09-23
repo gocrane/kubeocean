@@ -887,8 +887,14 @@ func TestPhysicalNodeReconciler_HandleNodeDeletion(t *testing.T) {
 		}).
 		Build()
 
+	// Create physical client for testing
+	physicalClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
 	reconciler := &PhysicalNodeReconciler{
-		VirtualClient: virtualClient,
+		VirtualClient:  virtualClient,
+		PhysicalClient: physicalClient,
 		ClusterBinding: &cloudv1beta1.ClusterBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-cluster"},
 			Spec: cloudv1beta1.ClusterBindingSpec{
@@ -2969,6 +2975,11 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_Integration(t *testing.T) {
 				}).
 				Build()
 
+			// Create physical client for testing
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				Build()
+
 			kubeClient := fake.NewSimpleClientset()
 
 			// Create ClusterBinding for testing
@@ -2983,6 +2994,7 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_Integration(t *testing.T) {
 
 			reconciler := &PhysicalNodeReconciler{
 				VirtualClient:      virtualClient,
+				PhysicalClient:     physicalClient,
 				KubeClient:         kubeClient,
 				Log:                zap.New(zap.UseDevMode(true)),
 				ClusterBindingName: "test-cluster",
@@ -3115,6 +3127,11 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_ForceEviction_Integration(t *
 		}).
 		Build()
 
+	// Create physical client for testing
+	physicalClient := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
 	// Create ClusterBinding for testing
 	clusterBinding := &cloudv1beta1.ClusterBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -3127,6 +3144,7 @@ func TestPhysicalNodeReconciler_handleNodeDeletion_ForceEviction_Integration(t *
 
 	reconciler := &PhysicalNodeReconciler{
 		VirtualClient:      virtualClient,
+		PhysicalClient:     physicalClient,
 		KubeClient:         fake.NewSimpleClientset(),
 		Log:                zap.New(zap.UseDevMode(true)),
 		ClusterBindingName: "test-cluster",
@@ -3942,6 +3960,11 @@ func TestPhysicalNodeReconciler_FinalizerHandling(t *testing.T) {
 				}).
 				Build()
 
+			// Create physical client for testing
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				Build()
+
 			kubeClient := fake.NewSimpleClientset()
 
 			// Create ClusterBinding for testing
@@ -3956,6 +3979,7 @@ func TestPhysicalNodeReconciler_FinalizerHandling(t *testing.T) {
 
 			reconciler := &PhysicalNodeReconciler{
 				VirtualClient:      virtualClient,
+				PhysicalClient:     physicalClient,
 				KubeClient:         kubeClient,
 				Log:                zap.New(zap.UseDevMode(true)),
 				ClusterBindingName: "test-cluster",
@@ -3990,6 +4014,425 @@ func TestPhysicalNodeReconciler_FinalizerHandling(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, updatedVirtualNode.DeletionTimestamp, "Node should have DeletionTimestamp set when deletion is triggered")
 			}
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_ensurePolicyAppliedLabel(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	tests := []struct {
+		name               string
+		existingNode       *corev1.Node
+		policyName         string
+		expectPatch        bool
+		expectError        bool
+		expectedLabelValue string
+	}{
+		{
+			name: "add label when missing",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-node",
+					Labels: map[string]string{},
+				},
+			},
+			policyName:         "test-policy",
+			expectPatch:        true,
+			expectError:        false,
+			expectedLabelValue: "test-policy",
+		},
+		{
+			name: "update label when value is different",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						cloudv1beta1.LabelPolicyApplied: "old-policy",
+					},
+				},
+			},
+			policyName:         "new-policy",
+			expectPatch:        true,
+			expectError:        false,
+			expectedLabelValue: "new-policy",
+		},
+		{
+			name: "no action when label is already correct",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						cloudv1beta1.LabelPolicyApplied: "correct-policy",
+					},
+				},
+			},
+			policyName:         "correct-policy",
+			expectPatch:        false,
+			expectError:        false,
+			expectedLabelValue: "correct-policy",
+		},
+		{
+			name: "handle node with nil labels",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-node",
+					Labels: nil,
+				},
+			},
+			policyName:         "test-policy",
+			expectPatch:        true,
+			expectError:        false,
+			expectedLabelValue: "test-policy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create fake physical client
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.existingNode).
+				Build()
+
+			// Create fake virtual client
+			virtualClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				Build()
+
+			// Set up logger
+			logger := zap.New(zap.UseDevMode(true))
+
+			reconciler := &PhysicalNodeReconciler{
+				PhysicalClient: physicalClient,
+				VirtualClient:  virtualClient,
+				Log:            logger,
+			}
+
+			ctx := context.Background()
+
+			// Call the method
+			err := reconciler.ensurePolicyAppliedLabel(ctx, tt.existingNode, tt.policyName)
+
+			// Check error expectation
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			} else {
+				assert.NoError(t, err)
+			}
+
+			// Get the updated node to verify the label
+			updatedNode := &corev1.Node{}
+			err = physicalClient.Get(ctx, client.ObjectKey{Name: tt.existingNode.Name}, updatedNode)
+			assert.NoError(t, err)
+
+			// Check the label value
+			if tt.expectedLabelValue != "" {
+				assert.Equal(t, tt.expectedLabelValue, updatedNode.Labels[cloudv1beta1.LabelPolicyApplied])
+			}
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_removePolicyAppliedLabel(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	tests := []struct {
+		name          string
+		existingNode  *corev1.Node
+		nodeExists    bool
+		expectError   bool
+		expectRemoval bool
+	}{
+		{
+			name: "remove label when it exists",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						cloudv1beta1.LabelPolicyApplied: "test-policy",
+						"other-label":                   "other-value",
+					},
+				},
+			},
+			nodeExists:    true,
+			expectError:   false,
+			expectRemoval: true,
+		},
+		{
+			name: "no action when label doesn't exist",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						"other-label": "other-value",
+					},
+				},
+			},
+			nodeExists:    true,
+			expectError:   false,
+			expectRemoval: false,
+		},
+		{
+			name: "handle node with nil labels",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-node",
+					Labels: nil,
+				},
+			},
+			nodeExists:    true,
+			expectError:   false,
+			expectRemoval: false,
+		},
+		{
+			name:          "ignore when node doesn't exist",
+			existingNode:  nil,
+			nodeExists:    false,
+			expectError:   false,
+			expectRemoval: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var objects []client.Object
+			if tt.nodeExists && tt.existingNode != nil {
+				objects = append(objects, tt.existingNode)
+			}
+
+			// Create fake physical client
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				Build()
+
+			// Create fake virtual client
+			virtualClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				Build()
+
+			// Set up logger
+			logger := zap.New(zap.UseDevMode(true))
+
+			reconciler := &PhysicalNodeReconciler{
+				PhysicalClient: physicalClient,
+				VirtualClient:  virtualClient,
+				Log:            logger,
+			}
+
+			ctx := context.Background()
+			nodeName := "test-node"
+
+			// Call the method
+			err := reconciler.removePolicyAppliedLabel(ctx, nodeName)
+
+			// Check error expectation
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			} else {
+				assert.NoError(t, err)
+			}
+
+			// If node should exist, verify the result
+			if tt.nodeExists && tt.existingNode != nil {
+				updatedNode := &corev1.Node{}
+				err = physicalClient.Get(ctx, client.ObjectKey{Name: nodeName}, updatedNode)
+				assert.NoError(t, err)
+
+				// Check if the label was removed or preserved based on expectation
+				_, exists := updatedNode.Labels[cloudv1beta1.LabelPolicyApplied]
+				if tt.expectRemoval {
+					assert.False(t, exists, "Policy-applied label should have been removed")
+					// Ensure other labels are preserved
+					if len(tt.existingNode.Labels) > 1 {
+						assert.True(t, len(updatedNode.Labels) >= len(tt.existingNode.Labels)-1, "Other labels should be preserved")
+					}
+				} else {
+					// If removal wasn't expected and original node had the label, it should still exist
+					originalHadLabel := tt.existingNode.Labels != nil && tt.existingNode.Labels[cloudv1beta1.LabelPolicyApplied] != ""
+					if originalHadLabel {
+						assert.True(t, exists, "Policy-applied label should not have been removed")
+					} else {
+						assert.False(t, exists, "Policy-applied label should not exist")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPhysicalNodeReconciler_processNode_PolicyAppliedLabel(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Set up logger
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster-binding",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID: "test-cluster-001",
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "environment",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"test"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	physicalNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-node",
+			UID:  "test-node-uid",
+			Labels: map[string]string{
+				"environment": "test",
+			},
+		},
+		Status: corev1.NodeStatus{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("4"),
+				corev1.ResourceMemory: resource.MustParse("8Gi"),
+			},
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("4"),
+				corev1.ResourceMemory: resource.MustParse("8Gi"),
+			},
+		},
+	}
+
+	policy := &cloudv1beta1.ResourceLeasingPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-policy",
+		},
+		Spec: cloudv1beta1.ResourceLeasingPolicySpec{
+			Cluster: "test-cluster-binding",
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "environment",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"test"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name                       string
+		initialPolicyAppliedLabel  string
+		expectedPolicyAppliedLabel string
+		shouldCallPatch            bool
+	}{
+		{
+			name:                       "add policy-applied label when missing",
+			initialPolicyAppliedLabel:  "",
+			expectedPolicyAppliedLabel: "test-policy",
+			shouldCallPatch:            true,
+		},
+		{
+			name:                       "update policy-applied label when different",
+			initialPolicyAppliedLabel:  "old-policy",
+			expectedPolicyAppliedLabel: "test-policy",
+			shouldCallPatch:            true,
+		},
+		{
+			name:                       "keep policy-applied label when correct",
+			initialPolicyAppliedLabel:  "test-policy",
+			expectedPolicyAppliedLabel: "test-policy",
+			shouldCallPatch:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set up the initial physical node with or without the policy-applied label
+			testNode := physicalNode.DeepCopy()
+			if tt.initialPolicyAppliedLabel != "" {
+				if testNode.Labels == nil {
+					testNode.Labels = make(map[string]string)
+				}
+				testNode.Labels[cloudv1beta1.LabelPolicyApplied] = tt.initialPolicyAppliedLabel
+			}
+
+			// Create fake clients with proper indexing
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(testNode, policy).
+				WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
+					pod := obj.(*corev1.Pod)
+					if pod.Spec.NodeName == "" {
+						return nil
+					}
+					return []string{pod.Spec.NodeName}
+				}).
+				Build()
+
+			virtualClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(clusterBinding).
+				WithIndex(&corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
+					pod := obj.(*corev1.Pod)
+					if pod.Spec.NodeName == "" {
+						return nil
+					}
+					return []string{pod.Spec.NodeName}
+				}).
+				Build()
+
+			kubeClient := fake.NewSimpleClientset()
+
+			reconciler := &PhysicalNodeReconciler{
+				ClusterBindingName: clusterBinding.Name,
+				ClusterBinding:     clusterBinding,
+				PhysicalClient:     physicalClient,
+				VirtualClient:      virtualClient,
+				KubeClient:         kubeClient,
+				Scheme:             scheme,
+				Log:                zap.New(zap.UseDevMode(true)),
+			}
+
+			ctx := context.Background()
+
+			// Call processNode
+			result, err := reconciler.processNode(ctx, testNode)
+			assert.NoError(t, err)
+			assert.Equal(t, ctrl.Result{RequeueAfter: DefaultNodeSyncInterval}, result)
+
+			// Verify that the policy-applied label was set correctly on the physical node
+			updatedNode := &corev1.Node{}
+			err = physicalClient.Get(ctx, client.ObjectKey{Name: testNode.Name}, updatedNode)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedPolicyAppliedLabel, updatedNode.Labels[cloudv1beta1.LabelPolicyApplied])
+
+			// Verify that a virtual node was created
+			virtualNodeName := reconciler.generateVirtualNodeName(testNode.Name)
+			virtualNode := &corev1.Node{}
+			err = virtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, virtualNode)
+			assert.NoError(t, err)
+			assert.Equal(t, clusterBinding.Name, virtualNode.Labels[cloudv1beta1.LabelClusterBinding])
 		})
 	}
 }
