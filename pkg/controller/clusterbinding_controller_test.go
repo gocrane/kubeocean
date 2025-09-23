@@ -148,12 +148,12 @@ func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-			reconciler := &ClusterBindingReconciler{
-				Client:   fakeClient,
-				Scheme:   scheme,
-				Log:      zap.New(zap.UseDevMode(true)),
-				Recorder: record.NewFakeRecorder(10),
-			}
+			reconciler := NewClusterBindingReconciler(
+				fakeClient,
+				scheme,
+				zap.New(zap.UseDevMode(true)),
+				record.NewFakeRecorder(10),
+			)
 
 			err := reconciler.validateClusterBinding(tt.clusterBinding)
 			if tt.wantErr {
@@ -164,6 +164,217 @@ func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClusterBindingReconciler_validateClusterIDConsistency(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	tests := []struct {
+		name          string
+		setupBindings []*cloudv1beta1.ClusterBinding // bindings to setup first
+		testBinding   *cloudv1beta1.ClusterBinding   // binding to test
+		wantErr       bool
+		errMsg        string
+	}{
+		{
+			name: "first binding with new clusterID - should succeed",
+			testBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "binding1"},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID:      "cluster1",
+					SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+					MountNamespace: "mount-ns",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "same binding with same clusterID - should succeed",
+			setupBindings: []*cloudv1beta1.ClusterBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "binding1"},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:      "cluster1",
+						SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+						MountNamespace: "mount-ns",
+					},
+				},
+			},
+			testBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "binding1"},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID:      "cluster1",
+					SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+					MountNamespace: "mount-ns",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "same binding trying to change clusterID - should fail",
+			setupBindings: []*cloudv1beta1.ClusterBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "binding1"},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:      "cluster1",
+						SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+						MountNamespace: "mount-ns",
+					},
+				},
+			},
+			testBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "binding1"},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID:      "cluster2",
+					SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+					MountNamespace: "mount-ns",
+				},
+			},
+			wantErr: true,
+			errMsg:  "clusterID cannot be changed for ClusterBinding binding1: existing=cluster1, new=cluster2",
+		},
+		{
+			name: "different binding trying to use same clusterID - should fail",
+			setupBindings: []*cloudv1beta1.ClusterBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "binding1"},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:      "cluster1",
+						SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+						MountNamespace: "mount-ns",
+					},
+				},
+			},
+			testBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "binding2"},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID:      "cluster1",
+					SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+					MountNamespace: "mount-ns",
+				},
+			},
+			wantErr: true,
+			errMsg:  "clusterID cluster1 is already used by ClusterBinding binding1, cannot be used by binding2",
+		},
+		{
+			name: "different binding with different clusterID - should succeed",
+			setupBindings: []*cloudv1beta1.ClusterBinding{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "binding1"},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:      "cluster1",
+						SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+						MountNamespace: "mount-ns",
+					},
+				},
+			},
+			testBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "binding2"},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID:      "cluster2",
+					SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+					MountNamespace: "mount-ns",
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a new reconciler for each test to ensure clean state
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := NewClusterBindingReconciler(
+				fakeClient,
+				scheme,
+				zap.New(zap.UseDevMode(true)),
+				record.NewFakeRecorder(10),
+			)
+
+			// Setup initial bindings
+			for _, binding := range tt.setupBindings {
+				err := reconciler.validateClusterBinding(binding)
+				require.NoError(t, err, "setup binding should not fail")
+			}
+
+			// Test the target binding
+			err := reconciler.validateClusterBinding(tt.testBinding)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestClusterBindingReconciler_cleanupClusterIDMappings(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewClusterBindingReconciler(
+		fakeClient,
+		scheme,
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(10),
+	)
+
+	// Setup some bindings
+	binding1 := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "binding1"},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "cluster1",
+			SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+			MountNamespace: "mount-ns",
+		},
+	}
+	binding2 := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "binding2"},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "cluster2",
+			SecretRef:      corev1.SecretReference{Name: "secret", Namespace: "ns"},
+			MountNamespace: "mount-ns",
+		},
+	}
+
+	// Validate bindings to populate maps
+	err := reconciler.validateClusterBinding(binding1)
+	require.NoError(t, err)
+	err = reconciler.validateClusterBinding(binding2)
+	require.NoError(t, err)
+
+	// Verify maps are populated
+	reconciler.mu.RLock()
+	assert.Equal(t, "cluster1", reconciler.nameToClusterID["binding1"])
+	assert.Equal(t, "cluster2", reconciler.nameToClusterID["binding2"])
+	assert.Equal(t, "binding1", reconciler.clusterIDToName["cluster1"])
+	assert.Equal(t, "binding2", reconciler.clusterIDToName["cluster2"])
+	reconciler.mu.RUnlock()
+
+	// Cleanup binding1
+	reconciler.cleanupClusterIDMappings(binding1)
+
+	// Verify binding1 is removed but binding2 remains
+	reconciler.mu.RLock()
+	_, exists := reconciler.nameToClusterID["binding1"]
+	assert.False(t, exists)
+	_, exists = reconciler.clusterIDToName["cluster1"]
+	assert.False(t, exists)
+	assert.Equal(t, "cluster2", reconciler.nameToClusterID["binding2"])
+	assert.Equal(t, "binding2", reconciler.clusterIDToName["cluster2"])
+	reconciler.mu.RUnlock()
+
+	// Cleanup binding2
+	reconciler.cleanupClusterIDMappings(binding2)
+
+	// Verify all mappings are cleaned
+	reconciler.mu.RLock()
+	assert.Empty(t, reconciler.nameToClusterID)
+	assert.Empty(t, reconciler.clusterIDToName)
+	reconciler.mu.RUnlock()
 }
 
 func TestClusterBindingReconciler_readKubeconfigSecret(t *testing.T) {
@@ -251,12 +462,12 @@ func TestClusterBindingReconciler_readKubeconfigSecret(t *testing.T) {
 			}
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
-			reconciler := &ClusterBindingReconciler{
-				Client:   fakeClient,
-				Scheme:   scheme,
-				Log:      zap.New(zap.UseDevMode(true)),
-				Recorder: record.NewFakeRecorder(10),
-			}
+			reconciler := NewClusterBindingReconciler(
+				fakeClient,
+				scheme,
+				zap.New(zap.UseDevMode(true)),
+				record.NewFakeRecorder(10),
+			)
 
 			data, err := reconciler.readKubeconfigSecret(context.Background(), tt.secretRef)
 			if tt.wantErr {
@@ -353,12 +564,12 @@ users:
 		WithStatusSubresource(clusterBinding).
 		Build()
 
-	reconciler := &ClusterBindingReconciler{
-		Client:   fakeClient,
-		Scheme:   scheme,
-		Log:      zap.New(zap.UseDevMode(true)),
-		Recorder: record.NewFakeRecorder(100),
-	}
+	reconciler := NewClusterBindingReconciler(
+		fakeClient,
+		scheme,
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(100),
+	)
 
 	// Test reconcile
 	req := ctrl.Request{
@@ -407,12 +618,12 @@ func TestClusterBindingReconciler_SyncerCreation(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	// Create the reconciler
-	reconciler := &ClusterBindingReconciler{
-		Client:   fakeClient,
-		Scheme:   scheme,
-		Log:      zap.New(zap.UseDevMode(true)),
-		Recorder: record.NewFakeRecorder(100),
-	}
+	reconciler := NewClusterBindingReconciler(
+		fakeClient,
+		scheme,
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(100),
+	)
 
 	// Create a test ClusterBinding
 	clusterBinding := &cloudv1beta1.ClusterBinding{
@@ -614,12 +825,12 @@ spec:
 				WithObjects(tt.existingResources...).
 				Build()
 
-			reconciler := &ClusterBindingReconciler{
-				Client:   fakeClient,
-				Scheme:   scheme,
-				Log:      zap.New(zap.UseDevMode(true)),
-				Recorder: record.NewFakeRecorder(100),
-			}
+			reconciler := NewClusterBindingReconciler(
+				fakeClient,
+				scheme,
+				zap.New(zap.UseDevMode(true)),
+				record.NewFakeRecorder(100),
+			)
 
 			ctx := context.Background()
 			deleted, err := reconciler.deleteSyncerResources(ctx, tt.clusterBinding)
@@ -775,12 +986,12 @@ spec:
 				WithObjects(append(tt.existingResources, tt.clusterBinding)...).
 				Build()
 
-			reconciler := &ClusterBindingReconciler{
-				Client:   fakeClient,
-				Scheme:   scheme,
-				Log:      zap.New(zap.UseDevMode(true)),
-				Recorder: record.NewFakeRecorder(100),
-			}
+			reconciler := NewClusterBindingReconciler(
+				fakeClient,
+				scheme,
+				zap.New(zap.UseDevMode(true)),
+				record.NewFakeRecorder(100),
+			)
 
 			ctx := context.Background()
 			result, err := reconciler.handleDeletion(ctx, tt.clusterBinding)
@@ -809,7 +1020,12 @@ spec:
 }
 
 func TestClusterBindingReconciler_isCleanupComplete(t *testing.T) {
-	reconciler := &ClusterBindingReconciler{}
+	reconciler := NewClusterBindingReconciler(
+		fake.NewClientBuilder().Build(),
+		runtime.NewScheme(),
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(10),
+	)
 
 	tests := []struct {
 		name     string
@@ -905,11 +1121,12 @@ func TestClusterBindingReconciler_createOrUpdateResource_DeploymentSkipsUpdate(t
 		WithObjects(existingDeployment).
 		Build()
 
-	reconciler := &ClusterBindingReconciler{
-		Client: fakeClient,
-		Log:    ctrl.Log.WithName("test"),
-		Scheme: scheme,
-	}
+	reconciler := NewClusterBindingReconciler(
+		fakeClient,
+		scheme,
+		ctrl.Log.WithName("test"),
+		record.NewFakeRecorder(10),
+	)
 
 	// Create a new deployment object with different specs (simulating an update)
 	newDeployment := &appsv1.Deployment{
@@ -989,11 +1206,12 @@ func TestClusterBindingReconciler_createOrUpdateResource_NonDeploymentUpdates(t 
 		WithObjects(existingConfigMap).
 		Build()
 
-	reconciler := &ClusterBindingReconciler{
-		Client: fakeClient,
-		Log:    ctrl.Log.WithName("test"),
-		Scheme: scheme,
-	}
+	reconciler := NewClusterBindingReconciler(
+		fakeClient,
+		scheme,
+		ctrl.Log.WithName("test"),
+		record.NewFakeRecorder(10),
+	)
 
 	// Create a new ConfigMap object with different data (simulating an update)
 	newConfigMap := &corev1.ConfigMap{
@@ -1114,12 +1332,12 @@ spec:
 			}
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-			reconciler := &ClusterBindingReconciler{
-				Client:   fakeClient,
-				Scheme:   scheme,
-				Log:      zap.New(zap.UseDevMode(true)),
-				Recorder: record.NewFakeRecorder(10),
-			}
+			reconciler := NewClusterBindingReconciler(
+				fakeClient,
+				scheme,
+				zap.New(zap.UseDevMode(true)),
+				record.NewFakeRecorder(10),
+			)
 
 			ctx := context.Background()
 			err := reconciler.reconcileKubeoceanSyncer(ctx, tt.clusterBinding)
@@ -1275,12 +1493,12 @@ spec:
 			}
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-			reconciler := &ClusterBindingReconciler{
-				Client:   fakeClient,
-				Scheme:   scheme,
-				Log:      zap.New(zap.UseDevMode(true)),
-				Recorder: record.NewFakeRecorder(10),
-			}
+			reconciler := NewClusterBindingReconciler(
+				fakeClient,
+				scheme,
+				zap.New(zap.UseDevMode(true)),
+				record.NewFakeRecorder(10),
+			)
 
 			ctx := context.Background()
 			err := reconciler.reconcileKubeoceanProxier(ctx, tt.clusterBinding)
@@ -1415,9 +1633,12 @@ func TestClusterBindingReconciler_prepareProxierTemplateData_TLS(t *testing.T) {
 			scheme := runtime.NewScheme()
 			require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
-			reconciler := &ClusterBindingReconciler{
-				Log: zap.New(zap.UseDevMode(true)),
-			}
+			reconciler := NewClusterBindingReconciler(
+				fake.NewClientBuilder().Build(),
+				runtime.NewScheme(),
+				zap.New(zap.UseDevMode(true)),
+				record.NewFakeRecorder(10),
+			)
 
 			templateData := reconciler.prepareProxierTemplateData(tt.clusterBinding, tt.templateFiles)
 
@@ -1453,12 +1674,12 @@ func TestClusterBindingReconciler_handleDeletion_WaitForSyncerFinalizer(t *testi
 		WithObjects(clusterBinding).
 		Build()
 
-	reconciler := &ClusterBindingReconciler{
-		Client:   fakeClient,
-		Scheme:   scheme,
-		Log:      zap.New(zap.UseDevMode(true)),
-		Recorder: record.NewFakeRecorder(100),
-	}
+	reconciler := NewClusterBindingReconciler(
+		fakeClient,
+		scheme,
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(100),
+	)
 
 	ctx := context.Background()
 	result, err := reconciler.handleDeletion(ctx, clusterBinding)
@@ -1472,9 +1693,12 @@ func TestClusterBindingReconciler_updateCondition(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
-	reconciler := &ClusterBindingReconciler{
-		Log: zap.New(zap.UseDevMode(true)),
-	}
+	reconciler := NewClusterBindingReconciler(
+		fake.NewClientBuilder().Build(),
+		runtime.NewScheme(),
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(10),
+	)
 
 	tests := []struct {
 		name               string
@@ -1589,12 +1813,12 @@ func TestClusterBindingReconciler_Reconcile_ResourceNotFound(t *testing.T) {
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := &ClusterBindingReconciler{
-		Client:   fakeClient,
-		Scheme:   scheme,
-		Log:      zap.New(zap.UseDevMode(true)),
-		Recorder: record.NewFakeRecorder(10),
-	}
+	reconciler := NewClusterBindingReconciler(
+		fakeClient,
+		scheme,
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(10),
+	)
 
 	req := ctrl.Request{
 		NamespacedName: types.NamespacedName{
@@ -1640,12 +1864,12 @@ func TestClusterBindingReconciler_Reconcile_ValidationFailure(t *testing.T) {
 		WithStatusSubresource(clusterBinding).
 		Build()
 
-	reconciler := &ClusterBindingReconciler{
-		Client:   fakeClient,
-		Scheme:   scheme,
-		Log:      zap.New(zap.UseDevMode(true)),
-		Recorder: record.NewFakeRecorder(100),
-	}
+	reconciler := NewClusterBindingReconciler(
+		fakeClient,
+		scheme,
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(100),
+	)
 
 	req := ctrl.Request{
 		NamespacedName: types.NamespacedName{
@@ -1678,10 +1902,12 @@ func TestClusterBindingReconciler_SetupWithManager(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
-	reconciler := &ClusterBindingReconciler{
-		Scheme: scheme,
-		Log:    zap.New(zap.UseDevMode(true)),
-	}
+	reconciler := NewClusterBindingReconciler(
+		fake.NewClientBuilder().WithScheme(scheme).Build(),
+		scheme,
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(10),
+	)
 
 	// This is a basic test to ensure the method doesn't panic
 	// In a real environment, this would set up with an actual manager
@@ -1694,10 +1920,12 @@ func TestClusterBindingReconciler_SetupWithManagerAndName(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
-	reconciler := &ClusterBindingReconciler{
-		Scheme: scheme,
-		Log:    zap.New(zap.UseDevMode(true)),
-	}
+	reconciler := NewClusterBindingReconciler(
+		fake.NewClientBuilder().WithScheme(scheme).Build(),
+		scheme,
+		zap.New(zap.UseDevMode(true)),
+		record.NewFakeRecorder(10),
+	)
 
 	// This is a basic test to ensure the method doesn't panic
 	err := reconciler.SetupWithManagerAndName(nil, "test-controller")

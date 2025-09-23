@@ -130,12 +130,12 @@ func main() {
 	)
 
 	// Setup ClusterBinding controller
-	if err = (&controller.ClusterBindingReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Log:      ctrl.Log.WithName("controllers").WithName("ClusterBinding"),
-		Recorder: mgr.GetEventRecorderFor("clusterbinding-controller"),
-	}).SetupWithManager(mgr); err != nil {
+	if err = controller.NewClusterBindingReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		ctrl.Log.WithName("controllers").WithName("ClusterBinding"),
+		mgr.GetEventRecorderFor("clusterbinding-controller"),
+	).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterBinding")
 		os.Exit(1)
 	}

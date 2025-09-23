@@ -48,12 +48,12 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 	ginkgo.It("ClusterBindingReconciler: add finalizer, status change and Syncer template missing failure", func(ctx context.Context) {
 		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
 		// Start manager and register ClusterBindingReconciler (once only)
-		reconciler := &controllerpkg.ClusterBindingReconciler{
-			Client:   k8sVirtual,
-			Scheme:   scheme,
-			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
-			Recorder: record.NewFakeRecorder(100),
-		}
+		reconciler := controllerpkg.NewClusterBindingReconciler(
+			k8sVirtual,
+			scheme,
+			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
+			record.NewFakeRecorder(100),
+		)
 		// Register controller only once to avoid duplicate registration errors
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-finalizer")).To(gomega.Succeed())
 
@@ -101,12 +101,12 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
 
 		// Register controller (once) and start manager
-		reconciler := &controllerpkg.ClusterBindingReconciler{
-			Client:   k8sVirtual,
-			Scheme:   scheme,
-			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
-			Recorder: record.NewFakeRecorder(100),
-		}
+		reconciler := controllerpkg.NewClusterBindingReconciler(
+			k8sVirtual,
+			scheme,
+			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
+			record.NewFakeRecorder(100),
+		)
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-syncer")).To(gomega.Succeed())
 
 		// Prepare kubeconfig Secret
@@ -169,12 +169,12 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 
 	ginkgo.It("ClusterBindingReconciler: kubeconfig Secret missing key causes ConnectivityFailed", func(ctx context.Context) {
 		// Ensure manager is started
-		reconciler := &controllerpkg.ClusterBindingReconciler{
-			Client:   k8sVirtual,
-			Scheme:   scheme,
-			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
-			Recorder: record.NewFakeRecorder(100),
-		}
+		reconciler := controllerpkg.NewClusterBindingReconciler(
+			k8sVirtual,
+			scheme,
+			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
+			record.NewFakeRecorder(100),
+		)
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-bad-kc")).To(gomega.Succeed())
 
 		// Secret missing kubeconfig key
@@ -214,12 +214,12 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
 
 		// Ensure manager is started
-		reconciler := &controllerpkg.ClusterBindingReconciler{
-			Client:   k8sVirtual,
-			Scheme:   scheme,
-			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
-			Recorder: record.NewFakeRecorder(100),
-		}
+		reconciler := controllerpkg.NewClusterBindingReconciler(
+			k8sVirtual,
+			scheme,
+			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
+			record.NewFakeRecorder(100),
+		)
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-clean")).To(gomega.Succeed())
 
 		// Valid kubeconfig Secret
@@ -264,12 +264,12 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 		_ = os.Setenv("KUBEOCEAN_PROXIER_TEMPLATE_DIR", "testdata/proxier-template")
 
 		// Register controller and start manager
-		reconciler := &controllerpkg.ClusterBindingReconciler{
-			Client:   k8sVirtual,
-			Scheme:   scheme,
-			Log:      ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
-			Recorder: record.NewFakeRecorder(100),
-		}
+		reconciler := controllerpkg.NewClusterBindingReconciler(
+			k8sVirtual,
+			scheme,
+			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
+			record.NewFakeRecorder(100),
+		)
 		gomega.Expect(reconciler.SetupWithManagerAndName(mgrVirtual, "cb-lifecycle")).To(gomega.Succeed())
 
 		// Prepare kubeconfig Secret

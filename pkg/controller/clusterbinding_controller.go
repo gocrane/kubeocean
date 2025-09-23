@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -83,6 +84,23 @@ type ClusterBindingReconciler struct {
 	Scheme   *runtime.Scheme
 	Log      logr.Logger
 	Recorder record.EventRecorder
+
+	// ClusterID validation maps with thread safety
+	mu              sync.RWMutex
+	nameToClusterID map[string]string // clusterbinding.Name -> spec.clusterID
+	clusterIDToName map[string]string // spec.clusterID -> clusterbinding.Name
+}
+
+// NewClusterBindingReconciler creates a new ClusterBindingReconciler with initialized maps
+func NewClusterBindingReconciler(client client.Client, scheme *runtime.Scheme, log logr.Logger, recorder record.EventRecorder) *ClusterBindingReconciler {
+	return &ClusterBindingReconciler{
+		Client:          client,
+		Scheme:          scheme,
+		Log:             log,
+		Recorder:        recorder,
+		nameToClusterID: make(map[string]string),
+		clusterIDToName: make(map[string]string),
+	}
 }
 
 //+kubebuilder:rbac:groups=cloud.tencent.com,resources=clusterbindings,verbs=get;list;watch;create;update;patch;delete
@@ -256,6 +274,11 @@ func (r *ClusterBindingReconciler) validateClusterBinding(clusterBinding *cloudv
 		return fmt.Errorf("clusterID is required")
 	}
 
+	// Validate ClusterID consistency and uniqueness
+	if err := r.validateClusterIDConsistency(clusterBinding); err != nil {
+		return err
+	}
+
 	// Validate SecretRef
 	if clusterBinding.Spec.SecretRef.Name == "" {
 		return fmt.Errorf("secretRef.name is required")
@@ -277,6 +300,56 @@ func (r *ClusterBindingReconciler) validateClusterBinding(clusterBinding *cloudv
 	}
 
 	return nil
+}
+
+// validateClusterIDConsistency validates clusterID consistency and uniqueness
+func (r *ClusterBindingReconciler) validateClusterIDConsistency(clusterBinding *cloudv1beta1.ClusterBinding) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	bindingName := clusterBinding.Name
+	currentClusterID := clusterBinding.Spec.ClusterID
+
+	// Check first map: clusterbinding.Name -> spec.clusterID
+	if existingClusterID, exists := r.nameToClusterID[bindingName]; exists {
+		if existingClusterID != currentClusterID {
+			return fmt.Errorf("clusterID cannot be changed for ClusterBinding %s: existing=%s, new=%s",
+				bindingName, existingClusterID, currentClusterID)
+		}
+	} else {
+		// Record the mapping
+		r.nameToClusterID[bindingName] = currentClusterID
+	}
+
+	// Check second map: spec.clusterID -> clusterbinding.Name
+	if existingBindingName, exists := r.clusterIDToName[currentClusterID]; exists {
+		if existingBindingName != bindingName {
+			return fmt.Errorf("clusterID %s is already used by ClusterBinding %s, cannot be used by %s",
+				currentClusterID, existingBindingName, bindingName)
+		}
+	} else {
+		// Record the mapping
+		r.clusterIDToName[currentClusterID] = bindingName
+	}
+
+	return nil
+}
+
+// cleanupClusterIDMappings removes the ClusterBinding from both tracking maps
+func (r *ClusterBindingReconciler) cleanupClusterIDMappings(clusterBinding *cloudv1beta1.ClusterBinding) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	bindingName := clusterBinding.Name
+	clusterID := clusterBinding.Spec.ClusterID
+
+	// Remove from both maps
+	delete(r.nameToClusterID, bindingName)
+	delete(r.clusterIDToName, clusterID)
+
+	r.Log.V(1).Info("Cleaned up clusterID mappings",
+		"clusterBinding", bindingName,
+		"clusterID", clusterID)
 }
 
 // validateKubeconfigAndConnectivity validates the kubeconfig secret and tests cluster connectivity
@@ -660,6 +733,9 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 
 	// Create a deep copy for modification
 	clusterBinding := originalClusterBinding.DeepCopy()
+
+	// Clean up clusterID mappings before removing finalizer
+	r.cleanupClusterIDMappings(originalClusterBinding)
 
 	// Remove the finalizer only after all resources are cleaned up
 	controllerutil.RemoveFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer)

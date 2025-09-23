@@ -312,7 +312,7 @@ func (r *VirtualPodReconciler) shouldManageVirtualPod(ctx context.Context, virtu
 	physicalClusterID := virtualNode.Labels[cloudv1beta1.LabelPhysicalClusterID]
 
 	currentClusterName := r.ClusterBinding.Name
-	currentClusterID := r.ClusterBinding.Spec.ClusterID
+	currentClusterID := r.clusterID
 
 	// Check cluster name match (preferred)
 	if physicalClusterName != "" && physicalClusterName != currentClusterName {
