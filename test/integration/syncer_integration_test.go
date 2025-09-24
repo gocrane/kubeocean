@@ -240,6 +240,11 @@ var _ = ginkgo.Describe("Syncer Integration Tests", func() {
 			ginkgo.By("Step 4: Confirming all physical resources exist and are properly referenced")
 			verifyPhysicalResourcesExistAndReferenced(ctx, physicalPodNames)
 
+			// Step 4.5: Create physical hostPort pods and verify fake pod creation
+			ginkgo.By("Step 4.5: Creating physical hostPort pods and verifying fake pod creation")
+			createPhysicalHostPortPods(ctx, physicalNodeName)
+			verifyFakePodCreation(ctx, virtualNodeName)
+
 			// Step 5: Delete ClusterBinding and ResourceLeasingPolicy
 			ginkgo.By("Step 5: Deleting ClusterBinding")
 			deleteClusterBinding(ctx, clusterBindingName)
@@ -299,6 +304,11 @@ var _ = ginkgo.Describe("Syncer Integration Tests", func() {
 			// Step 4: Confirm physical resources exist
 			ginkgo.By("Step 4: Confirming all physical resources exist and are properly referenced")
 			verifyPhysicalResourcesExistAndReferenced(ctx, physicalPodNames)
+
+			// Step 4.5: Create physical hostPort pods and verify fake pod creation
+			ginkgo.By("Step 4.5: Creating physical hostPort pods and verifying fake pod creation")
+			createPhysicalHostPortPods(ctx, physicalNodeName)
+			verifyFakePodCreation(ctx, virtualNodeName)
 
 			// Step 5: Delete ClusterBinding and ResourceLeasingPolicy
 			ginkgo.By("Step 5: Deleting ClusterBinding")
@@ -1077,6 +1087,9 @@ func verifyVirtualResourcesCleanedUp(ctx context.Context, configMapName, secretN
 	if serviceAccountName != "" {
 		verifyResourceCleanedUp(ctx, &corev1.ServiceAccount{}, types.NamespacedName{Name: serviceAccountName, Namespace: testPodNamespace}, "ServiceAccount")
 	}
+
+	// Check that fake pods are cleaned up from kubeocean-fake namespace
+	verifyFakePodsCleanedUp(ctx)
 }
 
 func verifyPhysicalResourcesCreatedMultiple(ctx context.Context, allResourceNames *ResourceNames) {
@@ -1213,6 +1226,9 @@ func verifyVirtualResourcesCleanedUpMultiple(ctx context.Context, allResourceNam
 
 	// Check ServiceAccount
 	verifyResourceCleanedUp(ctx, &corev1.ServiceAccount{}, types.NamespacedName{Name: allResourceNames.ServiceAccountName, Namespace: testPodNamespace}, "ServiceAccount")
+
+	// Check that fake pods are cleaned up from kubeocean-fake namespace
+	verifyFakePodsCleanedUp(ctx)
 }
 
 // verifyResourceDeletionWithFinalizers verifies that a resource is deleted, handling finalizers that may block deletion
@@ -1524,4 +1540,32 @@ func verifySinglePhysicalPodCreatedButNotScheduled(ctx context.Context) []string
 	}, testTimeout, testPollingInterval).Should(gomega.Equal(1), "Should have 1 physical pod created")
 
 	return physicalPodNames
+}
+
+// verifyFakePodsCleanedUp verifies that all fake pods are cleaned up from kubeocean-fake namespace
+func verifyFakePodsCleanedUp(ctx context.Context) {
+	ginkgo.By("Verifying fake pods are cleaned up from kubeocean-fake namespace")
+
+	gomega.Eventually(func() bool {
+		fakePods := &corev1.PodList{}
+		err := k8sVirtual.List(ctx, fakePods,
+			client.InNamespace("kubeocean-fake"),
+			client.MatchingLabels{
+				cloudv1beta1.LabelHostPortFakePod: cloudv1beta1.LabelValueTrue,
+				cloudv1beta1.LabelManagedBy:       cloudv1beta1.LabelManagedByValue,
+			})
+		if err != nil {
+			// If we can't list, assume they are not cleaned up yet
+			return false
+		}
+
+		// Check if all fake pods are deleted
+		if len(fakePods.Items) == 0 {
+			ginkgo.GinkgoWriter.Printf("All fake pods have been cleaned up from kubeocean-fake namespace\n")
+			return true
+		}
+
+		ginkgo.GinkgoWriter.Printf("Still found %d fake pods in kubeocean-fake namespace\n", len(fakePods.Items))
+		return false
+	}, testTimeout, testPollingInterval).Should(gomega.BeTrue(), "All fake pods should be cleaned up from kubeocean-fake namespace")
 }

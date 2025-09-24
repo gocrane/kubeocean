@@ -109,6 +109,10 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		logger.Info("Virtual pod is being deleted, handling deletion")
 		return r.handleVirtualPodDeletion(ctx, virtualPod)
 	}
+	if !r.shouldCreatePhysicalPod(virtualPod) {
+		logger.V(1).Info("Virtual pod should not be created, doing nothing")
+		return ctrl.Result{}, nil
+	}
 
 	// 5. Check if physical pod exists
 	physicalPodExists, physicalPod, err := r.checkPhysicalPodExists(ctx, virtualPod)
@@ -196,6 +200,28 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
 		"nodeName", physicalPod.Spec.NodeName)
 	return ctrl.Result{}, nil
+}
+
+func (r *VirtualPodReconciler) shouldCreatePhysicalPod(virtualPod *corev1.Pod) bool {
+	if virtualPod == nil {
+		return false
+	}
+	// Only sync pods with spec.nodeName set (scheduled pods)
+	if virtualPod.Spec.NodeName == "" {
+		return false
+	}
+	// Skip system pods
+	if utils.IsSystemPod(virtualPod) {
+		return false
+	}
+	// Only sync pods that are not managed by DaemonSet
+	if isDaemonSetPod(virtualPod) {
+		return false
+	}
+	if virtualPod.Labels[cloudv1beta1.LabelHostPortFakePod] == cloudv1beta1.LabelValueTrue {
+		return false
+	}
+	return true
 }
 
 // handleVirtualPodDeletion handles the deletion of virtual pod
@@ -1081,22 +1107,24 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 		}).
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 			pod := obj.(*corev1.Pod)
-
-			// Skip system pods
-			if utils.IsSystemPod(pod) {
+			if pod == nil {
 				return false
 			}
-
-			// Only sync pods that are not managed by DaemonSet
-			if isDaemonSetPod(pod) {
-				return false
-			}
-
 			// Only sync pods with spec.nodeName set (scheduled pods)
 			if pod.Spec.NodeName == "" {
 				return false
 			}
-
+			if pod.DeletionTimestamp != nil {
+				return true
+			}
+			// Skip system pods
+			if utils.IsSystemPod(pod) {
+				return false
+			}
+			// Only sync pods that are not managed by DaemonSet
+			if isDaemonSetPod(pod) {
+				return false
+			}
 			return true
 		})).
 		Complete(r)
@@ -2159,8 +2187,12 @@ func (r *VirtualPodReconciler) ensureDefaultPriorityClass(ctx context.Context) e
 
 	err = r.PhysicalClient.Create(ctx, priorityClass)
 	if err != nil {
-		logger.Error(err, "Failed to create default PriorityClass")
-		return err
+		if !apierrors.IsAlreadyExists(err) {
+			logger.Error(err, "Failed to create default PriorityClass")
+			return err
+		}
+		logger.V(1).Info("Default PriorityClass already exists")
+		return nil
 	}
 
 	logger.Info("Successfully created default PriorityClass")

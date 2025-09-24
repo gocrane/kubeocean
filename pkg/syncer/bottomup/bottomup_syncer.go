@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/hostport"
 	"github.com/TKEColocation/kubeocean/pkg/utils"
 )
 
@@ -189,10 +190,25 @@ func (bus *BottomUpSyncer) setupControllers() error {
 		return fmt.Errorf("failed to setup resource leasing policy controller: %w", err)
 	}
 
+	// Setup HostPort Node Controller
+	hostPortReconciler := &hostport.HostPortNodeReconciler{
+		PhysicalClient:     bus.physicalManager.GetClient(),
+		VirtualClient:      bus.virtualManager.GetClient(),
+		Scheme:             bus.Scheme,
+		ClusterBindingName: bus.ClusterBinding.Name,
+		ClusterBinding:     bus.ClusterBinding,
+		Log:                bus.Log.WithName("hostport-node-controller"),
+	}
+
+	if err := hostPortReconciler.SetupWithManager(bus.physicalManager, bus.virtualManager); err != nil {
+		return fmt.Errorf("failed to setup hostport node controller: %w", err)
+	}
+
 	bus.Log.Info("Controllers setup completed",
 		"csiNodeController", "enabled",
 		"nodeController", "enabled",
 		"podController", "enabled",
-		"policyController", "enabled")
+		"policyController", "enabled",
+		"hostPortController", "enabled")
 	return nil
 }

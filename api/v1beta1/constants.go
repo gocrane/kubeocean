@@ -42,6 +42,7 @@ const (
 	LabelPhysicalNodeName  = "kubeocean.io/physical-node-name"
 	LabelPhysicalNodeUID   = "kubeocean.io/physical-node-uid"
 	LabelPolicyApplied     = "kubeocean.io/policy-applied"
+	LabelHostPortFakePod   = "kubeocean.io/hostport-fake-pod"
 	LabelValueTrue         = "true"
 
 	// Resource mapping labels

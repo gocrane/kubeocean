@@ -28,6 +28,7 @@ func IsSystemPod(pod *corev1.Pod) bool {
 		"kube-public",
 		"kube-node-lease",
 		"kubeocean-system",
+		"kubeocean-fake",
 	}
 
 	for _, ns := range systemNamespaces {

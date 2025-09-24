@@ -397,9 +397,19 @@ func (r *ClusterBindingReconciler) checkAndCleanVirtualResources(ctx context.Con
 
 	var allResourceNames []string
 
+	// Check and clean fake pods for hostport
+	fakePodNames, err := r.checkAndCleanFakePods(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to check and clean fake pods: %w", err)
+	}
+	if len(fakePodNames) > 0 {
+		r.Log.Info("Found fake pods for hostport", "count", len(fakePodNames))
+		allResourceNames = append(allResourceNames, fmt.Sprintf("fake pods: [%s]", strings.Join(fakePodNames, ", ")))
+	}
+
 	// Check and clean ConfigMaps
 	var configMapList corev1.ConfigMapList
-	err := r.List(ctx, &configMapList, client.MatchingLabelsSelector{Selector: labelSelector})
+	err = r.List(ctx, &configMapList, client.MatchingLabelsSelector{Selector: labelSelector})
 	if err != nil {
 		return "", fmt.Errorf("failed to list configmaps: %w", err)
 	}
@@ -491,6 +501,38 @@ func (r *ClusterBindingReconciler) checkAndCleanVirtualResources(ctx context.Con
 	}
 
 	return "", nil
+}
+
+// checkAndCleanFakePods checks and cleans fake pods for hostport in virtual cluster
+func (r *ClusterBindingReconciler) checkAndCleanFakePods(ctx context.Context) ([]string, error) {
+	// List all fake pods for hostport with kubeocean labels
+	var podList corev1.PodList
+	labelSelector := labels.SelectorFromSet(map[string]string{
+		cloudv1beta1.LabelHostPortFakePod: cloudv1beta1.LabelValueTrue,
+		cloudv1beta1.LabelManagedBy:       cloudv1beta1.LabelManagedByValue,
+	})
+
+	err := r.List(ctx, &podList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list fake pods for hostport: %w", err)
+	}
+
+	fakePodNames := make([]string, 0, len(podList.Items))
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		fakePodNames = append(fakePodNames, pod.Name)
+
+		r.Log.Info("Deleting fake pod for hostport", "pod", pod.Name, "namespace", pod.Namespace)
+
+		// Delete fake pod with grace period 0 for immediate deletion
+		if err := r.Delete(ctx, pod, &client.DeleteOptions{
+			GracePeriodSeconds: &[]int64{0}[0],
+		}); err != nil && !errors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to delete fake pod %s: %w", pod.Name, err)
+		}
+	}
+
+	return fakePodNames, nil
 }
 
 // checkPhysicalResourcesExist checks if any kubeocean-managed resources exist in physical cluster
