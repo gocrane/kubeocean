@@ -6743,7 +6743,7 @@ func TestEnsureDefaultPriorityClass(t *testing.T) {
 						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 					},
 				},
-				Value:            0,
+				Value:            cloudv1beta1.DefaultPriorityClassValue,
 				PreemptionPolicy: ptr.To(corev1.PreemptLowerPriority),
 				Description:      "Default PriorityClass for Kubeocean physical pods",
 			},
@@ -6793,7 +6793,7 @@ func TestEnsureDefaultPriorityClass(t *testing.T) {
 			err = fakeClient.Get(context.Background(), client.ObjectKey{Name: cloudv1beta1.DefaultPriorityClassName}, priorityClass)
 			assert.NoError(t, err)
 			assert.Equal(t, cloudv1beta1.DefaultPriorityClassName, priorityClass.Name)
-			assert.Equal(t, int32(0), priorityClass.Value)
+			assert.Equal(t, cloudv1beta1.DefaultPriorityClassValue, priorityClass.Value)
 			assert.Equal(t, corev1.PreemptLowerPriority, *priorityClass.PreemptionPolicy)
 			assert.Equal(t, "Default PriorityClass for Kubeocean physical pods", priorityClass.Description)
 			assert.Contains(t, priorityClass.Labels, cloudv1beta1.LabelManagedBy)

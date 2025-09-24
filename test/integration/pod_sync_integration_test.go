@@ -142,13 +142,13 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			// Verify PriorityClass is set to default
 			ginkgo.By("Verifying physical pod has default PriorityClass")
 			gomega.Expect(physicalPod.Spec.PriorityClassName).To(gomega.Equal(cloudv1beta1.DefaultPriorityClassName))
-			gomega.Expect(physicalPod.Spec.Priority).To(gomega.HaveValue(gomega.Equal(int32(0))))
+			gomega.Expect(physicalPod.Spec.Priority).To(gomega.HaveValue(gomega.Equal(cloudv1beta1.DefaultPriorityClassValue)))
 
 			// Verify that the default PriorityClass exists
 			ginkgo.By("Verifying default PriorityClass exists")
 			defaultPriorityClass := &schedulingv1.PriorityClass{}
 			gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: cloudv1beta1.DefaultPriorityClassName}, defaultPriorityClass)).To(gomega.Succeed())
-			gomega.Expect(defaultPriorityClass.Value).To(gomega.Equal(int32(0)))
+			gomega.Expect(defaultPriorityClass.Value).To(gomega.Equal(cloudv1beta1.DefaultPriorityClassValue))
 			gomega.Expect(*defaultPriorityClass.PreemptionPolicy).To(gomega.Equal(corev1.PreemptLowerPriority))
 
 			ginkgo.By("Verifying physical pod is created")

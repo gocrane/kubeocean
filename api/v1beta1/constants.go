@@ -66,6 +66,8 @@ const (
 
 	// PriorityClass
 	DefaultPriorityClassName = "kubeocean-default"
+	// Default priority class value
+	DefaultPriorityClassValue int32 = -10000
 )
 
 // GetClusterBindingDeletingAnnotation returns the cluster-specific deleting annotation key

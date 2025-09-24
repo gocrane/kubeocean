@@ -2180,7 +2180,7 @@ func (r *VirtualPodReconciler) ensureDefaultPriorityClass(ctx context.Context) e
 				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
 			},
 		},
-		Value:            0,
+		Value:            cloudv1beta1.DefaultPriorityClassValue,
 		PreemptionPolicy: ptr.To(corev1.PreemptLowerPriority),
 		Description:      "Default PriorityClass for Kubeocean physical pods",
 	}
