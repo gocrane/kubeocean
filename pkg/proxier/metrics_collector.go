@@ -629,11 +629,11 @@ func (mc *MetricsCollector) writeRealMetrics(w http.ResponseWriter, port string)
 		"lastUpdate", lastUpdate)
 
 	if !exists || len(metricsData) == 0 {
-		// If no cached data, return error information
+		// If no cached data, return empty metrics with 200 status
 		mc.log.V(1).Info("No metrics data available for port", "port", port)
-		w.WriteHeader(http.StatusServiceUnavailable)
+		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "# No metrics data available for port %s\n", port)
-		fmt.Fprintf(w, "# This may indicate that metrics collection is still in progress\n")
+		fmt.Fprintf(w, "# This may indicate that metrics collection is still in progress or there is no metrics data available\n")
 		return
 	}
 
