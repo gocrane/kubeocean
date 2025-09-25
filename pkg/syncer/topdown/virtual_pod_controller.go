@@ -214,9 +214,13 @@ func (r *VirtualPodReconciler) shouldCreatePhysicalPod(virtualPod *corev1.Pod) b
 	if utils.IsSystemPod(virtualPod) {
 		return false
 	}
-	// Only sync pods that are not managed by DaemonSet
+	// Skip DaemonSet pods unless they have the running annotation
 	if isDaemonSetPod(virtualPod) {
-		return false
+		// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
+		if virtualPod.Annotations == nil || virtualPod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
+			return false
+		}
+		// Allow DaemonSet pods with the running annotation to be synced
 	}
 	if virtualPod.Labels[cloudv1beta1.LabelHostPortFakePod] == cloudv1beta1.LabelValueTrue {
 		return false
@@ -1121,9 +1125,13 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 			if utils.IsSystemPod(pod) {
 				return false
 			}
-			// Only sync pods that are not managed by DaemonSet
+			// Skip DaemonSet pods unless they have the running annotation
 			if isDaemonSetPod(pod) {
-				return false
+				// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
+				if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
+					return false
+				}
+				// Allow DaemonSet pods with the running annotation to be synced
 			}
 			return true
 		})).

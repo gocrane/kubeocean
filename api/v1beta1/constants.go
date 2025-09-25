@@ -64,6 +64,9 @@ const (
 	LabelManagedByClusterIDPrefix = "kubeocean.io/synced-by-"
 	FinalizerClusterIDPrefix      = "kubeocean.io/finalizer-"
 
+	// DaemonSet running annotation
+	AnnotationRunningDaemonSet = "kubeocean.io/running-daemonset"
+
 	// PriorityClass
 	DefaultPriorityClassName = "kubeocean-default"
 	// Default priority class value

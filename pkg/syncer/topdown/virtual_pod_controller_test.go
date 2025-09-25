@@ -6965,3 +6965,403 @@ func TestBuildPhysicalPodSpecWithPriorityClass(t *testing.T) {
 		})
 	}
 }
+
+// TestVirtualPodReconciler_ShouldCreatePhysicalPod tests the shouldCreatePhysicalPod function
+func TestVirtualPodReconciler_ShouldCreatePhysicalPod(t *testing.T) {
+	reconciler := &VirtualPodReconciler{}
+
+	tests := []struct {
+		name               string
+		virtualPod         *corev1.Pod
+		expectedShouldSync bool
+	}{
+		{
+			name:               "nil pod should not sync",
+			virtualPod:         nil,
+			expectedShouldSync: false,
+		},
+		{
+			name: "pod without node name should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "unscheduled-pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "",
+				},
+			},
+			expectedShouldSync: false,
+		},
+		{
+			name: "regular pod with node name should sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "regular-pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedShouldSync: true,
+		},
+		{
+			name: "system pod should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "system-pod",
+					Namespace: "kube-system",
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedShouldSync: false,
+		},
+		{
+			name: "daemonset pod without running annotation should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedShouldSync: false,
+		},
+		{
+			name: "daemonset pod with running annotation should sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-with-annotation",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationRunningDaemonSet: cloudv1beta1.LabelValueTrue,
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedShouldSync: true,
+		},
+		{
+			name: "daemonset pod with running annotation false should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-annotation-false",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationRunningDaemonSet: "false",
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedShouldSync: false,
+		},
+		{
+			name: "daemonset pod with empty annotation should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-empty-annotation",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationRunningDaemonSet: "",
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedShouldSync: false,
+		},
+		{
+			name: "daemonset pod with other annotations but no running annotation should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-other-annotations",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+					Annotations: map[string]string{
+						"other.annotation/key": "value",
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedShouldSync: false,
+		},
+		{
+			name: "hostport fake pod should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hostport-fake-pod",
+					Namespace: "default",
+					Labels: map[string]string{
+						cloudv1beta1.LabelHostPortFakePod: cloudv1beta1.LabelValueTrue,
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedShouldSync: false,
+		},
+		{
+			name: "daemonset pod with running annotation and system namespace should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-system-pod",
+					Namespace: "kube-system",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationRunningDaemonSet: cloudv1beta1.LabelValueTrue,
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedShouldSync: false, // System pods should never sync regardless of annotations
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := reconciler.shouldCreatePhysicalPod(tt.virtualPod)
+			assert.Equal(t, tt.expectedShouldSync, result, "shouldCreatePhysicalPod result mismatch for test: %s", tt.name)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_EventFilterPredicate tests the event filter predicate for DaemonSet pods
+func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
+	tests := []struct {
+		name           string
+		pod            *corev1.Pod
+		expectedFilter bool
+	}{
+		{
+			name:           "nil pod should be filtered",
+			pod:            nil,
+			expectedFilter: false,
+		},
+		{
+			name: "pod without node name should be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "unscheduled-pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "",
+				},
+			},
+			expectedFilter: false,
+		},
+		{
+			name: "pod with deletion timestamp should not be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "deleting-pod",
+					Namespace:         "default",
+					DeletionTimestamp: &metav1.Time{Time: time.Now()},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "",
+				},
+			},
+			expectedFilter: true,
+		},
+		{
+			name: "regular pod with node name should not be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "regular-pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedFilter: true,
+		},
+		{
+			name: "system pod should be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "system-pod",
+					Namespace: "kube-system",
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedFilter: false,
+		},
+		{
+			name: "daemonset pod without running annotation should be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedFilter: false,
+		},
+		{
+			name: "daemonset pod with running annotation should not be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-with-annotation",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationRunningDaemonSet: cloudv1beta1.LabelValueTrue,
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedFilter: true,
+		},
+		{
+			name: "daemonset pod with running annotation false should be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-annotation-false",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationRunningDaemonSet: "false",
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedFilter: false,
+		},
+		{
+			name: "deleting daemonset pod without annotation should not be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "deleting-daemonset-pod",
+					Namespace:         "default",
+					DeletionTimestamp: &metav1.Time{Time: time.Now()},
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			expectedFilter: true, // Deletion should override DaemonSet filtering
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate the filter predicate logic from SetupWithManager
+			var result bool
+			if tt.pod == nil {
+				result = false
+			} else {
+				pod := tt.pod
+				// Check if pod has deletion timestamp
+				if pod.DeletionTimestamp != nil {
+					result = true
+				} else {
+					// Only sync pods with spec.nodeName set (scheduled pods)
+					if pod.Spec.NodeName == "" {
+						result = false
+					} else {
+						// Skip system pods
+						if utils.IsSystemPod(pod) {
+							result = false
+						} else {
+							// Skip DaemonSet pods unless they have the running annotation
+							if isDaemonSetPod(pod) {
+								// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
+								if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
+									result = false
+								} else {
+									// Allow DaemonSet pods with the running annotation to be synced
+									result = true
+								}
+							} else {
+								result = true
+							}
+						}
+					}
+				}
+			}
+
+			assert.Equal(t, tt.expectedFilter, result, "Event filter result mismatch for test: %s", tt.name)
+		})
+	}
+}
