@@ -411,7 +411,7 @@ func (r *ProxierWatchController) verifyVNodeIPUpdateWithRetry(ctx context.Contex
 	return false
 }
 
-// updateVNodeIPWithRetry updates VNode IP using Update mechanism with retry
+// updateVNodeIPWithRetry updates VNode IP using Status().Update() mechanism with retry
 func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log logr.Logger, vNodeName, newIP, oldIP string) error {
 	const maxRetries = 3
 	const baseDelay = 100 * time.Millisecond
@@ -460,14 +460,14 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 				"attempt", attempt+1)
 		}
 
-		// Apply the update
-		log.V(1).Info("Applying VNode IP update",
+		// Apply the status update
+		log.V(1).Info("Applying VNode status update",
 			"vNodeName", vNodeName,
 			"oldIP", currentIP,
 			"newIP", newIP,
 			"attempt", attempt+1)
 
-		err = r.VirtualClient.Update(ctx, updatedNode)
+		err = r.VirtualClient.Status().Update(ctx, updatedNode)
 		if err != nil {
 			// Check if it's a conflict error (ResourceVersion mismatch)
 			if isConflictError(err) {
@@ -480,14 +480,14 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 
 			// Check if it's a forbidden error (permission issue)
 			if isForbiddenError(err) {
-				log.Error(err, "VNode update forbidden, likely permission issue",
+				log.Error(err, "VNode status update forbidden, likely permission issue",
 					"vNodeName", vNodeName,
 					"attempt", attempt+1)
-				return fmt.Errorf("VNode update forbidden: %w", err)
+				return fmt.Errorf("VNode status update forbidden: %w", err)
 			}
 
 			// Other errors
-			log.Error(err, "Failed to update VNode",
+			log.Error(err, "Failed to update VNode status",
 				"vNodeName", vNodeName,
 				"attempt", attempt+1)
 			if attempt == maxRetries-1 {
@@ -496,8 +496,8 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 			continue
 		}
 
-		// Update successful
-		log.Info("VNode IP update successful",
+		// Status update successful
+		log.Info("VNode status update successful",
 			"vNodeName", vNodeName,
 			"oldIP", currentIP,
 			"newIP", newIP,
