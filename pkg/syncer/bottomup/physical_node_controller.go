@@ -1065,7 +1065,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		}
 
 		newNode.Annotations = virtualNode.Annotations
-		newNode.Status.Addresses = virtualNode.Status.Addresses
+		newNode.Status.Addresses = existingNode.Status.Addresses
 
 		// Ensure finalizer exists
 		if !controllerutil.ContainsFinalizer(newNode, cloudv1beta1.VirtualNodeFinalizer) {

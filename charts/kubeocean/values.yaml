@@ -188,7 +188,7 @@ proxier:
     tag: latest
     pullPolicy: IfNotPresent
   # Default replica count for proxier instances
-  replicas: 1
+  replicas: 2
   # Listen port for kubelet API requests
   listenPort: 10250
   # Resources

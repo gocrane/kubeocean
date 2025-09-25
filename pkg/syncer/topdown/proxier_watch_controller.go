@@ -123,6 +123,13 @@ func (r *ProxierWatchController) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
+	// Check if current IP belongs to any running Proxier pod
+	if currentIP != "" && r.isCurrentIPValidProxierPod(ctx, currentIP) {
+		log.V(1).Info("Current IP belongs to a running Proxier pod, no update needed",
+			"currentIP", currentIP, "newIP", newIP)
+		return ctrl.Result{}, nil
+	}
+
 	// Update the current IP and handle the change
 	r.ipMutex.Lock()
 	r.currentProxierIP = newIP
@@ -548,6 +555,39 @@ func isForbiddenError(err error) bool {
 	return strings.Contains(errStr, "forbidden") ||
 		strings.Contains(errStr, "403") ||
 		strings.Contains(errStr, "permission")
+}
+
+// isCurrentIPValidProxierPod checks if the current IP belongs to any running Proxier pod
+func (r *ProxierWatchController) isCurrentIPValidProxierPod(ctx context.Context, currentIP string) bool {
+	// List all Proxier pods for this cluster binding
+	podList := &corev1.PodList{}
+	err := r.VirtualClient.List(ctx, podList, client.MatchingLabels{
+		ProxierComponentLabel: ProxierComponentValue,
+		ProxierNameLabel:      ProxierNameValue,
+		ProxierManagedByLabel: ProxierManagedByValue,
+		ProxierInstanceLabel:  r.ClusterBinding.Name,
+	})
+
+	if err != nil {
+		r.Log.Error(err, "Failed to list Proxier pods for IP validation")
+		return false
+	}
+
+	// Check if any running Proxier pod has the current IP
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP == currentIP {
+			r.Log.V(1).Info("Found running Proxier pod with current IP",
+				"podName", pod.Name,
+				"podIP", pod.Status.PodIP,
+				"phase", pod.Status.Phase)
+			return true
+		}
+	}
+
+	r.Log.V(1).Info("No running Proxier pod found with current IP",
+		"currentIP", currentIP,
+		"totalPods", len(podList.Items))
+	return false
 }
 
 // getAllAddresses returns all addresses as a string for debugging
