@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/utils"
 )
 
 const (
@@ -37,8 +38,6 @@ const (
 	FakeContainerImage = "busybox:1.28"
 	// PriorityClassName for fake pods
 	SystemNodeCriticalPriorityClass = "system-node-critical"
-	// Virtual node name prefix
-	VirtualNodePrefix = "vnode"
 )
 
 // HostPortNodeReconciler monitors physical nodes and manages fake pods for hostPort synchronization
@@ -319,10 +318,9 @@ func (r *HostPortNodeReconciler) isKubeoceanManagedPod(pod *corev1.Pod) bool {
 }
 
 // generateVirtualNodeName generates virtual node name from physical node name
-// Format: vnode-{cluster-id}-{node-name}
 func (r *HostPortNodeReconciler) generateVirtualNodeName(physicalNodeName string) string {
 	clusterID := r.getClusterID()
-	return fmt.Sprintf("%s-%s-%s", VirtualNodePrefix, clusterID, physicalNodeName)
+	return utils.GenerateVirtualNodeName(clusterID, physicalNodeName)
 }
 
 // getClusterID returns the cluster ID from cluster binding

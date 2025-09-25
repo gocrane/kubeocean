@@ -784,19 +784,51 @@ func TestPhysicalNodeReconciler_GetClusterID(t *testing.T) {
 }
 
 func TestPhysicalNodeReconciler_GenerateVirtualNodeName(t *testing.T) {
-	reconciler := &PhysicalNodeReconciler{
-		ClusterBinding: &cloudv1beta1.ClusterBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-cluster"},
-			Spec: cloudv1beta1.ClusterBindingSpec{
-				ClusterID: "cluster-123",
-			},
+	tests := []struct {
+		name         string
+		clusterID    string
+		physicalName string
+		expected     string
+	}{
+		{
+			name:         "short name",
+			clusterID:    "cluster-123",
+			physicalName: "worker-node-1",
+			expected:     "vnode-cluster-123-worker-node-1",
 		},
-		Log: ctrl.Log.WithName("test"),
+		{
+			name:         "long name requiring truncation",
+			clusterID:    "very-long-cluster-id-that-should-cause-truncation",
+			physicalName: "very-long-physical-node-name-that-will-definitely-exceed-sixty-four-characters-limit",
+			expected:     "vnode-very-long-cluster-id-tha-0d77ac9fd5142be6567a453da8cde000",
+		},
+		{
+			name:         "edge case - exactly 63 chars",
+			clusterID:    "test",
+			physicalName: "node-12345678901234567890123456789012345678901234567",
+			expected:     "vnode-test-node-12345678901234567890123456789012345678901234567",
+		},
 	}
 
-	result := reconciler.generateVirtualNodeName("worker-node-1")
-	expected := "vnode-cluster-123-worker-node-1"
-	assert.Equal(t, expected, result)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &PhysicalNodeReconciler{
+				ClusterBinding: &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-cluster"},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID: tt.clusterID,
+					},
+				},
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			result := reconciler.generateVirtualNodeName(tt.physicalName)
+			assert.Equal(t, tt.expected, result)
+
+			// Ensure result length is valid for Kubernetes node names
+			assert.True(t, len(result) <= 63, "Node name should not exceed 63 characters, got %d", len(result))
+		})
+	}
 }
 
 func TestPhysicalNodeReconciler_GetBaseResources(t *testing.T) {

@@ -1325,7 +1325,7 @@ func (r *PhysicalNodeReconciler) copyTaints(original []corev1.Taint) []corev1.Ta
 
 // generateVirtualNodeName generates a virtual node name based on physical node
 func (r *PhysicalNodeReconciler) generateVirtualNodeName(physicalNodeName string) string {
-	return GenerateVirtualNodeName(r.getClusterID(), physicalNodeName)
+	return utils.GenerateVirtualNodeName(r.getClusterID(), physicalNodeName)
 }
 
 // getClusterID returns a cluster identifier for the physical cluster
