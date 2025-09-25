@@ -47,4 +47,10 @@ rules:
 - apiGroups: ["cls.cloud.tencent.com"]
   resources: ["logconfigs/status"]
   verbs: ["get", "patch", "update"]
+- apiGroups: ["scheduling.k8s.io"]
+  resources: ["priorityclasses"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: [""]
+  resources: ["nodes/metrics", "nodes/stats", "nodes/spec"]
+  verbs: ["get"]
 {{- end }}
