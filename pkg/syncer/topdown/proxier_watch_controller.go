@@ -18,13 +18,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -272,36 +272,14 @@ func (r *ProxierWatchController) updateVNodeIP(ctx context.Context, log logr.Log
 		return nil
 	}
 
-	// Create a patch to update the InternalIP
-	patch := r.createVNodeIPPatch(vNode, newProxierIP)
-	log.V(1).Info("Created patch for VNode",
-		"vNodeName", vNode.Name,
-		"patch", string(patch))
-
-	// Apply the patch
-	log.Info("Applying patch to VNode",
-		"vNodeName", vNode.Name,
-		"oldIP", currentIP,
-		"newIP", newProxierIP)
-
-	err := r.VirtualClient.Patch(ctx, vNode, client.RawPatch(types.JSONPatchType, patch))
+	// Update VNode using Update mechanism with retry
+	err := r.updateVNodeIPWithRetry(ctx, log, vNode.Name, newProxierIP, currentIP)
 	if err != nil {
-		log.Error(err, "Failed to patch VNode",
+		log.Error(err, "Failed to update VNode IP after all retries",
 			"vNodeName", vNode.Name,
-			"patch", string(patch))
-		return fmt.Errorf("failed to patch VNode %s: %w", vNode.Name, err)
-	}
-
-	// Wait a moment for the patch to be processed
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify the update with retry mechanism
-	verified := r.verifyVNodeIPUpdateWithRetry(ctx, log, vNode.Name, newProxierIP, currentIP)
-	if !verified {
-		log.Info("VNode IP update verification failed after all retries",
-			"vNodeName", vNode.Name,
-			"expectedIP", newProxierIP,
-			"note", "The update may still be in progress or failed")
+			"oldIP", currentIP,
+			"newIP", newProxierIP)
+		return fmt.Errorf("failed to update VNode %s: %w", vNode.Name, err)
 	}
 
 	log.Info("Updated VNode IP",
@@ -431,6 +409,145 @@ func (r *ProxierWatchController) verifyVNodeIPUpdateWithRetry(ctx context.Contex
 	}
 
 	return false
+}
+
+// updateVNodeIPWithRetry updates VNode IP using Update mechanism with retry
+func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log logr.Logger, vNodeName, newIP, oldIP string) error {
+	const maxRetries = 3
+	const baseDelay = 100 * time.Millisecond
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Calculate delay with exponential backoff
+		delay := baseDelay * time.Duration(1<<attempt) // 100ms, 200ms, 400ms
+		if attempt > 0 {
+			log.V(1).Info("Retrying VNode IP update",
+				"vNodeName", vNodeName,
+				"attempt", attempt+1,
+				"maxRetries", maxRetries,
+				"delay", delay)
+			time.Sleep(delay)
+		}
+
+		// Get the latest VNode object
+		updatedNode := &corev1.Node{}
+		err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: vNodeName}, updatedNode)
+		if err != nil {
+			log.Error(err, "Failed to fetch VNode for update",
+				"vNodeName", vNodeName,
+				"attempt", attempt+1)
+			if attempt == maxRetries-1 {
+				return fmt.Errorf("failed to fetch VNode after %d attempts: %w", maxRetries, err)
+			}
+			continue
+		}
+
+		// Check if IP is already correct
+		currentIP := r.getVNodeInternalIP(updatedNode)
+		if currentIP == newIP {
+			log.V(1).Info("VNode IP is already correct, no update needed",
+				"vNodeName", vNodeName,
+				"currentIP", currentIP,
+				"attempt", attempt+1)
+			return nil
+		}
+
+		// Update the InternalIP
+		updated := r.updateVNodeInternalIP(updatedNode, newIP)
+		if !updated {
+			log.V(1).Info("No InternalIP found to update, adding new one",
+				"vNodeName", vNodeName,
+				"newIP", newIP,
+				"attempt", attempt+1)
+		}
+
+		// Apply the update
+		log.V(1).Info("Applying VNode IP update",
+			"vNodeName", vNodeName,
+			"oldIP", currentIP,
+			"newIP", newIP,
+			"attempt", attempt+1)
+
+		err = r.VirtualClient.Update(ctx, updatedNode)
+		if err != nil {
+			// Check if it's a conflict error (ResourceVersion mismatch)
+			if isConflictError(err) {
+				log.V(1).Info("VNode update conflict, will retry with latest version",
+					"vNodeName", vNodeName,
+					"attempt", attempt+1,
+					"error", err.Error())
+				continue
+			}
+
+			// Check if it's a forbidden error (permission issue)
+			if isForbiddenError(err) {
+				log.Error(err, "VNode update forbidden, likely permission issue",
+					"vNodeName", vNodeName,
+					"attempt", attempt+1)
+				return fmt.Errorf("VNode update forbidden: %w", err)
+			}
+
+			// Other errors
+			log.Error(err, "Failed to update VNode",
+				"vNodeName", vNodeName,
+				"attempt", attempt+1)
+			if attempt == maxRetries-1 {
+				return fmt.Errorf("failed to update VNode after %d attempts: %w", maxRetries, err)
+			}
+			continue
+		}
+
+		// Update successful
+		log.Info("VNode IP update successful",
+			"vNodeName", vNodeName,
+			"oldIP", currentIP,
+			"newIP", newIP,
+			"attempts", attempt+1)
+		return nil
+	}
+
+	return fmt.Errorf("failed to update VNode after %d attempts", maxRetries)
+}
+
+// updateVNodeInternalIP updates the InternalIP in the VNode object
+func (r *ProxierWatchController) updateVNodeInternalIP(vNode *corev1.Node, newIP string) bool {
+	// Find and update existing InternalIP
+	for i, addr := range vNode.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP {
+			vNode.Status.Addresses[i].Address = newIP
+			return true
+		}
+	}
+
+	// If no InternalIP found, add it
+	vNode.Status.Addresses = append(vNode.Status.Addresses, corev1.NodeAddress{
+		Type:    corev1.NodeInternalIP,
+		Address: newIP,
+	})
+	return false
+}
+
+// isConflictError checks if the error is a conflict error
+func isConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check for common conflict error patterns
+	errStr := err.Error()
+	return strings.Contains(errStr, "conflict") ||
+		strings.Contains(errStr, "ResourceVersion") ||
+		strings.Contains(errStr, "409")
+}
+
+// isForbiddenError checks if the error is a forbidden error
+func isForbiddenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check for common forbidden error patterns
+	errStr := err.Error()
+	return strings.Contains(errStr, "forbidden") ||
+		strings.Contains(errStr, "403") ||
+		strings.Contains(errStr, "permission")
 }
 
 // getAllAddresses returns all addresses as a string for debugging
