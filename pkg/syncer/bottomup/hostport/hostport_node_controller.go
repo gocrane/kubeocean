@@ -178,18 +178,22 @@ func (r *HostPortNodeReconciler) SetupWithManager(physicalManager ctrl.Manager, 
 			node, ok := e.Object.(*corev1.Node)
 			if !ok {
 				// invalid node means the object may be the pod object
-				return true
+				_, ok2 := e.Object.(*corev1.Pod)
+				return ok2
 			}
 			return r.hasAppliedPolicyLabel(node)
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldNode, ok := e.ObjectOld.(*corev1.Node)
 			if !ok {
-				return true
+				// invalid node means the object may be the pod object
+				_, ok2 := e.ObjectOld.(*corev1.Pod)
+				return ok2
 			}
 			newNode, ok := e.ObjectNew.(*corev1.Node)
 			if !ok {
-				return true
+				_, ok2 := e.ObjectNew.(*corev1.Pod)
+				return ok2
 			}
 
 			return oldNode.Labels[cloudv1beta1.LabelPolicyApplied] != newNode.Labels[cloudv1beta1.LabelPolicyApplied]
@@ -197,7 +201,8 @@ func (r *HostPortNodeReconciler) SetupWithManager(physicalManager ctrl.Manager, 
 		DeleteFunc: func(e event.DeleteEvent) bool {
 			node, ok := e.Object.(*corev1.Node)
 			if !ok {
-				return true
+				_, ok2 := e.Object.(*corev1.Pod)
+				return ok2
 			}
 			return r.hasAppliedPolicyLabel(node)
 		},

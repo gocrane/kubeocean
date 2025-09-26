@@ -1671,8 +1671,8 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 			node, ok := obj.(*corev1.Node)
 			if !ok {
 				// invalid node means the object may be the pod object
-				// r.Log.V(1).Info("Skipping node with invalid type, may be the pod object", "node", obj.GetName())
-				return true
+				_, ok2 := obj.(*corev1.Pod)
+				return ok2
 			}
 			return r.shouldProcessNode(node)
 		})).
