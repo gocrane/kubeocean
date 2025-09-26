@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/proxier"
@@ -185,6 +186,10 @@ func main() {
 	// Create physical cluster manager for POD controller
 	physicalManager, err := ctrl.NewManager(physicalConfig, ctrl.Options{
 		Scheme: scheme,
+		Metrics: server.Options{
+			BindAddress: "0", // 禁用 metrics 服务器
+		},
+		HealthProbeBindAddress: "0", // 禁用 health check 服务器
 		// Watch all pods with specific labels in physical cluster
 		Cache: cache.Options{
 			ByObject: map[client.Object]cache.ByObject{
@@ -362,6 +367,10 @@ func main() {
 	// Create virtual cluster manager for Node controller
 	virtualManager, err := ctrl.NewManager(virtualConfig, ctrl.Options{
 		Scheme: scheme,
+		Metrics: server.Options{
+			BindAddress: "0", // 禁用 metrics 服务器
+		},
+		HealthProbeBindAddress: "0", // 禁用 health check 服务器
 		// Only watch Node resources with specific labels
 		Cache: cache.Options{
 			ByObject: map[client.Object]cache.ByObject{
