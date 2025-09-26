@@ -100,6 +100,28 @@ func (cm *CertificateManager) createTLSSecretWithAutoApproval(ctx context.Contex
 	// Create TLS Secret
 	secret, err := cm.createTLSSecret(ctx, secretName, certificate, privateKey)
 	if err != nil {
+		// Handle race condition: if secret already exists, try to get it
+		if errors.IsAlreadyExists(err) {
+			cm.log.Info("Secret already exists (race condition detected), attempting to get existing secret",
+				"secretName", secretName,
+				"error", err.Error())
+
+			// Try to get the existing secret
+			existingSecret, getErr := cm.getExistingSecret(ctx, secretName)
+			if getErr != nil {
+				cm.log.Error(getErr, "Failed to get existing secret after race condition",
+					"secretName", secretName,
+					"createError", err.Error())
+				return nil, fmt.Errorf("failed to create TLS secret and failed to get existing secret: create error=%w, get error=%w", err, getErr)
+			}
+
+			cm.log.Info("Successfully retrieved existing TLS secret (race condition resolved)",
+				"secretName", secretName,
+				"secretNamespace", existingSecret.Namespace)
+			return existingSecret, nil
+		}
+
+		cm.log.Error(err, "Failed to create TLS secret", "secretName", secretName)
 		return nil, fmt.Errorf("failed to create TLS secret: %w", err)
 	}
 
