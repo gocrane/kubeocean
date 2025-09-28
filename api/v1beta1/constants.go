@@ -22,6 +22,7 @@ const (
 	AnnotationLastSyncTime     = "kubeocean.io/last-sync-time"
 	AnnotationPoliciesApplied  = "kubeocean.io/policies-applied"
 	AnnotationExpectedMetadata = "kubeocean.io/expected-metadata"
+	AnnotationPrometheusURL    = "kubeocean.io/prometheus-url"
 
 	// Finalizers
 	VirtualPodFinalizer            = "kubeocean.io/virtual-pod"
@@ -38,15 +39,16 @@ const (
 
 	// Node and CSINode labels
 
-	LabelClusterBinding        = "kubeocean.io/cluster-binding"
-	LabelPhysicalClusterID     = "kubeocean.io/physical-cluster-id"
-	LabelPhysicalNodeName      = "kubeocean.io/physical-node-name"
-	LabelPhysicalNodeUID       = "kubeocean.io/physical-node-uid"
-	LabelPhysicalNodeInnerIP   = "kubeocean.io/physical-node-innerip"
-	LabelProxierPort           = "kubeocean.io/proxier_port"
-	LabelPolicyApplied     = "kubeocean.io/policy-applied"
-	LabelHostPortFakePod   = "kubeocean.io/hostport-fake-pod"
-	LabelValueTrue             = "true"
+	LabelClusterBinding      = "kubeocean.io/cluster-binding"
+	LabelPhysicalClusterID   = "kubeocean.io/physical-cluster-id"
+	LabelPhysicalNodeName    = "kubeocean.io/physical-node-name"
+	LabelPhysicalNodeUID     = "kubeocean.io/physical-node-uid"
+	LabelPhysicalNodeInnerIP = "kubeocean.io/physical-node-innerip"
+	LabelProxierPort         = "kubeocean.io/proxier_port"
+	LabelPrometheusURL       = "kubeocean.io/prometheus-url"
+	LabelPolicyApplied       = "kubeocean.io/policy-applied"
+	LabelHostPortFakePod     = "kubeocean.io/hostport-fake-pod"
+	LabelValueTrue           = "true"
 
 	// Resource mapping labels
 	LabelPhysicalName = "kubeocean.io/physical-name"

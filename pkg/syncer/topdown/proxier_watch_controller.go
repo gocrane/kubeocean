@@ -499,7 +499,44 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 				"attempt", attempt+1)
 		}
 
-		// Apply the status update
+		// Check if prometheus URL annotation needs updating before modifying
+		needsAnnotationUpdate := false
+		if updatedNode.Annotations != nil {
+			if existingURL, exists := updatedNode.Annotations[cloudv1beta1.AnnotationPrometheusURL]; exists {
+				// Extract the current URL and check if it needs updating
+				if !strings.HasPrefix(existingURL, newIP+":") {
+					needsAnnotationUpdate = true
+				}
+			} else {
+				needsAnnotationUpdate = true
+			}
+		} else {
+			needsAnnotationUpdate = true
+		}
+
+		// Update prometheus URL annotation in memory only if needed
+		if needsAnnotationUpdate {
+			r.updateVNodePrometheusURL(updatedNode, newIP)
+
+			err = r.VirtualClient.Update(ctx, updatedNode)
+			if err != nil {
+				if isConflictError(err) {
+					log.V(1).Info("VNode labels update conflict, will retry",
+						"vNodeName", vNodeName,
+						"attempt", attempt+1)
+					continue
+				}
+				log.Error(err, "Failed to update VNode labels", "vNodeName", vNodeName)
+				// Continue to status update even if labels update fails
+			} else {
+				log.V(1).Info("Updated VNode prometheus URL label",
+					"vNodeName", vNodeName,
+					"newIP", newIP,
+					"attempt", attempt+1)
+			}
+		}
+
+		// Then update the status
 		log.V(1).Info("Applying VNode status update",
 			"vNodeName", vNodeName,
 			"oldIP", currentIP,
@@ -545,6 +582,31 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 	}
 
 	return fmt.Errorf("failed to update VNode after %d attempts", maxRetries)
+}
+
+// updateVNodePrometheusURL updates the prometheus URL annotation in the VNode object
+func (r *ProxierWatchController) updateVNodePrometheusURL(vNode *corev1.Node, newIP string) {
+	if vNode.Annotations == nil {
+		vNode.Annotations = make(map[string]string)
+	}
+
+	// Get proxier port from existing label
+	proxierPort, exists := vNode.Labels[cloudv1beta1.LabelProxierPort]
+	if !exists {
+		r.Log.V(1).Info("No proxier port label found on VNode, cannot update prometheus URL",
+			"vNodeName", vNode.Name)
+		return
+	}
+
+	// Format: {InternalIP}:{proxierPort}/{VNodeName}
+	prometheusURL := fmt.Sprintf("%s:%s/%s", newIP, proxierPort, vNode.Name)
+	vNode.Annotations[cloudv1beta1.AnnotationPrometheusURL] = prometheusURL
+
+	r.Log.V(1).Info("Updated prometheus URL annotation",
+		"vNodeName", vNode.Name,
+		"newIP", newIP,
+		"proxierPort", proxierPort,
+		"prometheusURL", prometheusURL)
 }
 
 // updateVNodeInternalIP updates the InternalIP in the VNode object
@@ -601,4 +663,3 @@ func (r *ProxierWatchController) getAllAddresses(vNode *corev1.Node) string {
 	}
 	return fmt.Sprintf("[%s]", fmt.Sprintf("%s", addresses))
 }
-

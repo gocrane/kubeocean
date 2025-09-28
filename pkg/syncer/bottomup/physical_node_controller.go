@@ -1510,6 +1510,9 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physica
 	proxierPort := r.generateStableProxierPort(nodeName)
 	labels[cloudv1beta1.LabelProxierPort] = proxierPort
 
+	// Prometheus URL will be added to annotations instead of labels
+	// to avoid Kubernetes label naming validation issues
+
 	r.Log.V(1).Info("Built virtual node labels", "physicalNode", physicalNode.Name, "labelCount", len(labels), "proxierPort", proxierPort)
 
 	return labels
@@ -1562,6 +1565,25 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 		annotations["kubeocean.io/policy-details"] = strings.Join(policyDetails, ";")
 	} else {
 		annotations[cloudv1beta1.AnnotationPoliciesApplied] = ""
+	}
+
+	// Add prometheus URL to annotations - format: {InternalIP}:{proxierPort}/{VNodeName}
+	// Try to get proxier pod IP, if not available, use placeholder
+	proxierPodIP := r.getProxierPodIP()
+	if proxierPodIP != "" {
+		// Generate proxier port for this node
+		virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
+		proxierPort := r.generateStableProxierPort(virtualNodeName)
+		prometheusURL := fmt.Sprintf("%s:%s/%s", proxierPodIP, proxierPort, virtualNodeName)
+		annotations[cloudv1beta1.AnnotationPrometheusURL] = prometheusURL
+		r.Log.V(1).Info("Added prometheus URL annotation", "url", prometheusURL)
+	} else {
+		// Use placeholder that will be updated when proxier pod becomes available
+		virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
+		proxierPort := r.generateStableProxierPort(virtualNodeName)
+		placeholderURL := fmt.Sprintf("<pending>:%s/%s", proxierPort, virtualNodeName)
+		annotations[cloudv1beta1.AnnotationPrometheusURL] = placeholderURL
+		r.Log.V(1).Info("Added prometheus URL placeholder", "url", placeholderURL)
 	}
 
 	r.Log.V(1).Info("Built virtual node annotations", "physicalNode", physicalNode.Name, "annotationCount", len(annotations))
@@ -2092,4 +2114,3 @@ func (r *PhysicalNodeReconciler) getProxierPodIP() string {
 	r.Log.Error(nil, "No running proxier pod found", "deploymentName", proxierDeploymentName)
 	return ""
 }
-
