@@ -62,10 +62,6 @@ type ProxierWatchController struct {
 	patchLimiter  chan struct{}
 	lastPatchTime time.Time
 	patchMutex    sync.RWMutex
-
-	// Track current Proxier IP to avoid unnecessary updates
-	currentProxierIP string
-	ipMutex          sync.RWMutex
 }
 
 // NewProxierWatchController creates a new ProxierWatchController
@@ -111,29 +107,6 @@ func (r *ProxierWatchController) Reconcile(ctx context.Context, req ctrl.Request
 			"phase", pod.Status.Phase, "podIP", pod.Status.PodIP)
 		return ctrl.Result{}, nil
 	}
-
-	// Check if IP has actually changed
-	newIP := pod.Status.PodIP
-	r.ipMutex.RLock()
-	currentIP := r.currentProxierIP
-	r.ipMutex.RUnlock()
-
-	if currentIP == newIP {
-		log.V(1).Info("Proxier pod IP has not changed, skipping update", "podIP", newIP)
-		return ctrl.Result{}, nil
-	}
-
-	// Check if current IP belongs to any running Proxier pod
-	if currentIP != "" && r.isCurrentIPValidProxierPod(ctx, currentIP) {
-		log.V(1).Info("Current IP belongs to a running Proxier pod, no update needed",
-			"currentIP", currentIP, "newIP", newIP)
-		return ctrl.Result{}, nil
-	}
-
-	// Update the current IP and handle the change
-	r.ipMutex.Lock()
-	r.currentProxierIP = newIP
-	r.ipMutex.Unlock()
 
 	// Handle Proxier pod IP change
 	return r.handleProxierPodIPChange(ctx, log, pod)
@@ -224,9 +197,31 @@ func (r *ProxierWatchController) handleProxierPodIPChange(ctx context.Context, l
 		return ctrl.Result{}, nil
 	}
 
+	// Get all running Proxier Pod IPs for this cluster binding
+	runningProxierIPs, err := r.getRunningProxierPodIPs(ctx)
+	if err != nil {
+		log.Error(err, "Failed to get running Proxier Pod IPs")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Found running Proxier Pod IPs",
+		"proxierIPs", runningProxierIPs,
+		"count", len(runningProxierIPs))
+
 	// Update VNode IPs with rate limiting between patches
 	updatedCount := 0
+	skippedCount := 0
 	for i, vNode := range vNodes {
+		// Check if VNode's current InternalIP is already a valid running Proxier Pod IP
+		currentIP := r.getVNodeInternalIP(&vNode)
+		if currentIP != "" && runningProxierIPs[currentIP] {
+			log.V(1).Info("VNode InternalIP is already a valid running Proxier Pod IP, skipping update",
+				"vNodeName", vNode.Name,
+				"currentIP", currentIP)
+			skippedCount++
+			continue
+		}
+
 		if err := r.updateVNodeIP(ctx, log, &vNode, newIP); err != nil {
 			log.Error(err, "Failed to update VNode IP", "vNodeName", vNode.Name)
 			// Continue with other VNodes even if one fails
@@ -243,9 +238,46 @@ func (r *ProxierWatchController) handleProxierPodIPChange(ctx context.Context, l
 	log.Info("VNode IP update completed",
 		"totalVNodes", len(vNodes),
 		"updatedVNodes", updatedCount,
+		"skippedVNodes", skippedCount,
 		"newProxierIP", newIP)
 
 	return ctrl.Result{}, nil
+}
+
+// getRunningProxierPodIPs gets all running Proxier Pod IPs for this cluster binding and returns them as a set
+func (r *ProxierWatchController) getRunningProxierPodIPs(ctx context.Context) (map[string]bool, error) {
+	// List all Proxier pods for this cluster binding
+	podList := &corev1.PodList{}
+	err := r.VirtualClient.List(ctx, podList, client.MatchingLabels{
+		ProxierComponentLabel: ProxierComponentValue,
+		ProxierNameLabel:      ProxierNameValue,
+		ProxierManagedByLabel: ProxierManagedByValue,
+		ProxierInstanceLabel:  r.ClusterBinding.Name,
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to list Proxier pods: %w", err)
+	}
+
+	// Create a set (map) of running Proxier Pod IPs
+	runningIPs := make(map[string]bool)
+	for _, pod := range podList.Items {
+		// Only include pods that are running and have an IP
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+			runningIPs[pod.Status.PodIP] = true
+			r.Log.V(1).Info("Found running Proxier pod",
+				"podName", pod.Name,
+				"podIP", pod.Status.PodIP,
+				"phase", pod.Status.Phase)
+		}
+	}
+
+	r.Log.V(1).Info("Collected running Proxier Pod IPs",
+		"totalPods", len(podList.Items),
+		"runningPods", len(runningIPs),
+		"runningIPs", runningIPs)
+
+	return runningIPs, nil
 }
 
 // getVNodesForClusterBinding gets all VNodes for this cluster binding
@@ -557,39 +589,6 @@ func isForbiddenError(err error) bool {
 		strings.Contains(errStr, "permission")
 }
 
-// isCurrentIPValidProxierPod checks if the current IP belongs to any running Proxier pod
-func (r *ProxierWatchController) isCurrentIPValidProxierPod(ctx context.Context, currentIP string) bool {
-	// List all Proxier pods for this cluster binding
-	podList := &corev1.PodList{}
-	err := r.VirtualClient.List(ctx, podList, client.MatchingLabels{
-		ProxierComponentLabel: ProxierComponentValue,
-		ProxierNameLabel:      ProxierNameValue,
-		ProxierManagedByLabel: ProxierManagedByValue,
-		ProxierInstanceLabel:  r.ClusterBinding.Name,
-	})
-
-	if err != nil {
-		r.Log.Error(err, "Failed to list Proxier pods for IP validation")
-		return false
-	}
-
-	// Check if any running Proxier pod has the current IP
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP == currentIP {
-			r.Log.V(1).Info("Found running Proxier pod with current IP",
-				"podName", pod.Name,
-				"podIP", pod.Status.PodIP,
-				"phase", pod.Status.Phase)
-			return true
-		}
-	}
-
-	r.Log.V(1).Info("No running Proxier pod found with current IP",
-		"currentIP", currentIP,
-		"totalPods", len(podList.Items))
-	return false
-}
-
 // getAllAddresses returns all addresses as a string for debugging
 func (r *ProxierWatchController) getAllAddresses(vNode *corev1.Node) string {
 	if len(vNode.Status.Addresses) == 0 {
@@ -602,3 +601,4 @@ func (r *ProxierWatchController) getAllAddresses(vNode *corev1.Node) string {
 	}
 	return fmt.Sprintf("[%s]", fmt.Sprintf("%s", addresses))
 }
+
