@@ -61,9 +61,6 @@ func main() {
 	var listenPort int
 	var tlsSecretName string
 	var tlsSecretNamespace string
-	var nodesFilePath string
-	var tokenFilePath string
-	var tokenRefreshInterval int
 	var metricsEnabled bool
 	var metricsCollectInterval int
 	var metricsTargetNamespace string
@@ -76,12 +73,6 @@ func main() {
 		"The name of the Kubernetes secret containing TLS certificates for HTTPS.")
 	flag.StringVar(&tlsSecretNamespace, "tls-secret-namespace", "",
 		"The namespace of the Kubernetes secret containing TLS certificates.")
-	flag.StringVar(&nodesFilePath, "nodes-file-path", "/tmp/nodes.txt",
-		"The path to the nodes.txt file for storing node information.")
-	flag.StringVar(&tokenFilePath, "token-file-path", "/tmp/token.txt",
-		"The path to the token.txt file for storing authentication token.")
-	flag.IntVar(&tokenRefreshInterval, "token-refresh-interval", 300,
-		"The interval in seconds for refreshing the authentication token.")
 	flag.BoolVar(&metricsEnabled, "metrics-enabled", true,
 		"Enable metrics collection from physical cluster nodes.")
 	flag.IntVar(&metricsCollectInterval, "metrics-collect-interval", 60,
@@ -159,22 +150,18 @@ func main() {
 	// Setup Token Manager using physical cluster config
 	tokenManager := proxier.NewTokenManager(
 		ctrl.Log.WithName("token-manager"),
-		tokenFilePath,
-		physicalClient, // Use physical cluster client
 		physicalConfig, // Use physical cluster config
 	)
 
 	// Extract and save token from physical cluster kubeconfig
-	setupLog.Info("Extracting and saving authentication token from physical cluster", "tokenFile", tokenFilePath)
+	setupLog.Info("Extracting and saving authentication token from physical cluster")
 	if err := tokenManager.ExtractAndSaveToken(ctx); err != nil {
 		setupLog.Error(err, "unable to extract and save token from physical cluster")
 		os.Exit(1)
 	}
 
-	// Start token refresh routine
-	refreshInterval := time.Duration(tokenRefreshInterval) * time.Second
-	tokenManager.StartTokenRefreshRoutine(ctx, refreshInterval)
-	setupLog.Info("Token refresh routine started", "interval", refreshInterval)
+	// Token is now saved in memory, no periodic refresh needed
+	setupLog.Info("Authentication token extracted and ready for use")
 
 	// Initialize global pod mapper
 	proxier.InitGlobalPodMapper()

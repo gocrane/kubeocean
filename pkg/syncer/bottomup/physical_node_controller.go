@@ -1349,37 +1349,25 @@ func (r *PhysicalNodeReconciler) getPhysicalNodeInternalIP(physicalNode *corev1.
 
 // generateStableProxierPort generates a stable port number for the VNode
 // This method ensures the same node name always gets the same port
-// Port range: 10000-65535 (55536 ports total)
+// Port range: 15000-65535 (50536 ports total)
+// Includes collision detection and resolution
 func (r *PhysicalNodeReconciler) generateStableProxierPort(nodeName string) string {
 	// Use a deterministic hash based on node name + cluster ID for stability
 	stableKey := nodeName + "-" + r.getClusterID()
 	hash := r.hashString(stableKey)
 
-	// Base port in range 10000-65535
-	basePort := 10000 + int(hash%55536)
+	// Base port in range 15000-65535
+	basePort := 15000 + int(hash%50536)
+
+	// Check for conflicts and resolve if necessary
+	port := r.resolvePortConflict(nodeName, basePort)
 
 	r.Log.V(2).Info("Generated stable proxier port",
 		"nodeName", nodeName,
 		"clusterID", r.getClusterID(),
 		"stableKey", stableKey,
-		"port", basePort)
-
-	return fmt.Sprintf("%d", basePort)
-}
-
-// generateProxierPort generates a unique port number for the VNode
-// Port range: 10000-65535 (55536 ports total)
-// Uses a deterministic hash based on node name to ensure consistency
-// Includes collision detection and resolution
-func (r *PhysicalNodeReconciler) generateProxierPort(nodeName string) string {
-	// Use a more robust hash function to reduce collisions
-	hash := r.hashString(nodeName)
-
-	// Base port in range 10000-65535
-	basePort := 10000 + int(hash%55536)
-
-	// Check for conflicts and resolve if necessary
-	port := r.resolvePortConflict(nodeName, basePort)
+		"basePort", basePort,
+		"finalPort", port)
 
 	return fmt.Sprintf("%d", port)
 }
@@ -1414,7 +1402,7 @@ func (r *PhysicalNodeReconciler) resolvePortConflict(nodeName string, basePort i
 
 		// Ensure port is in valid range
 		if candidatePort > 65535 {
-			candidatePort = 10000 + (candidatePort % 55536)
+			candidatePort = 15000 + (candidatePort % 50536)
 		}
 
 		if !r.isPortInUse(candidatePort, existingPorts) {
@@ -1428,7 +1416,7 @@ func (r *PhysicalNodeReconciler) resolvePortConflict(nodeName string, basePort i
 
 	// If still no available port found, use a hash-based fallback
 	fallbackHash := r.hashString(nodeName + "-fallback")
-	fallbackPort := 10000 + (int(fallbackHash) % 55536)
+	fallbackPort := 15000 + (int(fallbackHash) % 50536)
 
 	r.Log.Info("Using fallback port due to conflicts",
 		"nodeName", nodeName,
@@ -2104,3 +2092,4 @@ func (r *PhysicalNodeReconciler) getProxierPodIP() string {
 	r.Log.Error(nil, "No running proxier pod found", "deploymentName", proxierDeploymentName)
 	return ""
 }
+

@@ -96,7 +96,7 @@ func NewKubeletClient(log logr.Logger, tokenManager *TokenManager) *KubeletClien
 // GetCAdvisorMetrics retrieves cAdvisor metrics from a specific node
 func (kc *KubeletClient) GetCAdvisorMetrics(ctx context.Context, nodeIP, proxierPort string) ([]byte, error) {
 	// Get the current token
-	token, err := kc.TokenManager.GetTokenFromFile()
+	token, err := kc.TokenManager.GetToken()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token: %w", err)
 	}
@@ -147,89 +147,4 @@ func (kc *KubeletClient) GetCAdvisorMetrics(ctx context.Context, nodeIP, proxier
 
 	kc.Log.V(1).Info("Successfully retrieved cAdvisor metrics", "nodeIP", nodeIP, "size", len(body))
 	return body, nil
-}
-
-// GetNodeInfo retrieves node information from a specific node
-func (kc *KubeletClient) GetNodeInfo(ctx context.Context, nodeIP, proxierPort string) ([]byte, error) {
-	// Get the current token
-	token, err := kc.TokenManager.GetTokenFromFile()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get token: %w", err)
-	}
-
-	// Construct the kubelet API URL
-	url := fmt.Sprintf("https://%s:%s/api/v1/nodes", nodeIP, proxierPort)
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "kubeocean-proxier")
-
-	// Make the request
-	kc.Log.V(1).Info("Making request to kubelet API", "url", url, "nodeIP", nodeIP)
-	resp, err := kc.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("kubelet API returned status %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	kc.Log.V(1).Info("Successfully retrieved node info", "nodeIP", nodeIP, "size", len(body))
-	return body, nil
-}
-
-// TestConnection tests the connection to a specific node's kubelet API
-func (kc *KubeletClient) TestConnection(ctx context.Context, nodeIP, proxierPort string) error {
-	// Get the current token
-	token, err := kc.TokenManager.GetTokenFromFile()
-	if err != nil {
-		return fmt.Errorf("failed to get token: %w", err)
-	}
-
-	// Construct the kubelet API URL for a simple health check
-	url := fmt.Sprintf("https://%s:%s/healthz", nodeIP, proxierPort)
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "text/plain")
-	req.Header.Set("Accept-Encoding", "gzip")
-	req.Header.Set("User-Agent", "kubeocean-proxier")
-
-	// Make the request
-	kc.Log.V(1).Info("Testing connection to kubelet API", "url", url, "nodeIP", nodeIP)
-	resp, err := kc.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("kubelet API health check failed with status %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	kc.Log.V(1).Info("Connection test successful", "nodeIP", nodeIP)
-	return nil
 }

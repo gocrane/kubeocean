@@ -16,7 +16,6 @@ package proxier
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"strings"
@@ -97,18 +96,6 @@ func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, log 
 		metricsCache:  make(map[string][]byte),
 		lastUpdate:    make(map[string]time.Time),
 		stopChan:      make(chan struct{}),
-	}
-}
-
-// createHTTPClient creates HTTP client
-func createHTTPClient(timeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-		},
 	}
 }
 
@@ -266,87 +253,6 @@ func (mc *MetricsCollector) collectMetricsFromAllNodes() {
 	}
 
 	mc.log.V(1).Info("Completed metrics collection from all nodes")
-}
-
-// collectMetricsFromNode collects metrics from specified node
-func (mc *MetricsCollector) collectMetricsFromNode(nodeName string, nodeInfo NodeInfo) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	mc.log.V(2).Info("Collecting metrics from node", "nodeName", nodeName, "nodeIP", nodeInfo.InternalIP, "port", nodeInfo.ProxierPort)
-
-	// Get cAdvisor metrics from kubelet API
-	// Note: use port 10250 to access kubelet API, not proxierPort
-	metricsData, err := mc.kubeletClient.GetCAdvisorMetrics(ctx, nodeInfo.InternalIP, "10250")
-	if err != nil {
-		mc.log.Error(err, "Failed to collect metrics from node", "nodeName", nodeName, "nodeIP", nodeInfo.InternalIP)
-		return
-	}
-
-	// Use MetricsParser to parse metrics data
-	reader := strings.NewReader(string(metricsData))
-	if err := mc.metricsParser.ParseAndStoreMetrics(reader, nodeInfo.ProxierPort); err != nil {
-		mc.log.Error(err, "Failed to parse metrics from node", "nodeName", nodeName, "nodeIP", nodeInfo.InternalIP)
-		return
-	}
-
-	// Generate parsed metrics data
-	var buf strings.Builder
-	mc.metricsParser.WritePrometheusMetrics(&buf, nodeInfo.ProxierPort, nodeInfo.InternalIP, mc.config.TargetNamespace)
-	parsedMetricsData := []byte(buf.String())
-
-	// Add debug logging
-	mc.log.V(2).Info("Parsed metrics data",
-		"nodeName", nodeName,
-		"nodeIP", nodeInfo.InternalIP,
-		"port", nodeInfo.ProxierPort,
-		"parsedSize", len(parsedMetricsData),
-		"targetNamespace", mc.config.TargetNamespace)
-
-	// Update cache
-	mc.mu.Lock()
-	oldData, existed := mc.metricsCache[nodeInfo.ProxierPort]
-	mc.metricsCache[nodeInfo.ProxierPort] = parsedMetricsData
-	mc.lastUpdate[nodeInfo.ProxierPort] = time.Now()
-	mc.mu.Unlock()
-
-	// Log cache changes
-	if existed {
-		mc.log.V(1).Info("Updated metrics cache",
-			"port", nodeInfo.ProxierPort,
-			"oldSize", len(oldData),
-			"newSize", len(parsedMetricsData))
-	} else {
-		mc.log.V(1).Info("Created new metrics cache entry",
-			"port", nodeInfo.ProxierPort,
-			"size", len(parsedMetricsData))
-	}
-
-	mc.log.V(2).Info("Successfully collected and parsed metrics from node",
-		"nodeName", nodeName, "nodeIP", nodeInfo.InternalIP, "port", nodeInfo.ProxierPort, "size", len(parsedMetricsData))
-}
-
-// filterMetricsByNamespace filters metrics by namespace
-func (mc *MetricsCollector) filterMetricsByNamespace(metricsData []byte, targetNamespace string) []byte {
-	// Simple string filtering implementation
-	// In production environment, more complex parsing and filtering logic may be needed
-	lines := strings.Split(string(metricsData), "\n")
-	var filteredLines []string
-
-	for _, line := range lines {
-		// Skip comment lines and empty lines
-		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
-			filteredLines = append(filteredLines, line)
-			continue
-		}
-
-		// Check if contains target namespace
-		if strings.Contains(line, fmt.Sprintf(`namespace="%s"`, targetNamespace)) {
-			filteredLines = append(filteredLines, line)
-		}
-	}
-
-	return []byte(strings.Join(filteredLines, "\n"))
 }
 
 // OnNodeAdded handles node addition events
@@ -556,22 +462,6 @@ func (mc *MetricsCollector) startHTTPServerForNode(port string, nodeInfo NodeInf
 	}()
 }
 
-// stopHTTPServerForNode stops HTTP server for specified node
-func (mc *MetricsCollector) stopHTTPServerForNode(port string) {
-	if entry, exists := mc.httpServers[port]; exists {
-		mc.log.Info("🛑 Stopping HTTP server", "port", port, "nodeIP", entry.nodeIP)
-		close(entry.stopChan)
-		delete(mc.httpServers, port)
-
-		// Print current listening ports list (call outside lock)
-		go func() {
-			mc.printListeningPorts()
-		}()
-	} else {
-		mc.log.V(1).Info("Port not found for stopping", "port", port)
-	}
-}
-
 // printListeningPorts prints current listening ports list
 func (mc *MetricsCollector) printListeningPorts() {
 	mc.mu.RLock()
@@ -648,19 +538,6 @@ func (mc *MetricsCollector) writeRealMetrics(w http.ResponseWriter, port string)
 	w.Write(metricsData)
 }
 
-// writeTestMetrics writes test metrics data (kept for testing)
-func (mc *MetricsCollector) writeTestMetrics(w http.ResponseWriter, port string) {
-	nodeIP := mc.getNodeIPByPort(port)
-
-	// Return test metrics data
-	fmt.Fprintf(w, "# HELP test_metric A test metric\n")
-	fmt.Fprintf(w, "# TYPE test_metric counter\n")
-	fmt.Fprintf(w, "test_metric{node=\"%s\",port=\"%s\"} 1\n", nodeIP, port)
-	fmt.Fprintf(w, "# HELP kubeocean_metrics_collector_info Information about the metrics collector\n")
-	fmt.Fprintf(w, "# TYPE kubeocean_metrics_collector_info gauge\n")
-	fmt.Fprintf(w, "kubeocean_metrics_collector_info{node=\"%s\",port=\"%s\",status=\"running\"} 1\n", nodeIP, port)
-}
-
 // getNodeIPByPort gets node IP by port
 func (mc *MetricsCollector) getNodeIPByPort(port string) string {
 	mc.mu.RLock()
@@ -684,9 +561,4 @@ func (mc *MetricsCollector) GetActivePorts() []string {
 		ports = append(ports, port)
 	}
 	return ports
-}
-
-// GetNodeConfigs gets current node configuration (deprecated, use GetCurrentNodeStates instead)
-func (mc *MetricsCollector) GetNodeConfigs() map[string]NodeInfo {
-	return mc.GetCurrentNodeStates()
 }
