@@ -142,13 +142,13 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			// Verify PriorityClass is set to default
 			ginkgo.By("Verifying physical pod has default PriorityClass")
 			gomega.Expect(physicalPod.Spec.PriorityClassName).To(gomega.Equal(cloudv1beta1.DefaultPriorityClassName))
-			gomega.Expect(physicalPod.Spec.Priority).To(gomega.HaveValue(gomega.Equal(int32(0))))
+			gomega.Expect(physicalPod.Spec.Priority).To(gomega.HaveValue(gomega.Equal(cloudv1beta1.DefaultPriorityClassValue)))
 
 			// Verify that the default PriorityClass exists
 			ginkgo.By("Verifying default PriorityClass exists")
 			defaultPriorityClass := &schedulingv1.PriorityClass{}
 			gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{Name: cloudv1beta1.DefaultPriorityClassName}, defaultPriorityClass)).To(gomega.Succeed())
-			gomega.Expect(defaultPriorityClass.Value).To(gomega.Equal(int32(0)))
+			gomega.Expect(defaultPriorityClass.Value).To(gomega.Equal(cloudv1beta1.DefaultPriorityClassValue))
 			gomega.Expect(*defaultPriorityClass.PreemptionPolicy).To(gomega.Equal(corev1.PreemptLowerPriority))
 
 			ginkgo.By("Verifying physical pod is created")
@@ -181,17 +181,17 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(k8sVirtual.Delete(ctx, virtualPod)).To(gomega.Succeed())
 
 			ginkgo.By("Verifying physical pod is being deleted" + fmt.Sprintf("%s/%s", physicalPodName, physicalPodNamespace))
-			// 由于物理集群 Pod 没有调度，这里会被直接删除
+			// Physical pod will be deleted directly since it's not scheduled in physical cluster
 			physicalPod := &corev1.Pod{}
 			/*gomega.Eventually(func() bool {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{
 					Name: physicalPodName, Namespace: physicalPodNamespace,
 				}, physicalPod)
-				// 验证 physical pod 是否被删除
+				// Verify if physical pod is deleted
 				return err == nil && physicalPod.DeletionTimestamp != nil
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
-			// 测试环境无法真的回收 physical pod，这里直接删除
+			// Test environment cannot actually recycle physical pod, delete it directly here
 			ginkgo.By("Deleting physical pod with GracePeriodSeconds=0")
 			zero := int64(0)
 			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())*/
@@ -199,7 +199,7 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{
 					Name: physicalPodName, Namespace: physicalPodNamespace,
 				}, physicalPod)
-				// 验证 physical pod 是否真的被删除
+				// Verify if physical pod is actually deleted
 				return apierrors.IsNotFound(err)
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
@@ -456,11 +456,11 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{
 					Name: orphanedPod.Name, Namespace: orphanedPod.Namespace,
 				}, physicalPod)
-				// 验证 physical pod 是否被删除
+				// Verify if physical pod is deleted
 				return err == nil && physicalPod.DeletionTimestamp != nil
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
-			// 测试环境无法真的回收 physical pod，这里直接删除
+			// Test environment cannot actually recycle physical pod, delete it directly here
 			ginkgo.By("Deleting physical pod with GracePeriodSeconds=0")
 			zero := int64(0)
 			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
@@ -502,11 +502,11 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 				err := k8sPhysical.Get(ctx, types.NamespacedName{
 					Name: invalidPod.Name, Namespace: invalidPod.Namespace,
 				}, physicalPod)
-				// 验证 physical pod 是否被删除
+				// Verify if physical pod is deleted
 				return err == nil && physicalPod.DeletionTimestamp != nil
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 
-			// 测试环境无法真的回收 physical pod，这里直接删除
+			// Test environment cannot actually recycle physical pod, delete it directly here
 			ginkgo.By("Deleting physical pod with GracePeriodSeconds=0")
 			zero := int64(0)
 			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
@@ -569,6 +569,93 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(len(physicalPod1Name)).To(gomega.BeNumerically(">", len(podName))) // Should have hash suffix
 			gomega.Expect(len(physicalPod2Name)).To(gomega.BeNumerically(">", len(podName))) // Should have hash suffix
 		}, ginkgo.SpecTimeout(testTimeout))
+
+		ginkgo.It("should handle DaemonSet pod synchronization with annotations", func(ctx context.Context) {
+			// 1. Setup environment and verify virtual node is ready
+			ginkgo.By("Waiting for virtual node to be ready")
+			waitForVirtualNodeReady(ctx, virtualNodeName)
+
+			// 2. Create a non-DaemonSet pod on virtual node and verify corresponding physical pod exists
+			ginkgo.By("Creating a non-DaemonSet virtual pod")
+			regularPod := createTestVirtualPod("test-regular-pod", testPodNamespace, virtualNodeName)
+			gomega.Expect(k8sVirtual.Create(ctx, regularPod)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical pod is created for regular pod")
+			var regularPhysicalPod *corev1.Pod
+			gomega.Eventually(func() bool {
+				pod, exists := checkPhysicalPodExists(ctx, regularPod)
+				if exists {
+					regularPhysicalPod = pod
+				}
+				return exists
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+			gomega.Expect(regularPhysicalPod).NotTo(gomega.BeNil())
+
+			// 3. Create DaemonSet pod without kubeocean.io/running-daemonset annotation and verify no physical pod is created
+			ginkgo.By("Creating a DaemonSet virtual pod without running annotation")
+			daemonSetPodWithoutAnnotation := createTestVirtualDaemonSetPod("test-daemonset-without-annotation", testPodNamespace, virtualNodeName, false)
+			gomega.Expect(k8sVirtual.Create(ctx, daemonSetPodWithoutAnnotation)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying no physical pod is created for DaemonSet pod without annotation")
+			// Check that no physical pod exists for the DaemonSet pod without annotation
+			gomega.Consistently(func() bool {
+				return checkNoPhysicalPodExists(ctx, daemonSetPodWithoutAnnotation)
+			}, 3*time.Second, time.Second).Should(gomega.BeTrue())
+
+			// 4. Create DaemonSet pod with kubeocean.io/running-daemonset:"true" annotation and verify physical pod is created
+			ginkgo.By("Creating a DaemonSet virtual pod with running annotation")
+			daemonSetPodWithAnnotation := createTestVirtualDaemonSetPod("test-daemonset-with-annotation", testPodNamespace, virtualNodeName, true)
+			gomega.Expect(k8sVirtual.Create(ctx, daemonSetPodWithAnnotation)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical pod is created for DaemonSet pod with annotation")
+			var daemonSetPhysicalPod *corev1.Pod
+			gomega.Eventually(func() bool {
+				pod, exists := checkPhysicalPodExists(ctx, daemonSetPodWithAnnotation)
+				if exists {
+					daemonSetPhysicalPod = pod
+				}
+				return exists
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+			gomega.Expect(daemonSetPhysicalPod).NotTo(gomega.BeNil())
+
+			// Verify the DaemonSet physical pod has correct workload labels
+			ginkgo.By("Verifying DaemonSet physical pod has correct workload labels")
+			gomega.Expect(daemonSetPhysicalPod.Labels[cloudv1beta1.LabelWorkloadType]).To(gomega.Equal("daemonset"))
+			gomega.Expect(daemonSetPhysicalPod.Labels[cloudv1beta1.LabelWorkloadName]).To(gomega.Equal("test-daemonset"))
+
+			// 5. Delete all virtual pods and verify corresponding physical pods are deleted and virtual pods are deleted successfully
+			ginkgo.By("Deleting all virtual pods")
+			gomega.Expect(k8sVirtual.Delete(ctx, regularPod)).To(gomega.Succeed())
+			gomega.Expect(k8sVirtual.Delete(ctx, daemonSetPodWithoutAnnotation)).To(gomega.Succeed())
+			gomega.Expect(k8sVirtual.Delete(ctx, daemonSetPodWithAnnotation)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying all physical pods are deleted")
+			gomega.Eventually(func() bool {
+				return checkMultiplePhysicalPodsDeleted(ctx, regularPod, daemonSetPodWithoutAnnotation, daemonSetPodWithAnnotation)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying all virtual pods are deleted")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{
+					Name: regularPod.Name, Namespace: regularPod.Namespace,
+				}, &corev1.Pod{})
+				if !apierrors.IsNotFound(err) {
+					return false
+				}
+
+				err = k8sVirtual.Get(ctx, types.NamespacedName{
+					Name: daemonSetPodWithoutAnnotation.Name, Namespace: daemonSetPodWithoutAnnotation.Namespace,
+				}, &corev1.Pod{})
+				if !apierrors.IsNotFound(err) {
+					return false
+				}
+
+				err = k8sVirtual.Get(ctx, types.NamespacedName{
+					Name: daemonSetPodWithAnnotation.Name, Namespace: daemonSetPodWithAnnotation.Namespace,
+				}, &corev1.Pod{})
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+		}, ginkgo.SpecTimeout(testTimeout))
 	})
 
 	ginkgo.Describe("Error Recovery and Edge Cases", func() {
@@ -599,7 +686,7 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(k8sPhysical.Get(ctx, types.NamespacedName{
 				Name: physicalPodName, Namespace: physicalPodNamespace,
 			}, physicalPod)).To(gomega.Succeed())
-			// 测试环境无法真的回收 physical pod，这里直接删除
+			// Test environment cannot actually recycle physical pod, delete it directly here
 			zero := int64(0)
 			gomega.Expect(k8sPhysical.Delete(ctx, physicalPod, &client.DeleteOptions{GracePeriodSeconds: &zero})).To(gomega.Succeed())
 
@@ -1899,7 +1986,7 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 // Helper functions
 
 // generatePhysicalName generates physical name using MD5 hash
-// Format: name(前30字符)-md5(namespace+"/"+name)
+// Format: name(first30chars)-md5(namespace+"/"+name)
 // This replicates the logic from VirtualPodReconciler.generatePhysicalName
 func generatePhysicalName(name, namespace string) string {
 	// Truncate name to first 30 characters
@@ -2475,4 +2562,117 @@ func createTestVirtualPodWithServiceAccount(name, namespace, nodeName, serviceAc
 			},
 		},
 	}
+}
+
+// createTestVirtualDaemonSetPod creates a virtual pod that simulates a DaemonSet pod
+// withRunningAnnotation determines whether to add the kubeocean.io/running-daemonset annotation
+func createTestVirtualDaemonSetPod(name, namespace, nodeName string, withRunningAnnotation bool) *corev1.Pod {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app":                      "test-daemonset",
+				"controller-revision-hash": "test-hash",
+				"pod-template-generation":  "1",
+			},
+			Annotations: map[string]string{
+				"test-annotation": "test-value",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "apps/v1",
+					Kind:               "DaemonSet",
+					Name:               "test-daemonset",
+					UID:                "test-daemonset-uid",
+					Controller:         &[]bool{true}[0],
+					BlockOwnerDeletion: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName: nodeName,
+			Containers: []corev1.Container{{
+				Name:  "test-container",
+				Image: "nginx:latest",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("100m"),
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+				},
+				Ports: []corev1.ContainerPort{{
+					ContainerPort: 80,
+					Protocol:      corev1.ProtocolTCP,
+				}},
+				Env: []corev1.EnvVar{
+					{
+						Name:  "TEST_ENV",
+						Value: "test-daemonset-value",
+					},
+				},
+			}},
+		},
+	}
+
+	// Add the running annotation if requested
+	if withRunningAnnotation {
+		if pod.Annotations == nil {
+			pod.Annotations = make(map[string]string)
+		}
+		pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] = cloudv1beta1.LabelValueTrue
+	}
+
+	return pod
+}
+
+// checkPhysicalPodExists checks if a physical pod exists for the given virtual pod
+func checkPhysicalPodExists(ctx context.Context, virtualPod *corev1.Pod) (*corev1.Pod, bool) {
+	pods := &corev1.PodList{}
+	err := k8sPhysical.List(ctx, pods, client.InNamespace(testMountNamespace))
+	if err != nil {
+		return nil, false
+	}
+
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+			if pod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] == virtualPod.Namespace &&
+				pod.Annotations[cloudv1beta1.AnnotationVirtualPodName] == virtualPod.Name {
+				return pod, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// checkNoPhysicalPodExists checks that no physical pod exists for the given virtual pod
+func checkNoPhysicalPodExists(ctx context.Context, virtualPod *corev1.Pod) bool {
+	_, exists := checkPhysicalPodExists(ctx, virtualPod)
+	return !exists
+}
+
+// checkMultiplePhysicalPodsDeleted checks that no physical pods exist for the given list of virtual pods
+func checkMultiplePhysicalPodsDeleted(ctx context.Context, virtualPods ...*corev1.Pod) bool {
+	pods := &corev1.PodList{}
+	err := k8sPhysical.List(ctx, pods, client.InNamespace(testMountNamespace))
+	if err != nil {
+		return false
+	}
+
+	managedPodsCount := 0
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+			// Check if this pod belongs to any of our test pods
+			virtualPodName := pod.Annotations[cloudv1beta1.AnnotationVirtualPodName]
+			for _, virtualPod := range virtualPods {
+				if virtualPodName == virtualPod.Name {
+					managedPodsCount++
+					break
+				}
+			}
+		}
+	}
+	return managedPodsCount == 0
 }

@@ -34,6 +34,44 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 		// testSystemNamespace is the namespace used for system resources in tests
 		testSystemNamespace = "kubeocean-system"
 	)
+
+	// verifyPhysicalNodePolicyAppliedLabel verifies that a physical node has the expected policy-applied label
+	verifyPhysicalNodePolicyAppliedLabel := func(ctx context.Context, k8sClient client.Client, nodeName string, expectedPolicyName string) {
+		gomega.Eventually(func() bool {
+			var updatedPhysicalNode corev1.Node
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &updatedPhysicalNode)
+			if err != nil {
+				return false
+			}
+
+			// Should have the label with expected policy name
+			policyApplied, exists := updatedPhysicalNode.Labels[cloudv1beta1.LabelPolicyApplied]
+			if !exists {
+				return false
+			}
+
+			return policyApplied == expectedPolicyName
+		}, 15*time.Second, 1*time.Second).Should(gomega.BeTrue(),
+			fmt.Sprintf("Physical node %s should have policy-applied label with value: %s", nodeName, expectedPolicyName))
+	}
+
+	// verifyPhysicalNodePolicyAppliedLabelRemoved verifies that a physical node no longer has the policy-applied label
+	verifyPhysicalNodePolicyAppliedLabelRemoved := func(ctx context.Context, k8sClient client.Client, nodeName string) {
+		gomega.Eventually(func() bool {
+			var updatedPhysicalNode corev1.Node
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &updatedPhysicalNode)
+			if err != nil {
+				// If node doesn't exist, consider the label as removed
+				return true
+			}
+
+			// Should not have the policy-applied label
+			_, exists := updatedPhysicalNode.Labels[cloudv1beta1.LabelPolicyApplied]
+			return !exists
+		}, 15*time.Second, 1*time.Second).Should(gomega.BeTrue(),
+			fmt.Sprintf("Physical node %s should not have policy-applied label", nodeName))
+	}
+
 	ginkgo.Describe("Virtual Node Creation Basic Test", func() {
 		ginkgo.It("should create virtual node for single physical node", func(ctx context.Context) {
 			// Create namespace for secrets
@@ -273,6 +311,10 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 
 			ginkgo.By("Virtual node created successfully")
 
+			// Verify physical node has policy-applied label
+			ginkgo.By("Verifying physical node has policy-applied label after virtual node creation")
+			verifyPhysicalNodePolicyAppliedLabel(ctx, k8sPhysical, physicalNode.Name, policy.Name)
+
 			// Update ClusterBinding NodeSelector to exclude the node
 			gomega.Eventually(func() error {
 				var updatedBinding cloudv1beta1.ClusterBinding
@@ -305,6 +347,10 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
 			ginkgo.By("Virtual node deleted due to NodeSelector change")
+
+			// Verify physical node policy-applied label has been removed
+			ginkgo.By("Verifying physical node policy-applied label is removed after virtual node deletion")
+			verifyPhysicalNodePolicyAppliedLabelRemoved(ctx, k8sPhysical, physicalNode.Name)
 
 			// Cleanup
 			syncerCancel()
@@ -457,6 +503,10 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				return allocatableCPU.Equal(expectedCPU) && allocatableMemory.Equal(expectedMemory)
 			}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue(), "Virtual node should have correct available resources")
 
+			// Verify physical node has policy-applied label
+			ginkgo.By("Verifying physical node has policy-applied label after virtual node creation")
+			verifyPhysicalNodePolicyAppliedLabel(ctx, k8sPhysical, physicalNode.Name, policy.Name)
+
 			ginkgo.By("Step 3: Delete ResourceLeasingPolicy and verify virtual node is removed")
 			// Delete the ResourceLeasingPolicy from physical cluster
 			gomega.Expect(k8sPhysical.Delete(ctx, policy)).To(gomega.Succeed())
@@ -469,6 +519,10 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue(), "Virtual node should be deleted when no ResourceLeasingPolicy matches")
 
 			ginkgo.By("Virtual node successfully deleted after ResourceLeasingPolicy removal")
+
+			// Verify physical node policy-applied label has been removed
+			ginkgo.By("Verifying physical node policy-applied label is removed after virtual node deletion")
+			verifyPhysicalNodePolicyAppliedLabelRemoved(ctx, k8sPhysical, physicalNode.Name)
 
 			// Cleanup
 			syncerCancel()
@@ -831,6 +885,11 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 				fmt.Sprintf("Expected Memory %s, got %s", expectedMemory.String(), actualMemory.String()))
 
 			ginkgo.By("Available resources calculated correctly with multiple policies (using earliest)")
+
+			// Verify physical node has policy-applied label with correct value
+			ginkgo.By("Verifying physical node has policy-applied label")
+			verifyPhysicalNodePolicyAppliedLabel(ctx, k8sPhysical, physicalNode.Name, policy1.Name)
+			ginkgo.By("Physical node has correct policy-applied label")
 
 			// Cleanup
 			syncerCancel()
@@ -1387,6 +1446,11 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 
 			ginkgo.By("Virtual node created with first policy resource limits")
 
+			// Step 2.5: Verify physical node has policy-applied label with policy1 name
+			ginkgo.By("Verifying physical node has policy-applied label with policy1 name")
+			verifyPhysicalNodePolicyAppliedLabel(ctx, k8sPhysical, physicalNode.Name, policy1.Name)
+			ginkgo.By("Physical node has correct policy-applied label for policy1")
+
 			// Step 3: Delete the first policy
 			ginkgo.By("Deleting the first policy")
 			gomega.Expect(k8sPhysical.Delete(ctx, policy1)).To(gomega.Succeed())
@@ -1411,6 +1475,11 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
 			ginkgo.By("Virtual node resources updated after first policy deletion")
+
+			// Step 4.5: Verify physical node has policy-applied label updated to policy2 name
+			ginkgo.By("Verifying physical node has policy-applied label updated to policy2 name")
+			verifyPhysicalNodePolicyAppliedLabel(ctx, k8sPhysical, physicalNode.Name, policy2.Name)
+			ginkgo.By("Physical node has correct policy-applied label for policy2")
 
 			// Cleanup
 			syncerCancel()
@@ -1541,6 +1610,8 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 			// Test 1: Update physical node status (Phase and Conditions)
 			ginkgo.By("Updating physical node status")
 
+			err = k8sPhysical.Get(ctx, types.NamespacedName{Name: nodeName}, physicalNode)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			physicalNode.Status.Phase = corev1.NodePending
 			physicalNode.Status.Conditions = append(physicalNode.Status.Conditions, corev1.NodeCondition{
 				Type:    corev1.NodeDiskPressure,
@@ -2210,6 +2281,10 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					return err == nil && physicalPod.Spec.NodeName == physicalNodeName
 				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
+				// Verify physical node has policy-applied label before deletion
+				ginkgo.By("Verifying physical node has policy-applied label before deletion")
+				verifyPhysicalNodePolicyAppliedLabel(ctx, k8sPhysical, physicalNode.Name, "deletion-test-policy")
+
 				// Step 3: Delete physical node and verify deletion states
 				ginkgo.By("Deleting physical node and verifying deletion states")
 				gomega.Expect(k8sPhysical.Delete(ctx, physicalNode)).To(gomega.Succeed())
@@ -2574,6 +2649,10 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					return err == nil && physicalPod.Spec.NodeName == physicalNodeName
 				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
 
+				// Verify physical node has policy-applied label before deleting ResourceLeasingPolicy
+				ginkgo.By("Verifying physical node has policy-applied label before deleting ResourceLeasingPolicy")
+				verifyPhysicalNodePolicyAppliedLabel(ctx, k8sPhysical, physicalNode.Name, policy.Name)
+
 				// Step 7: Delete matching ResourceLeasingPolicy
 				ginkgo.By("Deleting matching ResourceLeasingPolicy")
 				gomega.Expect(k8sPhysical.Delete(ctx, policy)).To(gomega.Succeed())
@@ -2664,6 +2743,10 @@ var _ = ginkgo.Describe("Virtual Node Sync Test", func() {
 					err := k8sVirtual.Get(ctx, types.NamespacedName{Name: virtualNodeName}, &virtualNode)
 					return apierrors.IsNotFound(err)
 				}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+				// Verify physical node policy-applied label has been removed after virtual node deletion
+				ginkgo.By("Verifying physical node policy-applied label is removed after virtual node deletion")
+				verifyPhysicalNodePolicyAppliedLabelRemoved(ctx, k8sPhysical, physicalNode.Name)
 
 				// Clean up
 				syncer.Stop()

@@ -709,3 +709,360 @@ func TestPhysicalPodReconciler_IsPodsStatusEqual(t *testing.T) {
 		})
 	}
 }
+
+func TestPhysicalPodReconciler_DeleteServiceAccountTokenSecretsFromSpec(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Set up logger
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	tests := []struct {
+		name                       string
+		namespace                  string
+		podSpec                    *corev1.PodSpec
+		existingSecrets            []client.Object
+		expectedSecretsAfterDelete []string // secrets that should remain after deletion
+		expectError                bool
+	}{
+		{
+			name:      "pod with kube-api-access secret volume should delete serviceAccountToken secret",
+			namespace: "test-ns",
+			podSpec: &corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "kube-api-access-abc123",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "sa-token-secret",
+							},
+						},
+					},
+					{
+						Name: "regular-volume", // Should be ignored (not kube-api-access-)
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "regular-secret",
+							},
+						},
+					},
+				},
+			},
+			existingSecrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "sa-token-secret",
+						Namespace: "test-ns",
+						Labels: map[string]string{
+							cloudv1beta1.LabelServiceAccountToken: "true",
+						},
+					},
+					Data: map[string][]byte{
+						"token": []byte("fake-token"),
+					},
+				},
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "regular-secret",
+						Namespace: "test-ns",
+						Labels: map[string]string{
+							"type": "regular",
+						},
+					},
+					Data: map[string][]byte{
+						"data": []byte("fake-data"),
+					},
+				},
+			},
+			expectedSecretsAfterDelete: []string{"regular-secret"},
+			expectError:                false,
+		},
+		{
+			name:      "pod with kube-api-access projected volume should delete serviceAccountToken secret",
+			namespace: "test-ns",
+			podSpec: &corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "kube-api-access-xyz789",
+						VolumeSource: corev1.VolumeSource{
+							Projected: &corev1.ProjectedVolumeSource{
+								Sources: []corev1.VolumeProjection{
+									{
+										Secret: &corev1.SecretProjection{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: "projected-sa-token-secret",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			existingSecrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "projected-sa-token-secret",
+						Namespace: "test-ns",
+						Labels: map[string]string{
+							cloudv1beta1.LabelServiceAccountToken: "true",
+						},
+					},
+					Data: map[string][]byte{
+						"token": []byte("fake-token"),
+					},
+				},
+			},
+			expectedSecretsAfterDelete: []string{},
+			expectError:                false,
+		},
+		{
+			name:      "pod with non-kube-api-access volumes should not delete any secrets",
+			namespace: "test-ns",
+			podSpec: &corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "regular-volume-1",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "secret-with-sa-token-label",
+							},
+						},
+					},
+					{
+						Name: "another-volume",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "regular-secret",
+							},
+						},
+					},
+				},
+			},
+			existingSecrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "secret-with-sa-token-label",
+						Namespace: "test-ns",
+						Labels: map[string]string{
+							cloudv1beta1.LabelServiceAccountToken: "true", // Has the label but volume name doesn't match
+						},
+					},
+				},
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "regular-secret",
+						Namespace: "test-ns",
+					},
+				},
+			},
+			expectedSecretsAfterDelete: []string{"secret-with-sa-token-label", "regular-secret"},
+			expectError:                false,
+		},
+		{
+			name:      "pod with kube-api-access volume but secret without serviceAccountToken label",
+			namespace: "test-ns",
+			podSpec: &corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "kube-api-access-def456",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "secret-without-label",
+							},
+						},
+					},
+				},
+			},
+			existingSecrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "secret-without-label",
+						Namespace: "test-ns",
+						Labels: map[string]string{
+							"type": "regular", // No serviceAccountToken label
+						},
+					},
+				},
+			},
+			expectedSecretsAfterDelete: []string{"secret-without-label"},
+			expectError:                false,
+		},
+		{
+			name:      "pod with kube-api-access volume but non-existent secret",
+			namespace: "test-ns",
+			podSpec: &corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "kube-api-access-ghi789",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "non-existent-secret",
+							},
+						},
+					},
+				},
+			},
+			existingSecrets:            []client.Object{},
+			expectedSecretsAfterDelete: []string{},
+			expectError:                false, // Should not error when secret doesn't exist
+		},
+		{
+			name:      "pod with multiple kube-api-access volumes with serviceAccountToken secrets",
+			namespace: "test-ns",
+			podSpec: &corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "kube-api-access-1",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "sa-token-secret-1",
+							},
+						},
+					},
+					{
+						Name: "kube-api-access-2",
+						VolumeSource: corev1.VolumeSource{
+							Projected: &corev1.ProjectedVolumeSource{
+								Sources: []corev1.VolumeProjection{
+									{
+										Secret: &corev1.SecretProjection{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: "sa-token-secret-2",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						Name: "regular-volume",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "regular-secret",
+							},
+						},
+					},
+				},
+			},
+			existingSecrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "sa-token-secret-1",
+						Namespace: "test-ns",
+						Labels: map[string]string{
+							cloudv1beta1.LabelServiceAccountToken: "true",
+						},
+					},
+				},
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "sa-token-secret-2",
+						Namespace: "test-ns",
+						Labels: map[string]string{
+							cloudv1beta1.LabelServiceAccountToken: "true",
+						},
+					},
+				},
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "regular-secret",
+						Namespace: "test-ns",
+					},
+				},
+			},
+			expectedSecretsAfterDelete: []string{"regular-secret"},
+			expectError:                false,
+		},
+		{
+			name:      "pod with kube-api-access volume but empty secret name",
+			namespace: "test-ns",
+			podSpec: &corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "kube-api-access-empty",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: "", // Empty secret name
+							},
+						},
+					},
+				},
+			},
+			existingSecrets:            []client.Object{},
+			expectedSecretsAfterDelete: []string{},
+			expectError:                false,
+		},
+		{
+			name:      "pod with kube-api-access projected volume but no secret sources",
+			namespace: "test-ns",
+			podSpec: &corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "kube-api-access-no-secret",
+						VolumeSource: corev1.VolumeSource{
+							Projected: &corev1.ProjectedVolumeSource{
+								Sources: []corev1.VolumeProjection{
+									{
+										ConfigMap: &corev1.ConfigMapProjection{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: "config-map",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			existingSecrets:            []client.Object{},
+			expectedSecretsAfterDelete: []string{},
+			expectError:                false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create fake client with existing objects
+			physicalClient := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.existingSecrets...).
+				Build()
+
+			// Create reconciler
+			reconciler := &PhysicalPodReconciler{
+				PhysicalClient: physicalClient,
+				Scheme:         scheme,
+				Log:            ctrl.Log.WithName("test-physical-pod-reconciler"),
+			}
+
+			// Test deleteServiceAccountTokenSecretsFromSpec
+			ctx := context.Background()
+			logger := reconciler.Log.WithValues("test", tt.name)
+			err := reconciler.deleteServiceAccountTokenSecretsFromSpec(ctx, tt.namespace, tt.podSpec, logger)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			// Verify remaining secrets
+			secretList := &corev1.SecretList{}
+			err = physicalClient.List(ctx, secretList, client.InNamespace(tt.namespace))
+			require.NoError(t, err)
+
+			actualSecretNames := make([]string, 0, len(secretList.Items))
+			for _, secret := range secretList.Items {
+				actualSecretNames = append(actualSecretNames, secret.Name)
+			}
+
+			assert.ElementsMatch(t, tt.expectedSecretsAfterDelete, actualSecretNames,
+				"Expected secrets %v, but got %v", tt.expectedSecretsAfterDelete, actualSecretNames)
+		})
+	}
+}

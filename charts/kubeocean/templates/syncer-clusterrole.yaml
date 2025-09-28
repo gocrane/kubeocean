@@ -13,7 +13,7 @@ rules:
   resources: ["services"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
-  resources: ["nodes", "pods", "serviceaccounts", "configmaps", "persistentvolumeclaims", "persistentvolumes", "secrets", "serviceaccounts/token", "services"]
+  resources: ["namespaces", "nodes", "pods", "serviceaccounts", "configmaps", "persistentvolumeclaims", "persistentvolumes", "secrets", "serviceaccounts/token", "services"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 - apiGroups: [""]
   resources: ["nodes/status", "pods/status"]
@@ -52,7 +52,4 @@ rules:
 - apiGroups: ["cls.cloud.tencent.com"]
   resources: ["logconfigs/status"]
   verbs: ["get", "patch", "update"]
-- apiGroups: ["scheduling.k8s.io"]
-  resources: ["priorityclasses"]
-  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 {{- end }}

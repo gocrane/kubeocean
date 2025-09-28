@@ -94,6 +94,18 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// 检查是否正在删除
+	if clusterBinding.DeletionTimestamp != nil {
+		if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
+			// finalizer 不存在，不做任何事
+			logger.Info("ClusterBinding is being deleted but finalizer not found, doing nothing")
+			return r.handleClusterBindingDeletion(ctx, clusterBinding)
+		}
+		// 进入删除处理逻辑
+		logger.Info("ClusterBinding is being deleted with finalizer, handling deletion")
+		return r.handleClusterBindingDeletion(ctx, clusterBinding)
+	}
+
 	// 添加 finalizer，如果失败则重新入队重试
 	if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
 		clusterBindingCopy := clusterBinding.DeepCopy()
@@ -104,18 +116,6 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		logger.Info("Added finalizer to ClusterBinding")
 		clusterBinding = clusterBindingCopy
-	}
-
-	// 检查是否正在删除
-	if clusterBinding.DeletionTimestamp != nil {
-		if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
-			// finalizer 不存在，不做任何事
-			logger.Info("ClusterBinding is being deleted but finalizer not found, doing nothing")
-			return ctrl.Result{}, nil
-		}
-		// 进入删除处理逻辑
-		logger.Info("ClusterBinding is being deleted with finalizer, handling deletion")
-		return r.handleClusterBindingDeletion(ctx, clusterBinding)
 	}
 
 	// Check if nodeSelector changed
@@ -223,6 +223,11 @@ func (r *ClusterBindingReconciler) handleClusterBindingDeletion(ctx context.Cont
 	if len(physicalResourcesNames) > 0 {
 		logger.Error(fmt.Errorf("physical resources still exist"), "Physical resources still exist, cannot complete deletion", "resources", physicalResourcesNames)
 		return ctrl.Result{}, fmt.Errorf("physical resources still exist, cannot complete deletion, resources: %s", physicalResourcesNames)
+	}
+
+	if !controllerutil.ContainsFinalizer(clusterBinding, cloudv1beta1.ClusterBindingSyncerFinalizer) {
+		logger.Info("ClusterBinding is being deleted but finalizer not found, doing nothing")
+		return ctrl.Result{}, nil
 	}
 
 	// 移除 finalizer
@@ -392,9 +397,19 @@ func (r *ClusterBindingReconciler) checkAndCleanVirtualResources(ctx context.Con
 
 	var allResourceNames []string
 
+	// Check and clean fake pods for hostport
+	fakePodNames, err := r.checkAndCleanFakePods(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to check and clean fake pods: %w", err)
+	}
+	if len(fakePodNames) > 0 {
+		r.Log.Info("Found fake pods for hostport", "count", len(fakePodNames))
+		allResourceNames = append(allResourceNames, fmt.Sprintf("fake pods: [%s]", strings.Join(fakePodNames, ", ")))
+	}
+
 	// Check and clean ConfigMaps
 	var configMapList corev1.ConfigMapList
-	err := r.List(ctx, &configMapList, client.MatchingLabelsSelector{Selector: labelSelector})
+	err = r.List(ctx, &configMapList, client.MatchingLabelsSelector{Selector: labelSelector})
 	if err != nil {
 		return "", fmt.Errorf("failed to list configmaps: %w", err)
 	}
@@ -486,6 +501,38 @@ func (r *ClusterBindingReconciler) checkAndCleanVirtualResources(ctx context.Con
 	}
 
 	return "", nil
+}
+
+// checkAndCleanFakePods checks and cleans fake pods for hostport in virtual cluster
+func (r *ClusterBindingReconciler) checkAndCleanFakePods(ctx context.Context) ([]string, error) {
+	// List all fake pods for hostport with kubeocean labels
+	var podList corev1.PodList
+	labelSelector := labels.SelectorFromSet(map[string]string{
+		cloudv1beta1.LabelHostPortFakePod: cloudv1beta1.LabelValueTrue,
+		cloudv1beta1.LabelManagedBy:       cloudv1beta1.LabelManagedByValue,
+	})
+
+	err := r.List(ctx, &podList, client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list fake pods for hostport: %w", err)
+	}
+
+	fakePodNames := make([]string, 0, len(podList.Items))
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		fakePodNames = append(fakePodNames, pod.Name)
+
+		r.Log.Info("Deleting fake pod for hostport", "pod", pod.Name, "namespace", pod.Namespace)
+
+		// Delete fake pod with grace period 0 for immediate deletion
+		if err := r.Delete(ctx, pod, &client.DeleteOptions{
+			GracePeriodSeconds: &[]int64{0}[0],
+		}); err != nil && !errors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to delete fake pod %s: %w", pod.Name, err)
+		}
+	}
+
+	return fakePodNames, nil
 }
 
 // checkPhysicalResourcesExist checks if any kubeocean-managed resources exist in physical cluster

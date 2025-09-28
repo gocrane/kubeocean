@@ -3,12 +3,18 @@ package topdown
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
@@ -66,6 +72,9 @@ func (tds *TopDownSyncer) Setup(ctx context.Context) error {
 // Start starts the top-down syncer with controller-runtime approach
 func (tds *TopDownSyncer) Start(ctx context.Context) error {
 	tds.Log.Info("Top-down Syncer started successfully")
+
+	// Start serviceAccountToken garbage collection
+	go tds.startServiceAccountTokenGC(ctx)
 
 	// Keep running until context is cancelled
 	<-ctx.Done()
@@ -214,4 +223,150 @@ func (tds *TopDownSyncer) setupControllers() error {
 		"virtualLogConfigController", "enabled",
 		"proxierWatchController", "enabled")
 	return nil
+}
+
+// startServiceAccountTokenGC starts the serviceAccountToken garbage collection routine using k8s wait library
+func (tds *TopDownSyncer) startServiceAccountTokenGC(ctx context.Context) {
+	logger := tds.Log.WithName("sa-token-gc")
+	logger.Info("Starting serviceAccountToken garbage collection", "interval", "5m")
+
+	// Use wait.UntilWithContext for more elegant polling with proper context handling
+	wait.UntilWithContext(ctx, func(ctx context.Context) {
+		tds.runServiceAccountTokenGC(ctx, logger)
+	}, 5*time.Minute)
+
+	logger.Info("ServiceAccountToken garbage collection stopped")
+}
+
+// runServiceAccountTokenGC performs the garbage collection of serviceAccountToken secrets
+func (tds *TopDownSyncer) runServiceAccountTokenGC(ctx context.Context, logger logr.Logger) {
+	logger.V(1).Info("Running serviceAccountToken garbage collection")
+
+	secrets, err := tds.listServiceAccountTokenSecrets(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to list serviceAccountToken secrets")
+		return
+	}
+
+	if len(secrets) == 0 {
+		logger.V(1).Info("No serviceAccountToken secrets found")
+		return
+	}
+
+	saTokenSecretNames := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		saTokenSecretNames = append(saTokenSecretNames, secret.Name)
+	}
+
+	logger.V(1).Info("Found serviceAccountToken secrets", "count", len(secrets), "names", saTokenSecretNames)
+
+	deletedCount := 0
+	failedCount := 0
+
+	// Process secrets with context check for graceful shutdown
+	for _, secret := range secrets {
+		// Check context cancellation between operations
+		select {
+		case <-ctx.Done():
+			logger.Info("ServiceAccountToken garbage collection cancelled",
+				"processed", deletedCount+failedCount, "total", len(secrets))
+			return
+		default:
+		}
+
+		if tds.shouldDeleteServiceAccountTokenSecret(ctx, &secret, logger) {
+			logger.Info("Deleting orphaned serviceAccountToken secret",
+				"secret", fmt.Sprintf("%s/%s", secret.Namespace, secret.Name))
+
+			if err := tds.physicalManager.GetClient().Delete(ctx, &secret); err != nil {
+				if !apierrors.IsNotFound(err) {
+					logger.Error(err, "Failed to delete orphaned serviceAccountToken secret",
+						"secret", fmt.Sprintf("%s/%s", secret.Namespace, secret.Name))
+					failedCount++
+					continue
+				}
+				logger.V(1).Info("ServiceAccountToken secret already deleted",
+					"secret", fmt.Sprintf("%s/%s", secret.Namespace, secret.Name))
+			}
+
+			logger.Info("Successfully deleted serviceAccountToken secret",
+				"secret", fmt.Sprintf("%s/%s", secret.Namespace, secret.Name))
+			deletedCount++
+		}
+	}
+
+	if deletedCount > 0 || failedCount > 0 {
+		logger.Info("ServiceAccountToken garbage collection completed",
+			"total", len(secrets), "deleted", deletedCount, "failed", failedCount)
+	} else {
+		logger.V(1).Info("ServiceAccountToken garbage collection completed, no orphaned secrets found",
+			"total", len(secrets))
+	}
+}
+
+// listServiceAccountTokenSecrets lists all secrets with serviceAccountToken label
+func (tds *TopDownSyncer) listServiceAccountTokenSecrets(ctx context.Context) ([]corev1.Secret, error) {
+	secretList := &corev1.SecretList{}
+
+	// List secrets with serviceAccountToken label in the mount namespace
+	listOptions := []client.ListOption{
+		client.InNamespace(tds.ClusterBinding.Spec.MountNamespace),
+		client.MatchingLabels{
+			cloudv1beta1.LabelServiceAccountToken: "true",
+		},
+	}
+
+	if err := tds.physicalManager.GetClient().List(ctx, secretList, listOptions...); err != nil {
+		return nil, fmt.Errorf("failed to list serviceAccountToken secrets: %w", err)
+	}
+
+	return secretList.Items, nil
+}
+
+// shouldDeleteServiceAccountTokenSecret checks if a serviceAccountToken secret should be deleted
+func (tds *TopDownSyncer) shouldDeleteServiceAccountTokenSecret(ctx context.Context, secret *corev1.Secret, logger logr.Logger) bool {
+	// Extract virtual pod information from secret annotations
+	virtualPodName := secret.Annotations[cloudv1beta1.AnnotationVirtualPodName]
+	virtualPodNamespace := secret.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace]
+	virtualPodUID := secret.Annotations[cloudv1beta1.AnnotationVirtualPodUID]
+
+	if virtualPodName == "" || virtualPodNamespace == "" {
+		logger.V(1).Info("ServiceAccountToken secret missing virtual pod annotations, marking for deletion",
+			"secret", fmt.Sprintf("%s/%s", secret.Namespace, secret.Name))
+		return true
+	}
+
+	// Check if the corresponding virtual pod still exists
+	virtualPod := &corev1.Pod{}
+	err := tds.virtualManager.GetClient().Get(ctx, types.NamespacedName{
+		Name:      virtualPodName,
+		Namespace: virtualPodNamespace,
+	}, virtualPod)
+
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("Virtual pod not found, marking serviceAccountToken secret for deletion",
+				"secret", fmt.Sprintf("%s/%s", secret.Namespace, secret.Name),
+				"virtualPod", fmt.Sprintf("%s/%s", virtualPodNamespace, virtualPodName))
+			return true
+		}
+		logger.Error(err, "Error checking virtual pod existence, skipping secret",
+			"secret", fmt.Sprintf("%s/%s", secret.Namespace, secret.Name),
+			"virtualPod", fmt.Sprintf("%s/%s", virtualPodNamespace, virtualPodName))
+		return false
+	}
+
+	if virtualPodUID != "" && string(virtualPod.UID) != virtualPodUID {
+		logger.V(1).Info("Virtual pod UID mismatch, marking serviceAccountToken secret for deletion",
+			"secret", fmt.Sprintf("%s/%s", secret.Namespace, secret.Name),
+			"virtualPod", fmt.Sprintf("%s/%s", virtualPodNamespace, virtualPodName),
+			"virtualPodUID", virtualPodUID,
+			"actualUID", string(virtualPod.UID))
+		return true
+	}
+
+	logger.V(2).Info("Virtual pod exists, keeping serviceAccountToken secret",
+		"secret", fmt.Sprintf("%s/%s", secret.Namespace, secret.Name),
+		"virtualPod", fmt.Sprintf("%s/%s", virtualPodNamespace, virtualPodName))
+	return false
 }

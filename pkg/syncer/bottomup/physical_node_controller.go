@@ -116,13 +116,19 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 	// Load latest ClusterBinding and check nodeSelector match first
 	var clusterBinding cloudv1beta1.ClusterBinding
 	if err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: r.getClusterBindingName()}, &clusterBinding); err != nil {
+		// return error if cluster binding is not found
 		log.Error(err, "Failed to get cluster binding")
 		return ctrl.Result{}, err
 	}
 
+	if clusterBinding.DeletionTimestamp != nil {
+		log.Info("Cluster binding is being deleted, triggering deletion, delete virtual node")
+		return r.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
+	}
+
 	// If node does not match ClusterBinding selector, ensure virtual node is deleted
 	if !r.nodeMatchesSelector(physicalNode, clusterBinding.Spec.NodeSelector) {
-		log.V(1).Info("Node does not match ClusterBinding selector; deleting virtual node")
+		log.Info("Node does not match ClusterBinding selector; deleting virtual node")
 		return r.handleNodeDeletion(ctx, physicalNode.Name, true, 0)
 	}
 
@@ -209,6 +215,13 @@ func (r *PhysicalNodeReconciler) processNode(ctx context.Context, physicalNode *
 
 	// Start lease controller for the virtual node
 	r.startLeaseController(virtualNodeName)
+
+	// Check and add policy-applied label to physical node if missing
+	err = r.ensurePolicyAppliedLabel(ctx, physicalNode, policy.Name)
+	if err != nil {
+		log.Error(err, "Failed to ensure policy-applied label on physical node")
+		return ctrl.Result{}, err
+	}
 
 	// Handle out-of-time-windows pod deletion if node is outside time windows
 	if !r.isWithinTimeWindows(policy) {
@@ -325,7 +338,7 @@ func (r *PhysicalNodeReconciler) checkPodsOnVirtualNode(ctx context.Context, vir
 
 	// Check for pods in Pending or Running state
 	for _, pod := range podList.Items {
-		if pod.Namespace == "kubeocean-system" || pod.Namespace == "kube-system" {
+		if utils.IsSystemPod(&pod) {
 			logger.V(1).Info("skip system pod on virtual node", "pod", pod.Name, "namespace", pod.Namespace, "phase", pod.Status.Phase)
 			continue
 		}
@@ -437,6 +450,13 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 	if r.getClusterID() == "" {
 		return ctrl.Result{}, fmt.Errorf("clusterID is unknown, skipping handleNodeDeletion")
 	}
+
+	// Clean up policy-applied label from physical node before processing virtual node deletion
+	if err := r.removePolicyAppliedLabel(ctx, physicalNodeName); err != nil {
+		logger.Error(err, "Failed to remove policy-applied label from physical node")
+		return ctrl.Result{}, err
+	}
+
 	virtualNodeName := r.generateVirtualNodeName(physicalNodeName)
 
 	virtualNode := &corev1.Node{}
@@ -1314,7 +1334,7 @@ func (r *PhysicalNodeReconciler) copyTaints(original []corev1.Taint) []corev1.Ta
 
 // generateVirtualNodeName generates a virtual node name based on physical node
 func (r *PhysicalNodeReconciler) generateVirtualNodeName(physicalNodeName string) string {
-	return GenerateVirtualNodeName(r.getClusterID(), physicalNodeName)
+	return utils.GenerateVirtualNodeName(r.getClusterID(), physicalNodeName)
 }
 
 // getPhysicalNodeInternalIP extracts the InternalIP from a physical node
@@ -1535,7 +1555,15 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 			if len(policy.Spec.ResourceLimits) > 0 {
 				var limits []string
 				for _, limit := range policy.Spec.ResourceLimits {
-					limits = append(limits, limit.Resource+"="+limit.Quantity.String())
+					quantity := ""
+					if limit.Quantity != nil {
+						quantity = limit.Quantity.String()
+					}
+					percent := ""
+					if limit.Percent != nil {
+						percent = fmt.Sprintf("%d%%", *limit.Percent)
+					}
+					limits = append(limits, limit.Resource+"="+quantity+"/"+percent)
 				}
 				policyDetail += "(" + strings.Join(limits, ",") + ")"
 			}
@@ -1803,8 +1831,8 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 			node, ok := obj.(*corev1.Node)
 			if !ok {
 				// invalid node means the object may be the pod object
-				// r.Log.V(1).Info("Skipping node with invalid type, may be the pod object", "node", obj.GetName())
-				return true
+				_, ok2 := obj.(*corev1.Pod)
+				return ok2
 			}
 			return r.shouldProcessNode(node)
 		})).
@@ -1945,6 +1973,102 @@ func (r *PhysicalNodeReconciler) getProxierServiceClusterIP() string {
 
 	r.Log.V(2).Info("Found proxier service ClusterIP", "serviceName", proxierServiceName, "clusterIP", service.Spec.ClusterIP)
 	return service.Spec.ClusterIP
+}
+
+// removePolicyAppliedLabel removes the policy-applied label from the physical node if it exists
+func (r *PhysicalNodeReconciler) removePolicyAppliedLabel(ctx context.Context, physicalNodeName string) error {
+	logger := r.Log.WithValues("physicalNode", physicalNodeName)
+
+	// Get the physical node
+	physicalNode := &corev1.Node{}
+	err := r.PhysicalClient.Get(ctx, client.ObjectKey{Name: physicalNodeName}, physicalNode)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Physical node doesn't exist, ignore
+			logger.V(1).Info("Physical node not found, ignoring policy-applied label removal")
+			return nil
+		}
+		// Return error for retry
+		return fmt.Errorf("failed to get physical node for label removal: %w", err)
+	}
+
+	// Check if the label exists
+	if len(physicalNode.Labels) == 0 {
+		logger.V(1).Info("Physical node has no labels, no action needed")
+		return nil
+	}
+
+	if _, exists := physicalNode.Labels[cloudv1beta1.LabelPolicyApplied]; !exists {
+		logger.V(1).Info("Policy-applied label not found, no action needed")
+		return nil
+	}
+
+	logger.Info("Removing policy-applied label from physical node")
+
+	// Create a patch to remove the label
+	patchData := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]interface{}{
+				cloudv1beta1.LabelPolicyApplied: nil,
+			},
+		},
+	}
+
+	// Convert to JSON for the patch
+	patchBytes, err := json.Marshal(patchData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal patch data for label removal: %w", err)
+	}
+
+	// Apply the strategic merge patch
+	patch := client.RawPatch(types.StrategicMergePatchType, patchBytes)
+	if err := r.PhysicalClient.Patch(ctx, physicalNode, patch); err != nil {
+		return fmt.Errorf("failed to patch physical node to remove policy-applied label: %w", err)
+	}
+
+	logger.Info("Successfully removed policy-applied label from physical node")
+	return nil
+}
+
+// ensurePolicyAppliedLabel ensures the physical node has the policy-applied label set to the current policy name
+func (r *PhysicalNodeReconciler) ensurePolicyAppliedLabel(ctx context.Context, physicalNode *corev1.Node, policyName string) error {
+	logger := r.Log.WithValues("physicalNode", physicalNode.Name, "policyName", policyName)
+
+	// Check if the label already exists and has the correct value
+	if existingPolicyName, exists := physicalNode.Labels[cloudv1beta1.LabelPolicyApplied]; exists {
+		if existingPolicyName == policyName {
+			logger.V(1).Info("Policy-applied label already set correctly")
+			return nil
+		}
+		logger.Info("Policy-applied label exists but with different value, updating",
+			"existingValue", existingPolicyName, "newValue", policyName)
+	} else {
+		logger.Info("Policy-applied label missing, adding it", "newValue", policyName)
+	}
+
+	// Create a patch to add/update the label
+	patchData := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]interface{}{
+				cloudv1beta1.LabelPolicyApplied: policyName,
+			},
+		},
+	}
+
+	// Convert to JSON for the patch
+	patchBytes, err := json.Marshal(patchData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal patch data: %w", err)
+	}
+
+	// Apply the strategic merge patch
+	patch := client.RawPatch(types.StrategicMergePatchType, patchBytes)
+	if err := r.PhysicalClient.Patch(ctx, physicalNode, patch); err != nil {
+		return fmt.Errorf("failed to patch physical node with policy-applied label: %w", err)
+	}
+
+	logger.Info("Successfully added/updated policy-applied label on physical node")
+	return nil
 }
 
 // getProxierPodIP retrieves the Pod IP of the proxier pod for this ClusterBinding

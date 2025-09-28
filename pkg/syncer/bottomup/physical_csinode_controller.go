@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/utils"
 )
 
 // PhysicalCSINodeReconciler reconciles CSINode objects from physical cluster
@@ -73,7 +74,7 @@ func (r *PhysicalCSINodeReconciler) processCSINode(ctx context.Context, physical
 	if r.getClusterID() == "" {
 		return ctrl.Result{}, fmt.Errorf("clusterID is unknown, skipping processCSINode")
 	}
-	virtualNodeName := GenerateVirtualNodeName(r.getClusterID(), physicalCSINode.Name)
+	virtualNodeName := utils.GenerateVirtualNodeName(r.getClusterID(), physicalCSINode.Name)
 
 	// Check if virtual node exists
 	virtualNode := &corev1.Node{}
@@ -117,7 +118,7 @@ func (r *PhysicalCSINodeReconciler) handleCSINodeDeletion(ctx context.Context, p
 	if r.getClusterID() == "" {
 		return ctrl.Result{}, fmt.Errorf("clusterID is unknown, skipping handleCSINodeDeletion")
 	}
-	virtualNodeName := GenerateVirtualNodeName(r.getClusterID(), physicalCSINodeName)
+	virtualNodeName := utils.GenerateVirtualNodeName(r.getClusterID(), physicalCSINodeName)
 
 	// Delete virtual CSINode
 	return r.deleteVirtualCSINode(ctx, virtualNodeName)

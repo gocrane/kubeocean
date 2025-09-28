@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -166,7 +167,7 @@ func (r *PhysicalPodReconciler) validateVirtualPodAnnotations(virtualPod, physic
 	return hasNamespace && hasName && actualNamespace == expectedNamespace && actualName == expectedName
 }
 
-// deletePhysicalPod deletes the physical pod
+// deletePhysicalPod deletes the physical pod and then cleans up any associated serviceAccountToken secrets
 func (r *PhysicalPodReconciler) deletePhysicalPod(ctx context.Context, physicalPod *corev1.Pod) (ctrl.Result, error) {
 	logger := r.Log.WithValues("physicalPod", physicalPod.Namespace+"/"+physicalPod.Name)
 
@@ -174,6 +175,9 @@ func (r *PhysicalPodReconciler) deletePhysicalPod(ctx context.Context, physicalP
 		logger.Info("Physical pod is being deleted, skipping deletion")
 		return ctrl.Result{}, nil
 	}
+
+	// Store pod spec before deletion for secret cleanup
+	podSpecCopy := physicalPod.Spec.DeepCopy()
 
 	deleteOpt := &client.DeleteOptions{
 		Preconditions: &metav1.Preconditions{UID: &physicalPod.UID},
@@ -185,7 +189,87 @@ func (r *PhysicalPodReconciler) deletePhysicalPod(ctx context.Context, physicalP
 	}
 
 	logger.Info("Successfully triggered physical pod deletion")
+
+	// After pod deletion, clean up serviceAccountToken secrets
+	// if still remains, rely on garbage collection to delete them
+	if err := r.deleteServiceAccountTokenSecretsFromSpec(ctx, physicalPod.Namespace, podSpecCopy, logger); err != nil {
+		logger.Error(err, "Failed to delete serviceAccountToken secrets after pod deletion")
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// deleteServiceAccountTokenSecretsFromSpec checks pod spec for serviceAccountToken secret references and deletes them
+func (r *PhysicalPodReconciler) deleteServiceAccountTokenSecretsFromSpec(ctx context.Context, namespace string, podSpec *corev1.PodSpec, logger logr.Logger) error {
+	var secretsToDelete []string
+
+	// Check all volumes in the pod spec for serviceAccountToken secrets
+	for _, volume := range podSpec.Volumes {
+		if !strings.HasPrefix(volume.Name, "kube-api-access-") {
+			continue
+		}
+
+		var secretName string
+		if volume.Secret != nil {
+			secretName = volume.Secret.SecretName
+		} else if volume.Projected != nil {
+			for _, source := range volume.Projected.Sources {
+				if source.Secret != nil {
+					secretName = source.Secret.Name
+				}
+			}
+		}
+		if secretName == "" {
+			continue
+		}
+
+		logger.V(1).Info("checking serviceAccountToken secret", "secretName", secretName)
+
+		// Get the secret to check its labels
+		secret := &corev1.Secret{}
+		err := r.PhysicalClient.Get(ctx, types.NamespacedName{
+			Namespace: namespace,
+			Name:      secretName,
+		}, secret)
+
+		if err != nil {
+			if errors.IsNotFound(err) {
+				logger.V(1).Info("Secret not found, skipping", "secretName", secretName)
+				continue
+			}
+			logger.Error(err, "Failed to get secret", "secretName", secretName)
+			continue
+		}
+
+		// Check if secret has the serviceAccountToken label
+		if secret.Labels != nil {
+			if value, exists := secret.Labels[cloudv1beta1.LabelServiceAccountToken]; exists && value == "true" {
+				secretsToDelete = append(secretsToDelete, secretName)
+				logger.Info("Found serviceAccountToken secret to delete", "secretName", secretName)
+			}
+		}
+	}
+
+	// Delete all identified serviceAccountToken secrets
+	for _, secretName := range secretsToDelete {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      secretName,
+				Namespace: namespace,
+			},
+		}
+
+		err := r.PhysicalClient.Delete(ctx, secret)
+		if err != nil && !errors.IsNotFound(err) {
+			logger.Error(err, "Failed to delete serviceAccountToken secret", "secretName", secretName)
+			return fmt.Errorf("failed to delete serviceAccountToken secret %s: %w", secretName, err)
+		}
+
+		logger.Info("Successfully deleted serviceAccountToken secret", "secretName", secretName)
+	}
+
+	return nil
 }
 
 // syncPhysicalPodToVirtual syncs physical pod annotations, labels, and status to virtual pod

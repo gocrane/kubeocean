@@ -37,6 +37,13 @@ alwaysApply: true
 2. **状态更新**: 失败时设置 `Failed` phase 和 condition
 3. **日志记录**: Error(系统) → Info(操作) → Debug(调试)
 
+### 异常错误处理
+在运行 `make lint`、`make test` 等命令时，可能会遇到以下错误：
+```
+environment: line 2415: GVM_DEBUG: unbound variable
+```
+可以尝试 `bash -c "cd /data/home/work_code/kubeocean && make lint"` 的方式解决
+
 ## 部署规范
 
 1. **镜像**: Manager/Syncer 分离，多阶段构建，非 root 运行

@@ -2,11 +2,12 @@ package v1beta1
 
 const (
 	// Labels
-	LabelManagedBy        = "kubeocean.io/managed-by"
-	LabelManagedByValue   = "kubeocean"
-	LabelVirtualNamespace = "kubeocean.io/virtual-namespace"
-	LabelWorkloadType     = "kubeocean.io/workload-type"
-	LabelWorkloadName     = "kubeocean.io/workload-name"
+	LabelManagedBy           = "kubeocean.io/managed-by"
+	LabelManagedByValue      = "kubeocean"
+	LabelVirtualNamespace    = "kubeocean.io/virtual-namespace"
+	LabelWorkloadType        = "kubeocean.io/workload-type"
+	LabelWorkloadName        = "kubeocean.io/workload-name"
+	LabelServiceAccountToken = "kubeocean.io/service-account-token"
 
 	// Pod mapping annotations
 	AnnotationVirtualPodNamespace  = "kubeocean.io/virtual-pod-namespace"
@@ -36,12 +37,15 @@ const (
 	TaintOutOfTimeWindows          = "kubeocean.io/out-of-time-windows"
 
 	// Node and CSINode labels
+
 	LabelClusterBinding        = "kubeocean.io/cluster-binding"
 	LabelPhysicalClusterID     = "kubeocean.io/physical-cluster-id"
 	LabelPhysicalNodeName      = "kubeocean.io/physical-node-name"
 	LabelPhysicalNodeUID       = "kubeocean.io/physical-node-uid"
 	LabelPhysicalNodeInnerIP   = "kubeocean.io/physical-node-innerip"
 	LabelProxierPort           = "kubeocean.io/proxier_port"
+	LabelPolicyApplied     = "kubeocean.io/policy-applied"
+	LabelHostPortFakePod   = "kubeocean.io/hostport-fake-pod"
 	LabelValueTrue             = "true"
 
 	// Resource mapping labels
@@ -63,8 +67,13 @@ const (
 	LabelManagedByClusterIDPrefix = "kubeocean.io/synced-by-"
 	FinalizerClusterIDPrefix      = "kubeocean.io/finalizer-"
 
+	// DaemonSet running annotation
+	AnnotationRunningDaemonSet = "kubeocean.io/running-daemonset"
+
 	// PriorityClass
 	DefaultPriorityClassName = "kubeocean-default"
+	// Default priority class value
+	DefaultPriorityClassValue int32 = -10000
 )
 
 // GetClusterBindingDeletingAnnotation returns the cluster-specific deleting annotation key
