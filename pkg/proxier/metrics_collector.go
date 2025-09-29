@@ -562,3 +562,12 @@ func (mc *MetricsCollector) GetActivePorts() []string {
 	}
 	return ports
 }
+
+// GetMetricsData gets metrics data for a specific port
+func (mc *MetricsCollector) GetMetricsData(port string) ([]byte, bool) {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	data, exists := mc.metricsCache[port]
+	return data, exists
+}

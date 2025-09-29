@@ -157,6 +157,17 @@ func (r *NodeController) handleNodeUpdate(node *corev1.Node) {
 	r.CurrentNodes[node.Name] = *nodeInfo
 	r.mu.Unlock()
 
+	// Update VNodePortMapper
+	if !existed {
+		// Node added - add to mapper
+		VNodePortMapper.AddVNodePort(node.Name, nodeInfo.ProxierPort)
+		r.Log.V(1).Info("Added VNode to port mapper", "vnode", node.Name, "port", nodeInfo.ProxierPort)
+	} else if oldNodeInfo.ProxierPort != nodeInfo.ProxierPort {
+		// Port changed - update mapper
+		VNodePortMapper.AddVNodePort(node.Name, nodeInfo.ProxierPort)
+		r.Log.V(1).Info("Updated VNode port in mapper", "vnode", node.Name, "oldPort", oldNodeInfo.ProxierPort, "newPort", nodeInfo.ProxierPort)
+	}
+
 	// Call MetricsCollector directly
 	if r.metricsCollector != nil {
 		if !existed {
@@ -184,6 +195,10 @@ func (r *NodeController) handleNodeDelete(nodeName string) {
 	r.mu.Unlock()
 
 	if existed {
+		// Remove from VNodePortMapper
+		VNodePortMapper.RemoveVNodePort(nodeName)
+		r.Log.V(1).Info("Removed VNode from port mapper", "vnode", nodeName)
+
 		r.Log.Info("Node removed from proxier", "node", nodeName, "nodeInfo", oldNodeInfo)
 
 		// Call MetricsCollector directly

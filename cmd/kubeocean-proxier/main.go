@@ -64,6 +64,7 @@ func main() {
 	var metricsEnabled bool
 	var metricsCollectInterval int
 	var metricsTargetNamespace string
+	var vnodeBasePort int
 
 	flag.StringVar(&clusterBindingName, "cluster-binding-name", "",
 		"The name of the ClusterBinding resource this proxier is responsible for.")
@@ -79,6 +80,8 @@ func main() {
 		"The interval in seconds for collecting metrics from nodes.")
 	flag.StringVar(&metricsTargetNamespace, "metrics-target-namespace", "",
 		"The target namespace for metrics collection. Empty means all namespaces.")
+	flag.IntVar(&vnodeBasePort, "vnode-base-port", 9006,
+		"The base port for VNode HTTP server. The server will try ports starting from this value.")
 
 	opts := zap.Options{
 		Development:     false,
@@ -444,6 +447,14 @@ func main() {
 	if err := httpServer.Start(ctx); err != nil {
 		setupLog.Error(err, "failed to start HTTP server")
 		os.Exit(1)
+	}
+
+	// Start VNode HTTP server for metrics access
+	if metricsCollector != nil {
+		if err := proxier.StartVNodeHTTPServer(metricsCollector, ctrl.Log.WithName("vnode-http-server"), vnodeBasePort); err != nil {
+			setupLog.Error(err, "failed to start VNode HTTP server")
+			os.Exit(1)
+		}
 	}
 
 	setupLog.Info("Kubeocean Proxier started successfully")
