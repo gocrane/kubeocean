@@ -994,14 +994,9 @@ spec:
 			)
 
 			ctx := context.Background()
-			result, err := reconciler.handleDeletion(ctx, tt.clusterBinding)
+			err = reconciler.handleDeletion(ctx, tt.clusterBinding)
 
 			assert.NoError(t, err)
-			if tt.expectRequeue {
-				assert.True(t, result.RequeueAfter > 0, "Should requeue when cleanup is not complete")
-			} else {
-				assert.Equal(t, ctrl.Result{}, result, "Should not requeue when cleanup is complete")
-			}
 
 			// Verify finalizer is removed when cleanup is complete
 			if !tt.expectRequeue {
@@ -1682,11 +1677,10 @@ func TestClusterBindingReconciler_handleDeletion_WaitForSyncerFinalizer(t *testi
 	)
 
 	ctx := context.Background()
-	result, err := reconciler.handleDeletion(ctx, clusterBinding)
+	err := reconciler.handleDeletion(ctx, clusterBinding)
 
 	// Should return no error but also no requeue when waiting for syncer finalizer
 	assert.NoError(t, err)
-	assert.Equal(t, ctrl.Result{}, result)
 }
 
 func TestClusterBindingReconciler_updateCondition(t *testing.T) {

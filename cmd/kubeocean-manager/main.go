@@ -73,9 +73,6 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	// Initialize metrics
-	metrics.InitMetrics()
-
 	// Get the kubernetes config and modify it with QPS and Burst settings
 	cfg := ctrl.GetConfigOrDie()
 	if kubeClientQPS > 0 {
@@ -128,6 +125,9 @@ func main() {
 		"qps", kubeClientQPS,
 		"burst", kubeClientBurst,
 	)
+
+	// Register ClusterBinding metrics collector
+	metrics.RegisterClusterBindingCollector(mgr.GetClient(), setupLog.WithName("metrics"))
 
 	// Setup ClusterBinding controller
 	if err = controller.NewClusterBindingReconciler(
