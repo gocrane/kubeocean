@@ -160,12 +160,16 @@ func (r *NodeController) handleNodeUpdate(node *corev1.Node) {
 	// Update VNodePortMapper
 	if !existed {
 		// Node added - add to mapper
+		r.Log.Info("Adding new VNode to port mapper", "vnode", node.Name, "port", nodeInfo.ProxierPort, "nodeInfo", nodeInfo)
 		VNodePortMapper.AddVNodePort(node.Name, nodeInfo.ProxierPort)
-		r.Log.V(1).Info("Added VNode to port mapper", "vnode", node.Name, "port", nodeInfo.ProxierPort)
+		r.Log.Info("Successfully added VNode to port mapper", "vnode", node.Name, "port", nodeInfo.ProxierPort)
 	} else if oldNodeInfo.ProxierPort != nodeInfo.ProxierPort {
 		// Port changed - update mapper
+		r.Log.Info("Updating VNode port in mapper", "vnode", node.Name, "oldPort", oldNodeInfo.ProxierPort, "newPort", nodeInfo.ProxierPort, "nodeInfo", nodeInfo)
 		VNodePortMapper.AddVNodePort(node.Name, nodeInfo.ProxierPort)
-		r.Log.V(1).Info("Updated VNode port in mapper", "vnode", node.Name, "oldPort", oldNodeInfo.ProxierPort, "newPort", nodeInfo.ProxierPort)
+		r.Log.Info("Successfully updated VNode port in mapper", "vnode", node.Name, "oldPort", oldNodeInfo.ProxierPort, "newPort", nodeInfo.ProxierPort)
+	} else {
+		r.Log.V(1).Info("VNode port unchanged, no mapper update needed", "vnode", node.Name, "port", nodeInfo.ProxierPort)
 	}
 
 	// Call MetricsCollector directly
@@ -196,8 +200,9 @@ func (r *NodeController) handleNodeDelete(nodeName string) {
 
 	if existed {
 		// Remove from VNodePortMapper
+		r.Log.Info("Removing VNode from port mapper", "vnode", nodeName, "nodeInfo", oldNodeInfo)
 		VNodePortMapper.RemoveVNodePort(nodeName)
-		r.Log.V(1).Info("Removed VNode from port mapper", "vnode", nodeName)
+		r.Log.Info("Successfully removed VNode from port mapper", "vnode", nodeName)
 
 		r.Log.Info("Node removed from proxier", "node", nodeName, "nodeInfo", oldNodeInfo)
 
@@ -235,6 +240,16 @@ func (r *NodeController) SyncExistingNodes(ctx context.Context) error {
 	}
 
 	r.Log.Info("Synced existing nodes for proxier", "nodeCount", len(r.CurrentNodes))
+
+	// Initialize VNodePortMapper with existing nodes
+	VNodePortMapper.Clear() // Clear any existing mappings
+	for nodeName, nodeInfo := range r.CurrentNodes {
+		VNodePortMapper.AddVNodePort(nodeName, nodeInfo.ProxierPort)
+		r.Log.Info("Initialized VNode in port mapper", "vnode", nodeName, "port", nodeInfo.ProxierPort)
+	}
+
+	// Log final VNodePortMapper state
+	r.Log.Info("VNodePortMapper initialized", "totalVNodes", len(r.CurrentNodes))
 
 	// If MetricsCollector exists, initialize it directly
 	if r.metricsCollector != nil {

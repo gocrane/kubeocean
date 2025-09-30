@@ -966,46 +966,77 @@ func (r *PhysicalNodeReconciler) getBaseResources(node *corev1.Node) corev1.Reso
 }
 
 // buildVirtualNodeAddresses builds addresses for virtual node
-func (r *PhysicalNodeReconciler) buildVirtualNodeAddresses(physicalNode *corev1.Node) []corev1.NodeAddress {
-	// Keep all original node addresses, but force update InternalIP to point to proxier pod IP
-	// Use Pod IP instead of Service ClusterIP to avoid ClusterIP connectivity issues
-	proxierPodIP := r.getProxierPodIP()
-	if proxierPodIP != "" {
-		// First find and update existing InternalIP
-		internalIPUpdated := false
-		addresses := make([]corev1.NodeAddress, len(physicalNode.Status.Addresses))
-		copy(addresses, physicalNode.Status.Addresses)
+func (r *PhysicalNodeReconciler) buildVirtualNodeAddresses(physicalNode *corev1.Node, internalIP string) []corev1.NodeAddress {
 
-		for i := range addresses {
-			if addresses[i].Type == corev1.NodeInternalIP {
-				addresses[i].Address = proxierPodIP
-				internalIPUpdated = true
-				r.Log.Info("Updated existing InternalIP for virtual node to point to proxier pod", "node", physicalNode.Name, "podIP", proxierPodIP)
-				break
-			}
+	// First find and update existing InternalIP
+	internalIPUpdated := false
+	addresses := make([]corev1.NodeAddress, len(physicalNode.Status.Addresses))
+	copy(addresses, physicalNode.Status.Addresses)
+
+	for i := range addresses {
+		if addresses[i].Type == corev1.NodeInternalIP {
+			addresses[i].Address = internalIP
+			internalIPUpdated = true
+			r.Log.Info("Updated existing InternalIP for virtual node to point to proxier pod", "node", physicalNode.Name, "podIP", internalIP)
+			break
 		}
+	}
 
-		// If no InternalIP found, add a new one
-		if !internalIPUpdated {
-			addresses = append(addresses, corev1.NodeAddress{
-				Type:    corev1.NodeInternalIP,
-				Address: proxierPodIP,
-			})
-			r.Log.Info("Added new InternalIP for virtual node pointing to proxier pod", "node", physicalNode.Name, "podIP", proxierPodIP)
-		}
+	// If no InternalIP found, add a new one
+	if !internalIPUpdated {
+		addresses = append(addresses, corev1.NodeAddress{
+			Type:    corev1.NodeInternalIP,
+			Address: internalIP,
+		})
+		r.Log.Info("Added new InternalIP for virtual node pointing to proxier pod", "node", physicalNode.Name, "podIP", internalIP)
+	}
 
-		return addresses
-	} else {
-		r.Log.Info("Unable to get proxier pod IP for virtual node, using original addresses", "node", physicalNode.Name)
-		// If unable to get proxier pod IP, return original addresses
-		return physicalNode.Status.Addresses
+	return addresses
+}
+
+func nodeDaemonEndpoints(daemonPort int32) corev1.NodeDaemonEndpoints {
+	return corev1.NodeDaemonEndpoints{
+		KubeletEndpoint: corev1.DaemonEndpoint{
+			Port: daemonPort,
+		},
 	}
 }
 
 // createOrUpdateVirtualNode creates or updates a virtual node based on physical node
 func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, physicalNode *corev1.Node, resources corev1.ResourceList, policies []cloudv1beta1.ResourceLeasingPolicy, disableNodeDefaultTaint bool) error {
+	needCreate := false
+
 	virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
 	logger := r.Log.WithValues("virtualNode", virtualNodeName, "physicalNode", physicalNode.Name)
+
+	// Check if virtual node already exists
+	existingNode := &corev1.Node{}
+	err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, existingNode)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			needCreate = true
+		} else {
+			return fmt.Errorf("failed to get virtual node: %w", err)
+		}
+	}
+
+	var internalIP, proxierPort string
+	if needCreate {
+		internalIP = r.getProxierPodIP()
+		proxierPort = r.generateStableProxierPort(virtualNodeName)
+	} else {
+		// Try to get InternalIP from existingNode.Status.Addresses first
+		internalIP = r.getInternalIPFromNode(existingNode)
+		if internalIP == "" {
+			internalIP = r.getProxierPodIP()
+		}
+
+		if existingNode.Labels[cloudv1beta1.LabelProxierPort] != "" {
+			proxierPort = existingNode.Labels[cloudv1beta1.LabelProxierPort]
+		} else {
+			proxierPort = r.generateStableProxierPort(virtualNodeName)
+		}
+	}
 
 	// Get applicable policy for taint management
 	var policy *cloudv1beta1.ResourceLeasingPolicy
@@ -1014,13 +1045,13 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 	}
 
 	// Build virtual node addresses
-	addresses := r.buildVirtualNodeAddresses(physicalNode)
+	addresses := r.buildVirtualNodeAddresses(physicalNode, internalIP)
 
 	virtualNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        virtualNodeName,
-			Labels:      r.buildVirtualNodeLabels(virtualNodeName, physicalNode),
-			Annotations: r.buildVirtualNodeAnnotations(physicalNode, policies),
+			Labels:      r.buildVirtualNodeLabels(virtualNodeName, physicalNode, proxierPort),
+			Annotations: r.buildVirtualNodeAnnotations(physicalNode, policies, internalIP),
 			Finalizers:  []string{cloudv1beta1.VirtualNodeFinalizer},
 		},
 		Spec: corev1.NodeSpec{
@@ -1034,6 +1065,8 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 			NodeInfo:    physicalNode.Status.NodeInfo,
 			Phase:       physicalNode.Status.Phase,
 			Addresses:   addresses,
+			//DaemonEndpoints: nodeDaemonEndpoints(int32(proxierPort),
+			DaemonEndpoints: nodeDaemonEndpoints(int32(10250)),
 		},
 	}
 
@@ -1043,24 +1076,18 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		Annotations: r.copyMap(virtualNode.Annotations),
 		Taints:      r.copyTaints(virtualNode.Spec.Taints),
 	}
-	err := r.saveExpectedMetadataToAnnotation(virtualNode, expectedMetadata)
+	err = r.saveExpectedMetadataToAnnotation(virtualNode, expectedMetadata)
 	if err != nil {
 		return fmt.Errorf("failed to save expected metadata: %w", err)
 	}
 
-	// Check if virtual node already exists
-	existingNode := &corev1.Node{}
-	err = r.VirtualClient.Get(ctx, client.ObjectKey{Name: virtualNodeName}, existingNode)
+	if needCreate {
+		// Node doesn't exist, create it
+		logger.Info("Creating virtual node",
+			"resources", resources,
+			"policiesCount", len(policies))
+		return r.VirtualClient.Create(ctx, virtualNode)
 
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// Node doesn't exist, create it
-			logger.Info("Creating virtual node",
-				"resources", resources,
-				"policiesCount", len(policies))
-			return r.VirtualClient.Create(ctx, virtualNode)
-		}
-		return fmt.Errorf("failed to get virtual node: %w", err)
 	} else {
 		// Node exists, update it
 		err = r.preserveUserCustomizations(existingNode, virtualNode)
@@ -1482,7 +1509,7 @@ func (r *PhysicalNodeReconciler) getClusterBindingName() string {
 }
 
 // buildVirtualNodeLabels builds labels for virtual node
-func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physicalNode *corev1.Node) map[string]string {
+func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physicalNode *corev1.Node, proxierPort string) map[string]string {
 	labels := physicalNode.Labels
 
 	if labels == nil {
@@ -1501,13 +1528,11 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physica
 	labels["kubernetes.io/hostname"] = nodeName
 
 	// Add physical node InternalIP
-	internalIP := r.getPhysicalNodeInternalIP(physicalNode)
-	if internalIP != "" {
-		labels[cloudv1beta1.LabelPhysicalNodeInnerIP] = internalIP
+	physicalNodeIP := r.getPhysicalNodeInternalIP(physicalNode)
+	if physicalNodeIP != "" {
+		labels[cloudv1beta1.LabelPhysicalNodeInnerIP] = physicalNodeIP
 	}
 
-	// Add unique proxier port - use stable generation
-	proxierPort := r.generateStableProxierPort(nodeName)
 	labels[cloudv1beta1.LabelProxierPort] = proxierPort
 
 	// Prometheus URL will be added to annotations instead of labels
@@ -1519,7 +1544,7 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeLabels(nodeName string, physica
 }
 
 // buildVirtualNodeAnnotations builds annotations for virtual node
-func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev1.Node, policies []cloudv1beta1.ResourceLeasingPolicy) map[string]string {
+func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev1.Node, policies []cloudv1beta1.ResourceLeasingPolicy, internalIP string) map[string]string {
 	annotations := physicalNode.Annotations
 
 	if annotations == nil {
@@ -1569,19 +1594,16 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 
 	// Add prometheus URL to annotations - format: {InternalIP}:{proxierPort}/{VNodeName}
 	// Try to get proxier pod IP, if not available, use placeholder
-	proxierPodIP := r.getProxierPodIP()
-	if proxierPodIP != "" {
+	if internalIP != "" {
 		// Generate proxier port for this node
 		virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
-		proxierPort := r.generateStableProxierPort(virtualNodeName)
-		prometheusURL := fmt.Sprintf("%s:%s/%s", proxierPodIP, proxierPort, virtualNodeName)
+		prometheusURL := fmt.Sprintf("%s:9006/%s", internalIP, virtualNodeName)
 		annotations[cloudv1beta1.AnnotationPrometheusURL] = prometheusURL
 		r.Log.V(1).Info("Added prometheus URL annotation", "url", prometheusURL)
 	} else {
 		// Use placeholder that will be updated when proxier pod becomes available
 		virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
-		proxierPort := r.generateStableProxierPort(virtualNodeName)
-		placeholderURL := fmt.Sprintf("<pending>:%s/%s", proxierPort, virtualNodeName)
+		placeholderURL := fmt.Sprintf("<pending>:9006/%s", virtualNodeName)
 		annotations[cloudv1beta1.AnnotationPrometheusURL] = placeholderURL
 		r.Log.V(1).Info("Added prometheus URL placeholder", "url", placeholderURL)
 	}
@@ -2112,5 +2134,20 @@ func (r *PhysicalNodeReconciler) getProxierPodIP() string {
 	}
 
 	r.Log.Error(nil, "No running proxier pod found", "deploymentName", proxierDeploymentName)
+	return ""
+}
+
+// getInternalIPFromNode extracts InternalIP from node's Status.Addresses
+func (r *PhysicalNodeReconciler) getInternalIPFromNode(node *corev1.Node) string {
+	if node == nil || node.Status.Addresses == nil {
+		return ""
+	}
+
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP {
+			return addr.Address
+		}
+	}
+
 	return ""
 }

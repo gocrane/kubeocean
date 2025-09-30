@@ -485,9 +485,6 @@ func (mc *MetricsCollector) printListeningPorts() {
 // createHandler creates HTTP handler
 func (mc *MetricsCollector) createHandler(port string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mc.mu.RLock()
-		defer mc.mu.RUnlock()
-
 		// Return different data based on path
 		switch r.URL.Path {
 		case "/metrics":
@@ -497,18 +494,29 @@ func (mc *MetricsCollector) createHandler(port string) http.HandlerFunc {
 		default:
 			// Return status information
 			w.Header().Set("Content-Type", "application/json")
+			// Read nodeIP with a short-lived read lock to avoid scanning nodeStates
+			nodeIP := "unknown"
+			mc.mu.RLock()
+			if entry, exists := mc.httpServers[port]; exists {
+				nodeIP = entry.nodeIP
+			}
+			mc.mu.RUnlock()
 			fmt.Fprintf(w, `{"port":"%s","nodeIP":"%s","available_endpoints":["/metrics"],"status":"running"}`,
-				port, mc.getNodeIPByPort(port))
+				port, nodeIP)
 		}
 	}
 }
 
 // writeRealMetrics writes real cAdvisor metrics data
 func (mc *MetricsCollector) writeRealMetrics(w http.ResponseWriter, port string) {
-	// Get metrics data from cache
+	// Snapshot needed data under a short read lock
 	mc.mu.RLock()
 	metricsData, exists := mc.metricsCache[port]
 	lastUpdate, _ := mc.lastUpdate[port]
+	nodeIP := "unknown"
+	if entry, ok := mc.httpServers[port]; ok {
+		nodeIP = entry.nodeIP
+	}
 	mc.mu.RUnlock()
 
 	// Log cache access
@@ -528,7 +536,6 @@ func (mc *MetricsCollector) writeRealMetrics(w http.ResponseWriter, port string)
 	}
 
 	// Add some metadata comments
-	nodeIP := mc.getNodeIPByPort(port)
 	fmt.Fprintf(w, "# Metrics from node %s (port %s)\n", nodeIP, port)
 	fmt.Fprintf(w, "# Last updated: %s\n", lastUpdate.Format(time.RFC3339))
 	fmt.Fprintf(w, "# Source: kubelet /metrics/cadvisor\n")
