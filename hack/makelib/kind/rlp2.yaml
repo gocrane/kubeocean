@@ -1,0 +1,22 @@
+apiVersion: cloud.tencent.com/v1beta1
+kind: ResourceLeasingPolicy
+metadata:
+  name: rlp-worker2
+spec:
+  cluster: cb-worker2
+  forceReclaim: true
+  nodeSelector:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: kubeocean.io/node-type
+        operator: In
+        values: ["worker"]
+  timeWindows:
+    - start: "08:01"
+      end: "08:00" # 24h all days is allowed
+  resourceLimits:
+    - resource: cpu
+      quantity: "4"
+      percent: 80  # Take the smaller of 4 CPUs or 80% of available CPUs
+    - resource: memory
+      percent: 90  # Take 90% of available memory

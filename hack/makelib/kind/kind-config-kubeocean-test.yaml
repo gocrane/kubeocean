@@ -3,6 +3,8 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: kubeocean-test
+networking:
+  podSubnet: "<podSubnet>"
 nodes:
 # Control-plane node
 - role: control-plane

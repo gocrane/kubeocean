@@ -83,6 +83,7 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 GINKGO ?= $(LOCALBIN)/ginkgo
+HELM ?= $(LOCALBIN)/helm
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
@@ -90,6 +91,7 @@ CONTROLLER_TOOLS_VERSION ?= v0.18.0
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
 GOLANGCI_LINT_VERSION ?= v2.3.1
+HELM_VERSION ?= v3.18.6
 
 KUSTOMIZE_INSTALL_SCRIPT ?= "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"
 .PHONY: kustomize
@@ -113,9 +115,64 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 	test -s $(LOCALBIN)/golangci-lint && $(LOCALBIN)/golangci-lint --version | grep -q $(GOLANGCI_LINT_VERSION) || \
 	GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
+.PHONY: helm
+helm: $(HELM) ## Download helm locally if necessary. If wrong version is installed, it will be removed before downloading.
+$(HELM): $(LOCALBIN)
+	@if test -x $(LOCALBIN)/helm && ! $(LOCALBIN)/helm version --short | grep -q $(HELM_VERSION); then \
+		echo "$(LOCALBIN)/helm version is not expected $(HELM_VERSION). Removing it before installing."; \
+		rm -rf $(LOCALBIN)/helm; \
+	fi
+	@if ! test -s $(LOCALBIN)/helm; then \
+		echo "Installing helm $(HELM_VERSION) to $(LOCALBIN)/helm..."; \
+		OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+		ARCH=$$(uname -m); \
+		case $$ARCH in \
+			x86_64) ARCH=amd64 ;; \
+			aarch64|arm64) ARCH=arm64 ;; \
+			*) echo "Unsupported architecture: $$ARCH"; exit 1 ;; \
+		esac; \
+		HELM_URL="https://get.helm.sh/helm-$(HELM_VERSION)-$$OS-$$ARCH.tar.gz"; \
+		curl -fsSL $$HELM_URL | tar -xz -C /tmp --strip-components=1; \
+		mv /tmp/helm $(LOCALBIN)/helm; \
+		chmod +x $(LOCALBIN)/helm; \
+		echo "✅ Helm $(HELM_VERSION) installed successfully to $(LOCALBIN)/helm"; \
+	fi
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter.
 	$(GOLANGCI_LINT) run
+
+##@ Deployment
+
+.PHONY: install-manager
+install-manager: helm ## Install kubeocean manager to the current cluster using helm.
+	@echo "🚀 Installing kubeocean manager to current cluster..."
+	$(HELM) upgrade --install kubeocean charts/kubeocean \
+		--wait \
+		--timeout 300s
+	@echo "✅ Kubeocean manager installed successfully!"
+	@echo "📋 Check status with: kubectl get pods -n kubeocean-system"
+
+.PHONY: install-worker
+install-worker: helm ## Install kubeocean worker resources to the current cluster using helm.
+	@echo "🚀 Installing kubeocean worker resources to current cluster..."
+	$(HELM) upgrade --install kubeocean-worker charts/kubeocean-worker \
+		--wait \
+		--timeout 300s
+	@echo "✅ Kubeocean worker resources installed successfully!"
+	@echo "📋 Check status with: kubectl get all -n kubeocean-worker"
+
+.PHONY: uninstall-manager
+uninstall-manager: helm ## Uninstall kubeocean manager from the current cluster.
+	@echo "🗑️  Uninstalling kubeocean manager from current cluster..."
+	$(HELM) uninstall kubeocean --ignore-not-found
+	@echo "✅ Kubeocean manager uninstalled successfully!"
+
+.PHONY: uninstall-worker
+uninstall-worker: helm ## Uninstall kubeocean worker resources from the current cluster.
+	@echo "🗑️  Uninstalling kubeocean worker resources from current cluster..."
+	$(HELM) uninstall kubeocean-worker --ignore-not-found
+	@echo "✅ Kubeocean worker resources uninstalled successfully!"
 
 ##@ Development
 
