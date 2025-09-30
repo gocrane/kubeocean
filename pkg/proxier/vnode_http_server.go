@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-logr/logr"
 )
@@ -58,6 +57,15 @@ func (s *VNodeHTTPServer) createVNodeHandler() http.HandlerFunc {
 			return
 		}
 
+		// Check if metrics data is empty
+		if len(metricsData) == 0 {
+			w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "# No metrics data available for VNode '%s' (port: %s)\n", vnodeName, port)
+			s.log.V(1).Info("Returned empty metrics data comment", "vnode", vnodeName, "port", port)
+			return
+		}
+
 		// Return metrics data
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -83,37 +91,15 @@ func StartVNodeHTTPServer(metricsCollector *MetricsCollector, log logr.Logger, b
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.createVNodeHandler())
 
-	// Try ports starting from basePort
-	for port := basePort; port < basePort+10; port++ {
-		addr := fmt.Sprintf(":%d", port)
-
-		httpServer := &http.Server{
-			Addr:    addr,
-			Handler: mux,
-		}
-
-		// Try to start the server in a goroutine and check if it starts successfully
-		started := make(chan bool, 1)
-		go func(server *http.Server, port int) {
-			log.Info("Starting VNode HTTP server", "port", port, "endpoint", fmt.Sprintf("http://localhost:%d/{vnodename}/metrics", port))
-
-			started <- true
-			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Error(err, "VNode HTTP server error", "port", port)
-			}
-		}(httpServer, port)
-
-		// Wait a short time to see if the server starts successfully
-		select {
-		case <-started:
-			log.Info("VNode HTTP server started successfully", "port", port)
-			return nil
-		case <-time.After(100 * time.Millisecond):
-			// Server didn't start quickly, try next port
-			log.V(1).Info("Port busy, trying next port", "port", port)
-			continue
-		}
+	addr := fmt.Sprintf(":%d", basePort)
+	httpServer := &http.Server{
+		Addr:    addr,
+		Handler: mux,
 	}
 
-	return fmt.Errorf("failed to start VNode HTTP server on any port from %d to %d", basePort, basePort+9)
+	log.Info("Starting VNode HTTP server", "port", basePort, "endpoint", fmt.Sprintf("http://localhost:%d/{vnodename}/metrics", basePort))
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("failed to start VNode HTTP server on port %d: %w", basePort, err)
+	}
+	return nil
 }

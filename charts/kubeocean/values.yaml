@@ -178,6 +178,9 @@ syncer:
       hostPath:
         path: /etc/localtime
 
+  # VNode Prometheus server base port used in annotations
+  prometheusVNodeBasePort: 9006
+
 # Proxier configuration
 proxier:
   # Enable proxier deployment (managed by manager)

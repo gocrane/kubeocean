@@ -80,8 +80,8 @@ func main() {
 		"The interval in seconds for collecting metrics from nodes.")
 	flag.StringVar(&metricsTargetNamespace, "metrics-target-namespace", "",
 		"The target namespace for metrics collection. Empty means all namespaces.")
-	flag.IntVar(&vnodeBasePort, "vnode-base-port", 9006,
-		"The base port for VNode HTTP server. The server will try ports starting from this value.")
+	flag.IntVar(&vnodeBasePort, "prometheus-vnode-base-port", 9006,
+		"The port for Prometheus VNode HTTP server. Proxier will bind exactly this port.")
 
 	opts := zap.Options{
 		Development:     false,

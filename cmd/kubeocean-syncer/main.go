@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+
 	//+kubebuilder:scaffold:imports
 
 	"go.uber.org/zap/zapcore"
@@ -48,6 +49,7 @@ func main() {
 	var virtualClientBurst int
 	var physicalClientQPS int
 	var physicalClientBurst int
+	var prometheusVNodeBasePort int
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -62,6 +64,7 @@ func main() {
 	flag.IntVar(&virtualClientBurst, "virtual-client-burst", 0, "Burst for virtual kubernetes client.(default 0 means no limit)")
 	flag.IntVar(&physicalClientQPS, "physical-client-qps", 0, "QPS for physical kubernetes client.(default 0 means no limit)")
 	flag.IntVar(&physicalClientBurst, "physical-client-burst", 0, "Burst for physical kubernetes client.(default 0 means no limit)")
+	flag.IntVar(&prometheusVNodeBasePort, "prometheus-vnode-base-port", 9006, "The port used in VNode Prometheus URL annotations (default 9006)")
 
 	opts := zap.Options{
 		Development:     false,
@@ -169,6 +172,9 @@ func main() {
 		setupLog.Error(err, "unable to create kubeocean syncer")
 		os.Exit(1)
 	}
+
+	// Configure VNode Prometheus base port for bottom-up syncer (used in annotations)
+	kubeoceanSyncer.SetPrometheusVNodeBasePort(prometheusVNodeBasePort)
 
 	ctx := ctrl.SetupSignalHandler()
 

@@ -77,6 +77,9 @@ type PhysicalNodeReconciler struct {
 	// Lease controller management
 	leaseControllers      map[string]*LeaseController // nodeName -> LeaseController
 	leaseControllersMutex sync.RWMutex
+
+	// Base port for Prometheus VNode HTTP server (used in annotations)
+	PrometheusVNodeBasePort int
 }
 
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;create;update;patch;delete
@@ -1020,15 +1023,14 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		}
 	}
 
-	var internalIP, proxierPort string
+	var proxiedPodIP, proxierPort string
 	if needCreate {
-		internalIP = r.getProxierPodIP()
+		proxiedPodIP = r.getProxierPodIP()
 		proxierPort = r.generateStableProxierPort(virtualNodeName)
 	} else {
-		// Try to get InternalIP from existingNode.Status.Addresses first
-		internalIP = r.getInternalIPFromNode(existingNode)
-		if internalIP == "" {
-			internalIP = r.getProxierPodIP()
+		proxiedPodIP = r.getInternalIPFromNode(existingNode)
+		if proxiedPodIP == "" {
+			proxiedPodIP = r.getProxierPodIP()
 		}
 
 		if existingNode.Labels[cloudv1beta1.LabelProxierPort] != "" {
@@ -1045,13 +1047,13 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 	}
 
 	// Build virtual node addresses
-	addresses := r.buildVirtualNodeAddresses(physicalNode, internalIP)
+	addresses := r.buildVirtualNodeAddresses(physicalNode, proxiedPodIP)
 
 	virtualNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        virtualNodeName,
 			Labels:      r.buildVirtualNodeLabels(virtualNodeName, physicalNode, proxierPort),
-			Annotations: r.buildVirtualNodeAnnotations(physicalNode, policies, internalIP),
+			Annotations: r.buildVirtualNodeAnnotations(physicalNode, policies, proxiedPodIP),
 			Finalizers:  []string{cloudv1beta1.VirtualNodeFinalizer},
 		},
 		Spec: corev1.NodeSpec{
@@ -1112,7 +1114,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		}
 
 		newNode.Annotations = virtualNode.Annotations
-		newNode.Status.Addresses = existingNode.Status.Addresses
+		newNode.Status.Addresses = virtualNode.Status.Addresses
 
 		// Ensure finalizer exists
 		if !controllerutil.ContainsFinalizer(newNode, cloudv1beta1.VirtualNodeFinalizer) {
@@ -1597,13 +1599,21 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAnnotations(physicalNode *corev
 	if internalIP != "" {
 		// Generate proxier port for this node
 		virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
-		prometheusURL := fmt.Sprintf("%s:9006/%s", internalIP, virtualNodeName)
+		port := r.PrometheusVNodeBasePort
+		if port == 0 {
+			port = 9006
+		}
+		prometheusURL := fmt.Sprintf("%s:%d/%s", internalIP, port, virtualNodeName)
 		annotations[cloudv1beta1.AnnotationPrometheusURL] = prometheusURL
 		r.Log.V(1).Info("Added prometheus URL annotation", "url", prometheusURL)
 	} else {
 		// Use placeholder that will be updated when proxier pod becomes available
 		virtualNodeName := r.generateVirtualNodeName(physicalNode.Name)
-		placeholderURL := fmt.Sprintf("<pending>:9006/%s", virtualNodeName)
+		port := r.PrometheusVNodeBasePort
+		if port == 0 {
+			port = 9006
+		}
+		placeholderURL := fmt.Sprintf("<pending>:%d/%s", port, virtualNodeName)
 		annotations[cloudv1beta1.AnnotationPrometheusURL] = placeholderURL
 		r.Log.V(1).Info("Added prometheus URL placeholder", "url", placeholderURL)
 	}

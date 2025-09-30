@@ -29,6 +29,14 @@ type BottomUpSyncer struct {
 
 	// Reconciler reference for triggering reconciliation
 	nodeReconciler *PhysicalNodeReconciler
+
+	// VNode Prometheus base port (injected from KubeoceanSyncer)
+	prometheusVNodeBasePort int
+}
+
+// SetPrometheusVNodeBasePort sets the base port used when constructing VNode Prometheus URLs
+func (bus *BottomUpSyncer) SetPrometheusVNodeBasePort(port int) {
+	bus.prometheusVNodeBasePort = port
 }
 
 // NewBottomUpSyncer creates a new BottomUpSyncer instance
@@ -146,13 +154,14 @@ func (bus *BottomUpSyncer) setupControllers() error {
 
 	// Setup Physical Node Controller
 	nodeReconciler := &PhysicalNodeReconciler{
-		PhysicalClient:     bus.physicalManager.GetClient(),
-		VirtualClient:      bus.virtualManager.GetClient(),
-		KubeClient:         kubeClient,
-		Scheme:             bus.Scheme,
-		ClusterBindingName: bus.ClusterBinding.Name,
-		ClusterBinding:     bus.ClusterBinding,
-		Log:                bus.Log.WithName("physical-node-controller"),
+		PhysicalClient:          bus.physicalManager.GetClient(),
+		VirtualClient:           bus.virtualManager.GetClient(),
+		KubeClient:              kubeClient,
+		Scheme:                  bus.Scheme,
+		ClusterBindingName:      bus.ClusterBinding.Name,
+		ClusterBinding:          bus.ClusterBinding,
+		Log:                     bus.Log.WithName("physical-node-controller"),
+		PrometheusVNodeBasePort: bus.prometheusVNodeBasePort,
 	}
 
 	// Save reference to the reconciler for triggering reconciliation

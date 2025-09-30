@@ -84,6 +84,7 @@ data:
             - --health-probe-bind-address=:{{ .Values.syncer.healthProbe.port }}
             {{- end }}
             - --cluster-binding-name={{ "{{" }}.ClusterBindingName{{ "}}" }}
+            - --prometheus-vnode-base-port={{ .Values.syncer.prometheusVNodeBasePort | default 9006 }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}

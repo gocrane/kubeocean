@@ -75,6 +75,7 @@ data:
             args:
             - --cluster-binding-name={{ "{{" }}.ClusterBindingName{{ "}}" }}
             - --listen-port={{ .Values.proxier.listenPort }}
+            - --prometheus-vnode-base-port={{ .Values.proxier.vnodeBasePort | default 9006 }}
             {{- if .Values.proxier.metrics.collection.enabled }}
             - --metrics-enabled={{ .Values.proxier.metrics.collection.enabled }}
             - --metrics-collect-interval={{ .Values.proxier.metrics.collection.interval }}
