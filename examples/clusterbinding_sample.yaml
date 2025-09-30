@@ -2,7 +2,6 @@ apiVersion: cloud.tencent.com/v1beta1
 kind: ClusterBinding
 metadata:
   name: example-cluster
-  namespace: kubeocean-system
 spec:
   clusterID: cls-example
   mountNamespace: kubeocean-worker
