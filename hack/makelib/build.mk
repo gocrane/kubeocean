@@ -1,5 +1,4 @@
 # Build related targets and configurations
-# 构建相关的目标和配置
 
 ##@ Build
 
@@ -108,18 +107,30 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 	test -s $(LOCALBIN)/controller-gen && $(LOCALBIN)/controller-gen --version | grep -q $(CONTROLLER_TOOLS_VERSION) || \
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 
-.PHONY: envtest
-envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
-$(ENVTEST): $(LOCALBIN)
-	test -s $(LOCALBIN)/setup-envtest || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
-
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	test -s $(LOCALBIN)/golangci-lint && $(LOCALBIN)/golangci-lint --version | grep -q $(GOLANGCI_LINT_VERSION) || \
 	GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
-.PHONY: ginkgo
-ginkgo: $(GINKGO) ## Download ginkgo locally if necessary.
-$(GINKGO): $(LOCALBIN)
-	test -s $(LOCALBIN)/ginkgo || GOBIN=$(LOCALBIN) go install github.com/onsi/ginkgo/v2/ginkgo@2.23.4
+.PHONY: lint
+lint: golangci-lint ## Run golangci-lint linter.
+	$(GOLANGCI_LINT) run
+
+##@ Development
+
+.PHONY: manifests
+manifests: controller-gen ## Generate ClusterRole and CustomResourceDefinition objects.
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd paths="./..." output:crd:artifacts:config=config/crd/bases
+
+.PHONY: generate
+generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+.PHONY: fmt
+fmt: ## Run go fmt against code.
+	go fmt ./...
+
+.PHONY: vet
+vet: ## Run go vet against code.
+	go vet ./...

@@ -1,27 +1,14 @@
 # Test related targets and configurations
-# 测试相关的目标和配置
 
-##@ Development
+.PHONY: envtest
+envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
+$(ENVTEST): $(LOCALBIN)
+	test -s $(LOCALBIN)/setup-envtest || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
 
-.PHONY: manifests
-manifests: controller-gen ## Generate ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd paths="./..." output:crd:artifacts:config=config/crd/bases
-
-.PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
-
-.PHONY: fmt
-fmt: ## Run go fmt against code.
-	go fmt ./...
-
-.PHONY: vet
-vet: ## Run go vet against code.
-	go vet ./...
-
-.PHONY: lint
-lint: golangci-lint ## Run golangci-lint linter.
-	$(GOLANGCI_LINT) run
+.PHONY: ginkgo
+ginkgo: $(GINKGO) ## Download ginkgo locally if necessary.
+$(GINKGO): $(LOCALBIN)
+	test -s $(LOCALBIN)/ginkgo || GOBIN=$(LOCALBIN) go install github.com/onsi/ginkgo/v2/ginkgo@2.23.4
 
 .PHONY: test
 test: manifests generate fmt vet envtest ginkgo ## Run tests with ginkgo in parallel (minimal output).

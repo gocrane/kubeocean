@@ -1,53 +1,87 @@
-# Makefile 模块化结构
+# kubeocean Makelib Modules
 
-本目录包含了模块化的 Makefile 文件，将原本的大型 Makefile 分解为三个功能模块：
+This directory contains modular Makefile configurations for the kubeocean project.
 
-## 文件结构
+## Module Overview
 
+- `build.mk` - Build-related targets and configurations
+- `test.mk` - Test-related targets and configurations
+- `kind.mk` - KIND (Kubernetes in Docker) local development environment
+
+## KIND Module Usage Guide
+
+The `kind.mk` provides a complete local Kubernetes development environment, supporting the creation of a KIND cluster with multiple nodes (1 control-plane + 2 workers).
+
+### Main Features
+
+#### Basic Operations
+```bash
+make kind-create     # Create KIND cluster (legacy)
+make kind-delete     # Delete KIND cluster (legacy)
+make kind-status     # Show multi-cluster status for kubeocean
+make kind-clean         # Clean up all KIND related resources
 ```
-hack/makelib/
-├── README.md          # 本说明文件
-├── build.mk           # 构建相关的目标和配置
-└── test.mk            # 测试相关的目标和配置
+
+#### Multi-Cluster Operations
+```bash
+# Create clusters
+make kind-create-manager   # Create manager cluster (virtual cluster)
+make kind-create-worker1   # Create worker cluster 1 (physical cluster)
+make kind-create-worker2   # Create worker cluster 2 (physical cluster)
+make kind-create-all       # Create all kubeocean clusters
+
+# Delete clusters
+make kind-delete-manager   # Delete manager cluster
+make kind-delete-worker1   # Delete worker cluster 1
+make kind-delete-worker2   # Delete worker cluster 2
+make kind-delete-all       # Delete all kubeocean clusters
 ```
 
-## 模块说明
+#### Development Utilities
+```bash
+make kind-load-images    # Load locally built images into KIND cluster
+make kind-logs          # Show cluster logs
+```
 
-### build.mk - 构建模块
-包含以下功能：
-- **构建目标**: `build`, `run-manager`, `run-syncer`
-- **Docker 构建**: `docker-build`, `docker-build.manager`, `docker-build.syncer`
-- **Docker 推送**: `docker-push`, `docker-push.manager`, `docker-push.syncer`
-- **跨平台构建**: `docker-buildx`
-- **构建依赖**: `kustomize`, `controller-gen`, `envtest`, `golangci-lint`, `ginkgo`
+### Default Configuration
 
-### test.mk - 测试模块
-包含以下功能：
-- **开发工具**: `manifests`, `generate`, `fmt`, `vet`, `lint`
-- **单元测试**: `test`, `test-verbose`
-- **集成测试**: `test-int`, `test-int-build`, `test-int-focus`
+#### Legacy Single Cluster
+- **Cluster Name**: `kubeocean-test`
+- **Kubernetes Version**: `v1.28.0`
+- **Node Configuration**: 1 control-plane + 2 worker nodes
 
-## 使用方法
+#### Multi-Cluster Configuration
+All clusters use the same configuration file `hack/makelib/kind/kind-config-kubeocean-test.yaml` and are accessed directly via container IP:
 
-主 Makefile 会自动包含所有模块文件，使用方法与之前完全相同：
+- **Manager Cluster**: `kubeocean-manager` (Virtual Cluster)
+  - Config file: `kind-config-kubeocean-test.yaml`
+  - Access method: Container IP:6443 (API Server)
+  - Service ports: 8080 (Metrics), 8081 (Health Check)
+
+- **Worker Cluster 1**: `kubeocean-worker1` (Physical Cluster)  
+  - Config file: `kind-config-kubeocean-test.yaml`
+  - Access method: Container IP:6443 (API Server)
+  - Service ports: 8080 (Metrics), 8081 (Health Check)
+
+- **Worker Cluster 2**: `kubeocean-worker2` (Physical Cluster)
+  - Config file: `kind-config-kubeocean-test.yaml`
+  - Access method: Container IP:6443 (API Server)
+  - Service ports: 8080 (Metrics), 8081 (Health Check)
+
+> **Note**: All clusters use unified configuration with no port mapping, accessing services directly through Docker container internal IP.
+
+### Environment Variables
+
+Customize configuration with environment variables:
 
 ```bash
-# 查看所有可用命令
-make help
+# Basic Configuration
+CLUSTER_NAME=my-cluster make kind-create          # Custom cluster name
+KIND_K8S_VERSION=v1.29.0 make kind-create         # Custom K8s version
 
-# 构建相关
-make build
-make docker-build
-
-# 测试相关
-make test
-make test-int
+# Multi-cluster Management
+CLUSTER_NAME=dev-cluster make kind-create         # Create dev cluster
+CLUSTER_NAME=test-cluster make kind-create        # Create test cluster
+CLUSTER_NAME=dev-cluster make kind-status         # Check dev cluster status
+CLUSTER_NAME=test-cluster make kind-delete        # Delete test cluster
 ```
-
-## 添加新模块
-
-要添加新的模块文件：
-
-1. 在 `hack/makelib/` 目录下创建新的 `.mk` 文件
-2. 在主 Makefile 中添加 `include hack/makelib/your-module.mk`
-3. 按照现有模式组织目标和配置
