@@ -429,12 +429,13 @@ func main() {
 			metricsConfig.TLSSecretNamespace = finalSecretNamespace
 		}
 
-		// Recreate metrics collector with kubelet proxy
+		// Recreate metrics collector with kubelet proxy and clusterID
 		metricsCollector = proxier.NewMetricsCollector(
 			metricsConfig,
 			tokenManager,
 			kubeletProxy, // Now we can pass the kubelet proxy
 			virtualClientset,
+			clusterBinding.Spec.ClusterID, // Pass ClusterID for VNode name transformation
 			ctrl.Log.WithName("metrics-collector"),
 		)
 

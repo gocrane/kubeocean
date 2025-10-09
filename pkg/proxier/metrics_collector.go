@@ -17,6 +17,7 @@ package proxier
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,11 @@ import (
 )
 
 // Note: trueStr and oneStr constants are defined in server.go and shared across the package
+
+const (
+	// KubeoceanWorkerNamespace is the target namespace for physical cluster resources
+	KubeoceanWorkerNamespace = "kubeocean-worker"
+)
 
 // NodeEventHandler defines the node event handling interface
 type NodeEventHandler interface {
@@ -88,12 +94,16 @@ type MetricsCollector struct {
 	kubeClient kubernetes.Interface // Kubernetes client for loading TLS secrets
 	tlsConfig  *tls.Config          // TLS configuration for HTTPS servers
 
+	// Cluster identification for VNode name generation
+	clusterID string // ClusterBinding.Spec.ClusterID for generating VNode names
+
 	// Node state management
 	nodeStates  map[string]NodeInfo     // key: nodeName, value: NodeInfo
 	httpServers map[string]*ServerEntry // key: port
 
 	// Metrics cache
-	metricsCache map[string][]byte    // key: port, value: cached metrics data
+	metricsCache map[string][]byte    // key: port, value: cached Prometheus metrics data
+	summaryCache map[string]*Summary  // key: port, value: cached Summary data (for metrics-server compatibility)
 	lastUpdate   map[string]time.Time // key: port, value: last update time
 
 	mu       sync.RWMutex
@@ -102,7 +112,7 @@ type MetricsCollector struct {
 }
 
 // NewMetricsCollector creates a new metrics collector
-func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, kubeletProxy KubeletProxy, kubeClient kubernetes.Interface, log logr.Logger) *MetricsCollector {
+func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, kubeletProxy KubeletProxy, kubeClient kubernetes.Interface, clusterID string, log logr.Logger) *MetricsCollector {
 	// Initialize VictoriaMetrics unmarshal workers (referring to vnode_metrics)
 	log.Info("Starting VictoriaMetrics unmarshal workers")
 	common.StartUnmarshalWorkers()
@@ -115,9 +125,11 @@ func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, kube
 		kubeletProxy:  kubeletProxy,
 		log:           log,
 		kubeClient:    kubeClient,
+		clusterID:     clusterID,
 		nodeStates:    make(map[string]NodeInfo),
 		httpServers:   make(map[string]*ServerEntry),
 		metricsCache:  make(map[string][]byte),
+		summaryCache:  make(map[string]*Summary),
 		lastUpdate:    make(map[string]time.Time),
 		stopChan:      make(chan struct{}),
 	}
@@ -195,10 +207,11 @@ func (mc *MetricsCollector) collectMetricsFromAllNodes() {
 
 	// Used to store collected raw data
 	type collectedData struct {
-		nodeName string
-		nodeInfo NodeInfo
-		data     []byte
-		err      error
+		nodeName    string
+		nodeInfo    NodeInfo
+		metricsData []byte   // Prometheus format metrics
+		summaryData *Summary // Summary format data (for metrics-server)
+		err         error
 	}
 
 	collectedChan := make(chan collectedData, len(nodeStates))
@@ -217,14 +230,28 @@ func (mc *MetricsCollector) collectMetricsFromAllNodes() {
 
 			mc.log.V(2).Info("Collecting raw metrics from node", "nodeName", name, "nodeIP", info.InternalIP, "port", info.ProxierPort)
 
-			// Get cAdvisor metrics from kubelet API
-			metricsData, err := mc.kubeletClient.GetCAdvisorMetrics(ctx, info.InternalIP, "10250")
+			// Get cAdvisor Prometheus metrics from kubelet API
+			metricsData, metricsErr := mc.kubeletClient.GetCAdvisorMetrics(ctx, info.InternalIP, "10250")
+
+			// Get Summary stats from kubelet API (for metrics-server compatibility)
+			summaryData, summaryErr := mc.kubeletClient.GetSummary(ctx, info.InternalIP, "10250")
+
+			// Combine errors if any
+			var combinedErr error
+			if metricsErr != nil && summaryErr != nil {
+				combinedErr = fmt.Errorf("metrics error: %v; summary error: %v", metricsErr, summaryErr)
+			} else if metricsErr != nil {
+				combinedErr = metricsErr
+			} else if summaryErr != nil {
+				combinedErr = summaryErr
+			}
 
 			collectedChan <- collectedData{
-				nodeName: name,
-				nodeInfo: info,
-				data:     metricsData,
-				err:      err,
+				nodeName:    name,
+				nodeInfo:    info,
+				metricsData: metricsData,
+				summaryData: summaryData,
+				err:         combinedErr,
 			}
 		}(nodeName, nodeInfo)
 	}
@@ -239,60 +266,79 @@ func (mc *MetricsCollector) collectMetricsFromAllNodes() {
 	for collected := range collectedChan {
 		if collected.err != nil {
 			mc.log.Error(collected.err, "Failed to collect metrics from node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP)
-			continue
-		}
-
-		// Parse metrics data (with timeout mechanism)
-		parseCtx, parseCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		parseErr := make(chan error, 1)
-
-		go func() {
-			reader := strings.NewReader(string(collected.data))
-			parseErr <- mc.metricsParser.ParseAndStoreMetrics(reader, collected.nodeInfo.ProxierPort)
-		}()
-
-		select {
-		case err := <-parseErr:
-			parseCancel()
-			if err != nil {
-				mc.log.Error(err, "Failed to parse metrics from node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP)
+			// Continue processing if we have partial data
+			if collected.metricsData == nil && collected.summaryData == nil {
 				continue
 			}
-		case <-parseCtx.Done():
-			parseCancel()
-			mc.log.Error(parseCtx.Err(), "Parse timeout for node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP, "port", collected.nodeInfo.ProxierPort)
-			continue
 		}
 
-		// Generate parsed metrics data
-		var buf strings.Builder
-		mc.metricsParser.WritePrometheusMetrics(&buf, collected.nodeInfo.ProxierPort, collected.nodeInfo.InternalIP, mc.config.TargetNamespace)
-		parsedMetricsData := []byte(buf.String())
+		// Parse Prometheus metrics data (with timeout mechanism) if available
+		if collected.metricsData != nil {
+			parseCtx, parseCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			parseErr := make(chan error, 1)
 
-		// Update cache
-		mc.mu.Lock()
-		oldData, existed := mc.metricsCache[collected.nodeInfo.ProxierPort]
-		mc.metricsCache[collected.nodeInfo.ProxierPort] = parsedMetricsData
-		mc.lastUpdate[collected.nodeInfo.ProxierPort] = time.Now()
-		mc.mu.Unlock()
+			go func() {
+				reader := strings.NewReader(string(collected.metricsData))
+				parseErr <- mc.metricsParser.ParseAndStoreMetrics(reader, collected.nodeInfo.ProxierPort)
+			}()
 
-		// Log cache changes
-		if existed {
-			mc.log.V(1).Info("Updated metrics cache",
-				"port", collected.nodeInfo.ProxierPort,
-				"oldSize", len(oldData),
-				"newSize", len(parsedMetricsData))
-		} else {
-			mc.log.V(1).Info("Created new metrics cache entry",
-				"port", collected.nodeInfo.ProxierPort,
-				"size", len(parsedMetricsData))
+			select {
+			case err := <-parseErr:
+				parseCancel()
+				if err != nil {
+					mc.log.Error(err, "Failed to parse metrics from node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP)
+				}
+			case <-parseCtx.Done():
+				parseCancel()
+				mc.log.Error(parseCtx.Err(), "Parse timeout for node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP, "port", collected.nodeInfo.ProxierPort)
+			}
+
+			// Generate parsed metrics data
+			var buf strings.Builder
+			mc.metricsParser.WritePrometheusMetrics(&buf, collected.nodeInfo.ProxierPort, collected.nodeInfo.InternalIP, mc.config.TargetNamespace)
+			parsedMetricsData := []byte(buf.String())
+
+			// Update Prometheus metrics cache
+			mc.mu.Lock()
+			oldData, existed := mc.metricsCache[collected.nodeInfo.ProxierPort]
+			mc.metricsCache[collected.nodeInfo.ProxierPort] = parsedMetricsData
+			mc.mu.Unlock()
+
+			// Log cache changes
+			if existed {
+				mc.log.V(1).Info("Updated Prometheus metrics cache",
+					"port", collected.nodeInfo.ProxierPort,
+					"oldSize", len(oldData),
+					"newSize", len(parsedMetricsData))
+			} else {
+				mc.log.V(1).Info("Created new Prometheus metrics cache entry",
+					"port", collected.nodeInfo.ProxierPort,
+					"size", len(parsedMetricsData))
+			}
 		}
 
-		mc.log.V(2).Info("Successfully collected and parsed metrics from node",
+		// Store Summary data if available (for metrics-server compatibility)
+		if collected.summaryData != nil {
+			// Transform Summary data for metrics-server compatibility
+			mc.transformSummaryData(collected.summaryData, collected.nodeName)
+
+			mc.mu.Lock()
+			mc.summaryCache[collected.nodeInfo.ProxierPort] = collected.summaryData
+			mc.lastUpdate[collected.nodeInfo.ProxierPort] = time.Now()
+			mc.mu.Unlock()
+
+			mc.log.V(1).Info("Stored Summary data for metrics-server",
+				"port", collected.nodeInfo.ProxierPort,
+				"nodeName", collected.summaryData.Node.NodeName,
+				"podCount", len(collected.summaryData.Pods))
+		}
+
+		mc.log.V(2).Info("Successfully collected and stored metrics from node",
 			"nodeName", collected.nodeName,
 			"nodeIP", collected.nodeInfo.InternalIP,
 			"port", collected.nodeInfo.ProxierPort,
-			"parsedSize", len(parsedMetricsData))
+			"hasPrometheus", collected.metricsData != nil,
+			"hasSummary", collected.summaryData != nil)
 	}
 
 	mc.log.V(1).Info("Completed metrics collection from all nodes")
@@ -437,6 +483,7 @@ func (mc *MetricsCollector) Stop() {
 	mc.httpServers = make(map[string]*ServerEntry)
 	mc.nodeStates = make(map[string]NodeInfo)
 	mc.metricsCache = make(map[string][]byte)
+	mc.summaryCache = make(map[string]*Summary)
 	mc.lastUpdate = make(map[string]time.Time)
 
 	// Wait for all goroutines to complete
@@ -560,8 +607,11 @@ func (mc *MetricsCollector) setupRoutes(port string, nodeInfo NodeInfo) *mux.Rou
 	router := mux.NewRouter()
 	router.StrictSlash(true)
 
-	// Metrics endpoint
+	// Metrics endpoint (Prometheus format)
 	router.HandleFunc("/metrics", mc.handleMetrics(port)).Methods("GET")
+
+	// Summary stats endpoint (metrics-server compatible)
+	router.HandleFunc("/stats/summary", mc.handleSummary(port)).Methods("GET")
 
 	// Container logs endpoint (same as main server)
 	router.HandleFunc("/containerLogs/{namespace}/{pod}/{container}", mc.handleContainerLogs).Methods("GET")
@@ -578,11 +628,51 @@ func (mc *MetricsCollector) setupRoutes(port string, nodeInfo NodeInfo) *mux.Rou
 	return router
 }
 
-// handleMetrics handles metrics endpoint
+// handleMetrics handles metrics endpoint (Prometheus format)
 func (mc *MetricsCollector) handleMetrics(port string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		mc.writeRealMetrics(w, port)
+	}
+}
+
+// handleSummary handles /stats/summary endpoint (metrics-server compatible)
+func (mc *MetricsCollector) handleSummary(port string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mc.mu.RLock()
+		summary, exists := mc.summaryCache[port]
+		lastUpdate, _ := mc.lastUpdate[port]
+		mc.mu.RUnlock()
+
+		if !exists || summary == nil {
+			mc.log.V(1).Info("No summary data available for port", "port", port)
+			http.Error(w, fmt.Sprintf("No summary data available for port %s", port), http.StatusNotFound)
+			return
+		}
+
+		// Log access
+		mc.log.V(2).Info("Serving summary data",
+			"port", port,
+			"nodeName", summary.Node.NodeName,
+			"podCount", len(summary.Pods),
+			"lastUpdate", lastUpdate,
+			"remoteAddr", r.RemoteAddr)
+
+		// Set response headers
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		// Encode and write JSON response
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", "  ") // Pretty print for debugging
+		if err := encoder.Encode(summary); err != nil {
+			mc.log.Error(err, "Failed to encode summary JSON", "port", port)
+			return
+		}
+
+		mc.log.V(2).Info("Successfully served summary data",
+			"port", port,
+			"nodeName", summary.Node.NodeName)
 	}
 }
 
@@ -749,7 +839,7 @@ func (mc *MetricsCollector) handleHealthz(w http.ResponseWriter, r *http.Request
 func (mc *MetricsCollector) handleRoot(port string, nodeInfo NodeInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"port":"%s","nodeIP":"%s","available_endpoints":["/metrics","/containerLogs/{namespace}/{pod}/{container}","/exec/{namespace}/{pod}/{container}","/healthz"],"status":"running"}`,
+		fmt.Fprintf(w, `{"port":"%s","nodeIP":"%s","available_endpoints":["/metrics","/stats/summary","/containerLogs/{namespace}/{pod}/{container}","/exec/{namespace}/{pod}/{container}","/healthz"],"status":"running"}`,
 			port, nodeInfo.InternalIP)
 	}
 }
@@ -865,13 +955,51 @@ func (mc *MetricsCollector) GetActivePorts() []string {
 	return ports
 }
 
-// GetMetricsData gets metrics data for a specific port
+// GetMetricsData gets Prometheus metrics data for a specific port
 func (mc *MetricsCollector) GetMetricsData(port string) ([]byte, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 
 	data, exists := mc.metricsCache[port]
 	return data, exists
+}
+
+// GetSummaryData gets Summary data for a specific port (for metrics-server compatibility)
+func (mc *MetricsCollector) GetSummaryData(port string) (*Summary, bool) {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	data, exists := mc.summaryCache[port]
+	return data, exists
+}
+
+// transformSummaryData transforms Summary data for metrics-server compatibility
+// 1. Convert physical node name to VNode name
+// 2. Filter pods to only include those in kubeocean-worker namespace
+func (mc *MetricsCollector) transformSummaryData(summary *Summary, physicalNodeName string) {
+	if summary == nil {
+		return
+	}
+
+	summary.Node.NodeName = physicalNodeName
+
+	// 2. Filter pods to only include those in kubeocean-worker namespace
+	originalPodCount := len(summary.Pods)
+	filteredPods := make([]PodStats, 0, originalPodCount)
+
+	for _, pod := range summary.Pods {
+		if pod.PodRef.Namespace == KubeoceanWorkerNamespace {
+			filteredPods = append(filteredPods, pod)
+		}
+	}
+
+	summary.Pods = filteredPods
+
+	mc.log.V(2).Info("Filtered pods by namespace",
+		"originalPodCount", originalPodCount,
+		"filteredPodCount", len(filteredPods),
+		"targetNamespace", KubeoceanWorkerNamespace,
+		"nodeName", summary.Node.NodeName)
 }
 
 // parseLogOptions parses log options from query parameters (same as server.go)
