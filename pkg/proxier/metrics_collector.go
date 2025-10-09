@@ -16,6 +16,7 @@ package proxier
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"strings"
@@ -24,6 +25,8 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/common"
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 // NodeEventHandler defines the node event handling interface
@@ -56,6 +59,10 @@ type MetricsConfig struct {
 	MaxConcurrentNodes int           // Maximum concurrent nodes, default 100
 	TargetNamespace    string        // Target namespace, empty means all
 	DebugLog           bool          // Whether to enable debug logging
+
+	// TLS configuration
+	TLSSecretName      string // TLS secret name
+	TLSSecretNamespace string // TLS secret namespace
 }
 
 // MetricsCollector metrics collector
@@ -65,6 +72,10 @@ type MetricsCollector struct {
 	kubeletClient *KubeletClient
 	metricsParser *MetricsParser
 	log           logr.Logger
+
+	// TLS configuration
+	kubeClient kubernetes.Interface // Kubernetes client for loading TLS secrets
+	tlsConfig  *tls.Config          // TLS configuration for HTTPS servers
 
 	// Node state management
 	nodeStates  map[string]NodeInfo     // key: nodeName, value: NodeInfo
@@ -80,23 +91,43 @@ type MetricsCollector struct {
 }
 
 // NewMetricsCollector creates a new metrics collector
-func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, log logr.Logger) *MetricsCollector {
+func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, kubeClient kubernetes.Interface, log logr.Logger) *MetricsCollector {
 	// Initialize VictoriaMetrics unmarshal workers (referring to vnode_metrics)
 	log.Info("Starting VictoriaMetrics unmarshal workers")
 	common.StartUnmarshalWorkers()
 
-	return &MetricsCollector{
+	mc := &MetricsCollector{
 		config:        config,
 		tokenManager:  tokenManager,
 		kubeletClient: NewKubeletClient(log.WithName("kubelet-client"), tokenManager),
 		metricsParser: NewMetricsParser(),
 		log:           log,
+		kubeClient:    kubeClient,
 		nodeStates:    make(map[string]NodeInfo),
 		httpServers:   make(map[string]*ServerEntry),
 		metricsCache:  make(map[string][]byte),
 		lastUpdate:    make(map[string]time.Time),
 		stopChan:      make(chan struct{}),
 	}
+
+	// Load TLS configuration if provided
+	if config.TLSSecretName != "" && config.TLSSecretNamespace != "" {
+		log.Info("Loading TLS configuration for metrics HTTPS servers",
+			"secretName", config.TLSSecretName,
+			"secretNamespace", config.TLSSecretNamespace)
+
+		tlsConfig, err := mc.loadTLSConfigFromSecret()
+		if err != nil {
+			log.Error(err, "Failed to load TLS config, will use HTTP instead of HTTPS")
+		} else {
+			mc.tlsConfig = tlsConfig
+			log.Info("TLS configuration loaded successfully, metrics servers will use HTTPS")
+		}
+	} else {
+		log.Info("No TLS configuration provided, metrics servers will use HTTP")
+	}
+
+	return mc
 }
 
 // Start starts the metrics collector
@@ -406,7 +437,7 @@ func (mc *MetricsCollector) Stop() {
 	mc.log.Info("MetricsCollector stopped")
 }
 
-// startHTTPServerForNode starts HTTP server for specified node
+// startHTTPServerForNode starts HTTP/HTTPS server for specified node
 func (mc *MetricsCollector) startHTTPServerForNode(port string, nodeInfo NodeInfo) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
@@ -427,24 +458,48 @@ func (mc *MetricsCollector) startHTTPServerForNode(port string, nodeInfo NodeInf
 		Handler: mux,
 	}
 
+	// Determine server type based on TLS configuration
+	serverType := "HTTP"
+	protocol := "http"
+	if mc.tlsConfig != nil {
+		serverType = "HTTPS"
+		protocol = "https"
+		server.TLSConfig = mc.tlsConfig
+	}
+
 	// Start server
 	mc.wg.Add(1)
 	go func() {
 		defer mc.wg.Done()
-		mc.log.Info("🚀 Starting HTTP server for metrics",
+		mc.log.Info("🚀 Starting "+serverType+" server for metrics",
 			"port", port,
 			"nodeIP", nodeInfo.InternalIP,
-			"endpoint", "http://localhost:"+port+"/")
+			"endpoint", protocol+"://localhost:"+port+"/",
+			"tls", mc.tlsConfig != nil)
 
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			mc.log.Error(err, "HTTP server error", "port", port, "nodeIP", nodeInfo.InternalIP)
+		var err error
+		if mc.tlsConfig != nil {
+			// Start HTTPS server
+			listener, listenErr := tls.Listen("tcp", ":"+port, mc.tlsConfig)
+			if listenErr != nil {
+				mc.log.Error(listenErr, "Failed to create TLS listener", "port", port, "nodeIP", nodeInfo.InternalIP)
+				return
+			}
+			err = server.Serve(listener)
+		} else {
+			// Start HTTP server
+			err = server.ListenAndServe()
+		}
+
+		if err != nil && err != http.ErrServerClosed {
+			mc.log.Error(err, serverType+" server error", "port", port, "nodeIP", nodeInfo.InternalIP)
 		}
 	}()
 
 	// Graceful shutdown handling
 	go func() {
 		<-stopChan
-		mc.log.Info("🛑 Shutting down HTTP server", "port", port, "nodeIP", nodeInfo.InternalIP)
+		mc.log.Info("🛑 Shutting down "+serverType+" server", "port", port, "nodeIP", nodeInfo.InternalIP)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		server.Shutdown(ctx)
@@ -467,8 +522,13 @@ func (mc *MetricsCollector) printListeningPorts() {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 
+	serverType := "HTTP"
+	if mc.tlsConfig != nil {
+		serverType = "HTTPS"
+	}
+
 	if len(mc.httpServers) == 0 {
-		mc.log.Info("📊 No HTTP servers currently listening")
+		mc.log.Info("📊 No " + serverType + " servers currently listening")
 		return
 	}
 
@@ -479,6 +539,7 @@ func (mc *MetricsCollector) printListeningPorts() {
 
 	mc.log.Info("📊 Currently listening ports",
 		"count", len(mc.httpServers),
+		"type", serverType,
 		"ports", strings.Join(ports, ", "))
 }
 
@@ -543,6 +604,54 @@ func (mc *MetricsCollector) writeRealMetrics(w http.ResponseWriter, port string)
 
 	// Write real cAdvisor metrics data
 	w.Write(metricsData)
+}
+
+// loadTLSConfigFromSecret loads TLS configuration from Kubernetes Secret
+func (mc *MetricsCollector) loadTLSConfigFromSecret() (*tls.Config, error) {
+	if mc.kubeClient == nil {
+		return nil, fmt.Errorf("kubernetes client is not available")
+	}
+
+	mc.log.Info("Loading TLS certificate from Kubernetes Secret for metrics servers",
+		"secretName", mc.config.TLSSecretName,
+		"secretNamespace", mc.config.TLSSecretNamespace)
+
+	// Get the secret
+	secret, err := mc.kubeClient.CoreV1().Secrets(mc.config.TLSSecretNamespace).Get(
+		context.TODO(), mc.config.TLSSecretName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secret %s/%s: %w",
+			mc.config.TLSSecretNamespace, mc.config.TLSSecretName, err)
+	}
+
+	// Extract certificate and key from secret
+	certData, exists := secret.Data["tls.crt"]
+	if !exists {
+		return nil, fmt.Errorf("secret %s/%s does not contain tls.crt key",
+			mc.config.TLSSecretNamespace, mc.config.TLSSecretName)
+	}
+
+	keyData, exists := secret.Data["tls.key"]
+	if !exists {
+		return nil, fmt.Errorf("secret %s/%s does not contain tls.key key",
+			mc.config.TLSSecretNamespace, mc.config.TLSSecretName)
+	}
+
+	// Load certificate and key
+	cert, err := tls.X509KeyPair(certData, keyData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load X509 key pair: %w", err)
+	}
+
+	mc.log.Info("Successfully loaded TLS certificate from Kubernetes Secret for metrics servers")
+
+	// Return TLS config - no client authentication required for metrics endpoints
+	return &tls.Config{
+		Certificates:             []tls.Certificate{cert},
+		MinVersion:               tls.VersionTLS12,
+		PreferServerCipherSuites: true,
+		ClientAuth:               tls.NoClientCert, // Metrics endpoints don't require client certs
+	}, nil
 }
 
 // getNodeIPByPort gets node IP by port

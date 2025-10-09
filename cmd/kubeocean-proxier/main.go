@@ -229,34 +229,8 @@ func main() {
 	}
 	setupLog.Info("Pod controller initialization completed")
 
-	// Setup MetricsCollector if enabled
-	var metricsCollector *proxier.MetricsCollector
-	if metricsEnabled {
-		metricsConfig := &proxier.MetricsConfig{
-			CollectInterval:    time.Duration(metricsCollectInterval) * time.Second,
-			MaxConcurrentNodes: 100,
-			TargetNamespace:    metricsTargetNamespace,
-			DebugLog:           false,
-		}
-
-		metricsCollector = proxier.NewMetricsCollector(
-			metricsConfig,
-			tokenManager,
-			ctrl.Log.WithName("metrics-collector"),
-		)
-
-		// Start metrics collector
-		setupLog.Info("Starting metrics collector", "collectInterval", metricsConfig.CollectInterval)
-		if err := metricsCollector.Start(ctx); err != nil {
-			setupLog.Error(err, "unable to start metrics collector")
-			os.Exit(1)
-		}
-		setupLog.Info("Metrics collector started successfully")
-	} else {
-		setupLog.Info("Metrics collection disabled")
-	}
-
-	// Determine TLS configuration with comprehensive priority handling
+	// Determine TLS configuration first (moved before MetricsCollector setup)
+	// This section determines finalSecretName, finalSecretNamespace, tlsConfigEnabled
 	var finalSecretName, finalSecretNamespace string
 	var tlsConfigEnabled bool
 	var certManager *proxier.CertificateManager
@@ -331,6 +305,45 @@ func main() {
 				"secretNamespace", finalSecretNamespace,
 				"managementType", "automatic")
 		}
+	}
+
+	// Setup MetricsCollector if enabled
+	var metricsCollector *proxier.MetricsCollector
+	if metricsEnabled {
+		metricsConfig := &proxier.MetricsConfig{
+			CollectInterval:    time.Duration(metricsCollectInterval) * time.Second,
+			MaxConcurrentNodes: 100,
+			TargetNamespace:    metricsTargetNamespace,
+			DebugLog:           false,
+		}
+
+		// Add TLS configuration if enabled
+		if tlsConfigEnabled {
+			metricsConfig.TLSSecretName = finalSecretName
+			metricsConfig.TLSSecretNamespace = finalSecretNamespace
+			setupLog.Info("Metrics collector will use HTTPS with TLS",
+				"secretName", finalSecretName,
+				"secretNamespace", finalSecretNamespace)
+		} else {
+			setupLog.Info("Metrics collector will use HTTP (no TLS)")
+		}
+
+		metricsCollector = proxier.NewMetricsCollector(
+			metricsConfig,
+			tokenManager,
+			virtualClientset, // Pass kubernetes client for TLS secret access
+			ctrl.Log.WithName("metrics-collector"),
+		)
+
+		// Start metrics collector
+		setupLog.Info("Starting metrics collector", "collectInterval", metricsConfig.CollectInterval)
+		if err := metricsCollector.Start(ctx); err != nil {
+			setupLog.Error(err, "unable to start metrics collector")
+			os.Exit(1)
+		}
+		setupLog.Info("Metrics collector started successfully")
+	} else {
+		setupLog.Info("Metrics collection disabled")
 	}
 
 	// Create Kubelet proxy configuration
