@@ -1040,6 +1040,11 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		}
 	}
 
+	proxierPortInt, err := strconv.Atoi(proxierPort)
+	if err != nil {
+		proxierPortInt = 10250
+	}
+
 	// Get applicable policy for taint management
 	var policy *cloudv1beta1.ResourceLeasingPolicy
 	if len(policies) > 0 {
@@ -1061,14 +1066,14 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 			Taints: r.transformTaints(logger, physicalNode.Spec.Taints, disableNodeDefaultTaint, policy),
 		},
 		Status: corev1.NodeStatus{
-			Capacity:    resources,
-			Allocatable: resources,
-			Conditions:  physicalNode.Status.Conditions,
-			NodeInfo:    physicalNode.Status.NodeInfo,
-			Phase:       physicalNode.Status.Phase,
-			Addresses:   addresses,
-			//DaemonEndpoints: nodeDaemonEndpoints(int32(proxierPort),
-			DaemonEndpoints: nodeDaemonEndpoints(int32(10250)),
+			Capacity:        resources,
+			Allocatable:     resources,
+			Conditions:      physicalNode.Status.Conditions,
+			NodeInfo:        physicalNode.Status.NodeInfo,
+			Phase:           physicalNode.Status.Phase,
+			Addresses:       addresses,
+			DaemonEndpoints: nodeDaemonEndpoints(int32(proxierPortInt)),
+			//DaemonEndpoints: nodeDaemonEndpoints(int32(10250)),
 		},
 	}
 
