@@ -307,42 +307,9 @@ func main() {
 		}
 	}
 
-	// Setup MetricsCollector if enabled
+	// Declare metricsCollector variable (will be created later after kubeletProxy)
 	var metricsCollector *proxier.MetricsCollector
-	if metricsEnabled {
-		metricsConfig := &proxier.MetricsConfig{
-			CollectInterval:    time.Duration(metricsCollectInterval) * time.Second,
-			MaxConcurrentNodes: 100,
-			TargetNamespace:    metricsTargetNamespace,
-			DebugLog:           false,
-		}
-
-		// Add TLS configuration if enabled
-		if tlsConfigEnabled {
-			metricsConfig.TLSSecretName = finalSecretName
-			metricsConfig.TLSSecretNamespace = finalSecretNamespace
-			setupLog.Info("Metrics collector will use HTTPS with TLS",
-				"secretName", finalSecretName,
-				"secretNamespace", finalSecretNamespace)
-		} else {
-			setupLog.Info("Metrics collector will use HTTP (no TLS)")
-		}
-
-		metricsCollector = proxier.NewMetricsCollector(
-			metricsConfig,
-			tokenManager,
-			virtualClientset, // Pass kubernetes client for TLS secret access
-			ctrl.Log.WithName("metrics-collector"),
-		)
-
-		// Start metrics collector
-		setupLog.Info("Starting metrics collector", "collectInterval", metricsConfig.CollectInterval)
-		if err := metricsCollector.Start(ctx); err != nil {
-			setupLog.Error(err, "unable to start metrics collector")
-			os.Exit(1)
-		}
-		setupLog.Info("Metrics collector started successfully")
-	} else {
+	if !metricsEnabled {
 		setupLog.Info("Metrics collection disabled")
 	}
 
@@ -433,7 +400,7 @@ func main() {
 
 	setupLog.Info("Node Controller setup completed successfully")
 
-	// Create Kubelet proxy
+	// Create Kubelet proxy (before metrics collector so it can be passed to it)
 	kubeletProxy := proxier.NewKubeletProxy(
 		virtualClient,
 		physicalClient,
@@ -441,6 +408,55 @@ func main() {
 		clusterBinding,
 		ctrl.Log.WithName("kubelet-proxy"),
 	)
+
+	// Update metrics collector with kubelet proxy if metrics is enabled
+	if metricsEnabled {
+		setupLog.Info("Associating kubelet proxy with metrics collector for logs/exec support")
+		// We need to set the kubeletProxy in the metrics collector
+		// Since we already created it, we'll need to recreate it with the proxy
+		// or add a setter method. For now, let's recreate it.
+
+		metricsConfig := &proxier.MetricsConfig{
+			CollectInterval:    time.Duration(metricsCollectInterval) * time.Second,
+			MaxConcurrentNodes: 100,
+			TargetNamespace:    metricsTargetNamespace,
+			DebugLog:           false,
+		}
+
+		// Add TLS configuration if enabled
+		if tlsConfigEnabled {
+			metricsConfig.TLSSecretName = finalSecretName
+			metricsConfig.TLSSecretNamespace = finalSecretNamespace
+		}
+
+		// Recreate metrics collector with kubelet proxy
+		metricsCollector = proxier.NewMetricsCollector(
+			metricsConfig,
+			tokenManager,
+			kubeletProxy, // Now we can pass the kubelet proxy
+			virtualClientset,
+			ctrl.Log.WithName("metrics-collector"),
+		)
+
+		// Start metrics collector
+		setupLog.Info("Starting metrics collector with kubelet proxy support")
+		if err := metricsCollector.Start(ctx); err != nil {
+			setupLog.Error(err, "unable to start metrics collector")
+			os.Exit(1)
+		}
+		setupLog.Info("Metrics collector started successfully with logs/exec endpoints")
+
+		// Connect the newly created MetricsCollector with NodeController
+		nodeController.SetMetricsCollector(metricsCollector)
+		setupLog.Info("Re-connected NodeController with newly created MetricsCollector")
+
+		// Initialize MetricsCollector with existing nodes from NodeController
+		existingNodes := nodeController.GetCurrentNodes()
+		if len(existingNodes) > 0 {
+			setupLog.Info("Initializing MetricsCollector with existing nodes", "nodeCount", len(existingNodes))
+			metricsCollector.InitializeWithNodes(existingNodes)
+		}
+	}
 
 	// Create HTTP server
 	httpServer := proxier.NewHTTPServer(
@@ -468,6 +484,8 @@ func main() {
 			setupLog.Error(err, "failed to start VNode HTTP server")
 			os.Exit(1)
 		}
+	} else {
+		setupLog.Info("Metrics collector is not enabled, skipping VNode HTTP server")
 	}
 
 	setupLog.Info("Kubeocean Proxier started successfully")

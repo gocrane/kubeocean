@@ -17,17 +17,27 @@ package proxier
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/common"
 	"github.com/go-logr/logr"
+	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	clientremotecommand "k8s.io/client-go/tools/remotecommand"
+
+	localremotecommand "github.com/TKEColocation/kubeocean/pkg/proxier/remotecommand"
 )
+
+// Note: trueStr and oneStr constants are defined in server.go and shared across the package
 
 // NodeEventHandler defines the node event handling interface
 type NodeEventHandler interface {
@@ -71,6 +81,7 @@ type MetricsCollector struct {
 	tokenManager  *TokenManager
 	kubeletClient *KubeletClient
 	metricsParser *MetricsParser
+	kubeletProxy  KubeletProxy // Kubelet proxy for logs and exec
 	log           logr.Logger
 
 	// TLS configuration
@@ -91,7 +102,7 @@ type MetricsCollector struct {
 }
 
 // NewMetricsCollector creates a new metrics collector
-func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, kubeClient kubernetes.Interface, log logr.Logger) *MetricsCollector {
+func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, kubeletProxy KubeletProxy, kubeClient kubernetes.Interface, log logr.Logger) *MetricsCollector {
 	// Initialize VictoriaMetrics unmarshal workers (referring to vnode_metrics)
 	log.Info("Starting VictoriaMetrics unmarshal workers")
 	common.StartUnmarshalWorkers()
@@ -101,6 +112,7 @@ func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, kube
 		tokenManager:  tokenManager,
 		kubeletClient: NewKubeletClient(log.WithName("kubelet-client"), tokenManager),
 		metricsParser: NewMetricsParser(),
+		kubeletProxy:  kubeletProxy,
 		log:           log,
 		kubeClient:    kubeClient,
 		nodeStates:    make(map[string]NodeInfo),
@@ -450,12 +462,12 @@ func (mc *MetricsCollector) startHTTPServerForNode(port string, nodeInfo NodeInf
 
 	stopChan := make(chan struct{})
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", mc.createHandler(port))
+	// Use gorilla/mux router to support multiple endpoints
+	router := mc.setupRoutes(port, nodeInfo)
 
 	server := &http.Server{
 		Addr:    ":" + port,
-		Handler: mux,
+		Handler: router,
 	}
 
 	// Determine server type based on TLS configuration
@@ -543,28 +555,202 @@ func (mc *MetricsCollector) printListeningPorts() {
 		"ports", strings.Join(ports, ", "))
 }
 
-// createHandler creates HTTP handler
-func (mc *MetricsCollector) createHandler(port string) http.HandlerFunc {
+// setupRoutes sets up HTTP routes for metrics server
+func (mc *MetricsCollector) setupRoutes(port string, nodeInfo NodeInfo) *mux.Router {
+	router := mux.NewRouter()
+	router.StrictSlash(true)
+
+	// Metrics endpoint
+	router.HandleFunc("/metrics", mc.handleMetrics(port)).Methods("GET")
+
+	// Container logs endpoint (same as main server)
+	router.HandleFunc("/containerLogs/{namespace}/{pod}/{container}", mc.handleContainerLogs).Methods("GET")
+
+	// Container exec endpoint (same as main server)
+	router.HandleFunc("/exec/{namespace}/{pod}/{container}", mc.handleContainerExec).Methods("POST", "GET")
+
+	// Health check endpoint
+	router.HandleFunc("/healthz", mc.handleHealthz).Methods("GET")
+
+	// Default handler for root path
+	router.HandleFunc("/", mc.handleRoot(port, nodeInfo)).Methods("GET")
+
+	return router
+}
+
+// handleMetrics handles metrics endpoint
+func (mc *MetricsCollector) handleMetrics(port string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Return different data based on path
-		switch r.URL.Path {
-		case "/metrics":
-			// Return real cAdvisor metrics data
-			w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-			mc.writeRealMetrics(w, port)
-		default:
-			// Return status information
-			w.Header().Set("Content-Type", "application/json")
-			// Read nodeIP with a short-lived read lock to avoid scanning nodeStates
-			nodeIP := "unknown"
-			mc.mu.RLock()
-			if entry, exists := mc.httpServers[port]; exists {
-				nodeIP = entry.nodeIP
-			}
-			mc.mu.RUnlock()
-			fmt.Fprintf(w, `{"port":"%s","nodeIP":"%s","available_endpoints":["/metrics"],"status":"running"}`,
-				port, nodeIP)
-		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		mc.writeRealMetrics(w, port)
+	}
+}
+
+// handleContainerLogs handles container logs requests (same as main server)
+func (mc *MetricsCollector) handleContainerLogs(w http.ResponseWriter, r *http.Request) {
+	if mc.kubeletProxy == nil {
+		http.Error(w, "Kubelet proxy not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	namespace := vars["namespace"]
+	pod := vars["pod"]
+	container := vars["container"]
+
+	mc.log.Info("Processing container logs request",
+		"namespace", namespace,
+		"pod", pod,
+		"container", container,
+		"remoteAddr", r.RemoteAddr,
+		"userAgent", r.UserAgent(),
+	)
+
+	// Parse log options from query parameters
+	opts, err := mc.parseLogOptions(r.URL.Query())
+	if err != nil {
+		mc.log.Error(err, "Failed to parse log options", "namespace", namespace, "pod", pod, "container", container)
+		http.Error(w, fmt.Sprintf("Invalid log options: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	mc.log.Info("Parsed log options successfully", "namespace", namespace, "pod", pod, "container", container)
+
+	// Get logs from proxy
+	logs, err := mc.kubeletProxy.GetContainerLogs(r.Context(), namespace, pod, container, opts)
+	if err != nil {
+		mc.log.Error(err, "Failed to get container logs", "namespace", namespace, "pod", pod, "container", container)
+		http.Error(w, fmt.Sprintf("Failed to get logs: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer logs.Close()
+
+	// Set response headers
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Set("Content-Type", "text/plain")
+
+	// Stream logs to client
+	_, err = io.Copy(w, logs)
+	if err != nil {
+		mc.log.Error(err, "Failed to stream logs to client", "namespace", namespace, "pod", pod, "container", container)
+	}
+}
+
+// handleContainerExec handles container exec requests (same as main server)
+func (mc *MetricsCollector) handleContainerExec(w http.ResponseWriter, r *http.Request) {
+	if mc.kubeletProxy == nil {
+		http.Error(w, "Kubelet proxy not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	namespace := vars["namespace"]
+	pod := vars["pod"]
+	container := vars["container"]
+
+	// Log the request details for debugging
+	mc.log.Info("Handling container exec request",
+		"namespace", namespace,
+		"pod", pod,
+		"container", container,
+		"method", r.Method,
+		"url", r.URL.String(),
+		"headers", r.Header,
+		"remoteAddr", r.RemoteAddr,
+	)
+
+	// Get supported protocols from client
+	clientSupportedProtocols := strings.Split(r.Header.Get("X-Stream-Protocol-Version"), ",")
+
+	// Define our server supported protocols (in order of preference)
+	serverSupportedProtocols := []string{
+		"v4.channel.k8s.io",
+		"v3.channel.k8s.io",
+		"v2.channel.k8s.io",
+		"channel.k8s.io",
+	}
+
+	// Log for debugging
+	mc.log.Info("Protocol negotiation",
+		"clientSupported", clientSupportedProtocols,
+		"serverSupported", serverSupportedProtocols,
+	)
+
+	// Get command from query parameters
+	command := r.URL.Query()["command"]
+
+	// Parse exec options using the same method as official virtual-kubelet
+	streamOpts, err := getExecOptions(r, mc.log)
+	if err != nil {
+		mc.log.Error(err, "Failed to parse exec options",
+			"namespace", namespace,
+			"pod", pod,
+			"container", container,
+		)
+		http.Error(w, fmt.Sprintf("Invalid exec options: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	mc.log.Info("Parsed exec options",
+		"namespace", namespace,
+		"pod", pod,
+		"container", container,
+		"command", command,
+		"stdin", streamOpts.Stdin,
+		"stdout", streamOpts.Stdout,
+		"stderr", streamOpts.Stderr,
+		"tty", streamOpts.TTY,
+	)
+
+	// Create container exec context like official virtual-kubelet
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	exec := &metricsCollectorExecContext{
+		ctx:       ctx,
+		collector: mc,
+		namespace: namespace,
+		pod:       pod,
+		container: container,
+	}
+
+	// Use the same timeout settings as official virtual-kubelet
+	idleTimeout := 30 * time.Second
+	streamCreationTimeout := 30 * time.Second
+
+	// Serve exec using tke_vnode's proven SPDY implementation - match exact parameter pattern
+	localremotecommand.ServeExec(
+		w,
+		r,
+		exec,
+		"", // Consistent with tke_vnode, pass empty string
+		"", // Consistent with tke_vnode, pass empty string
+		container,
+		command,
+		&localremotecommand.Options{
+			Stdin:  streamOpts.Stdin,
+			Stdout: streamOpts.Stdout,
+			Stderr: streamOpts.Stderr,
+			TTY:    streamOpts.TTY,
+		},
+		idleTimeout,
+		streamCreationTimeout,
+		serverSupportedProtocols,
+	)
+}
+
+// handleHealthz handles health check requests
+func (mc *MetricsCollector) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "ok")
+}
+
+// handleRoot handles root path requests
+func (mc *MetricsCollector) handleRoot(port string, nodeInfo NodeInfo) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"port":"%s","nodeIP":"%s","available_endpoints":["/metrics","/containerLogs/{namespace}/{pod}/{container}","/exec/{namespace}/{pod}/{container}","/healthz"],"status":"running"}`,
+			port, nodeInfo.InternalIP)
 	}
 }
 
@@ -687,3 +873,233 @@ func (mc *MetricsCollector) GetMetricsData(port string) ([]byte, bool) {
 	data, exists := mc.metricsCache[port]
 	return data, exists
 }
+
+// parseLogOptions parses log options from query parameters (same as server.go)
+func (mc *MetricsCollector) parseLogOptions(query map[string][]string) (ContainerLogOpts, error) {
+	opts := ContainerLogOpts{}
+
+	if tailLines := getFirstValue(query, "tailLines"); tailLines != "" {
+		tail, err := strconv.Atoi(tailLines)
+		if err != nil {
+			return opts, fmt.Errorf("invalid tailLines: %w", err)
+		}
+		if tail < 0 {
+			return opts, fmt.Errorf("tailLines must be non-negative")
+		}
+		opts.Tail = tail
+	}
+
+	if follow := getFirstValue(query, "follow"); follow != "" {
+		followBool, err := strconv.ParseBool(follow)
+		if err != nil {
+			return opts, fmt.Errorf("invalid follow: %w", err)
+		}
+		opts.Follow = followBool
+	}
+
+	if limitBytes := getFirstValue(query, "limitBytes"); limitBytes != "" {
+		limit, err := strconv.Atoi(limitBytes)
+		if err != nil {
+			return opts, fmt.Errorf("invalid limitBytes: %w", err)
+		}
+		if limit < 1 {
+			return opts, fmt.Errorf("limitBytes must be positive")
+		}
+		opts.LimitBytes = limit
+	}
+
+	if previous := getFirstValue(query, "previous"); previous != "" {
+		prev, err := strconv.ParseBool(previous)
+		if err != nil {
+			return opts, fmt.Errorf("invalid previous: %w", err)
+		}
+		opts.Previous = prev
+	}
+
+	if sinceSeconds := getFirstValue(query, "sinceSeconds"); sinceSeconds != "" {
+		since, err := strconv.Atoi(sinceSeconds)
+		if err != nil {
+			return opts, fmt.Errorf("invalid sinceSeconds: %w", err)
+		}
+		if since < 1 {
+			return opts, fmt.Errorf("sinceSeconds must be positive")
+		}
+		opts.SinceSeconds = since
+	}
+
+	if sinceTime := getFirstValue(query, "sinceTime"); sinceTime != "" {
+		since, err := time.Parse(time.RFC3339, sinceTime)
+		if err != nil {
+			return opts, fmt.Errorf("invalid sinceTime: %w", err)
+		}
+		if opts.SinceSeconds > 0 {
+			return opts, fmt.Errorf("both sinceSeconds and sinceTime cannot be set")
+		}
+		opts.SinceTime = since
+	}
+
+	if timestamps := getFirstValue(query, "timestamps"); timestamps != "" {
+		ts, err := strconv.ParseBool(timestamps)
+		if err != nil {
+			return opts, fmt.Errorf("invalid timestamps: %w", err)
+		}
+		opts.Timestamps = ts
+	}
+
+	return opts, nil
+}
+
+// getExecOptions parses exec options from the request - same as server.go
+func getExecOptions(req *http.Request, log logr.Logger) (*remoteCommandOptions, error) {
+	// Add debug info, consistent with tke_vnode
+	log.Info("Exec request details",
+		"method", req.Method,
+		"url", req.URL.String(),
+		"queryParams", req.URL.Query(),
+	)
+
+	// Support two parameter formats, consistent with tke_vnode:
+	// 1. Standard format: stdin=true, stdout=true, stderr=true, tty=true
+	// 2. Numeric format: stdin=1, stdout=1, stderr=1, tty=1
+	query := req.URL.Query()
+
+	// TTY parameter
+	ttyStr := query.Get("tty")
+	tty := ttyStr == trueStr || ttyStr == oneStr
+
+	// Stdin parameter - use "input" consistent with tke_vnode
+	stdinStr := query.Get("input")
+	stdin := stdinStr == trueStr || stdinStr == oneStr
+
+	// Stdout parameter - use "output" consistent with tke_vnode
+	stdoutStr := query.Get("output")
+	stdout := stdoutStr == trueStr || stdoutStr == oneStr
+
+	// Stderr parameter - use "stderr" consistent with tke_vnode
+	stderrStr := query.Get("stderr")
+	stderr := stderrStr == trueStr || stderrStr == oneStr
+
+	log.Info("Parsed exec params",
+		"tty", fmt.Sprintf("%s(%t)", ttyStr, tty),
+		"stdin", fmt.Sprintf("%s(%t)", stdinStr, stdin),
+		"stdout", fmt.Sprintf("%s(%t)", stdoutStr, stdout),
+		"stderr", fmt.Sprintf("%s(%t)", stderrStr, stderr),
+	)
+
+	if tty && stderr {
+		return nil, errors.New("cannot exec with tty and stderr")
+	}
+
+	if !stdin && !stdout && !stderr {
+		log.Info("ERROR: No streams specified",
+			"stdin", stdin,
+			"stdout", stdout,
+			"stderr", stderr,
+		)
+		return nil, errors.New("you must specify at least one of stdin, stdout, stderr")
+	}
+
+	return &remoteCommandOptions{
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+		TTY:    tty,
+	}, nil
+}
+
+// metricsCollectorExecContext implements the Executor interface for metrics collector
+type metricsCollectorExecContext struct {
+	collector *MetricsCollector
+	namespace string
+	pod       string
+	container string
+	ctx       context.Context
+}
+
+// ExecInContainer implements remotecommand.Executor interface
+func (c *metricsCollectorExecContext) ExecInContainer(name string, uid types.UID, container string, cmd []string, in io.Reader, out, err io.WriteCloser, tty bool, resize <-chan clientremotecommand.TerminalSize, timeout time.Duration) error {
+	// Create execIO like official virtual-kubelet
+	eio := &metricsCollectorExecIO{
+		tty:    tty,
+		stdin:  in,
+		stdout: out,
+		stderr: err,
+	}
+
+	if tty {
+		eio.chResize = make(chan TermSize)
+	}
+
+	ctx, cancel := context.WithCancel(c.ctx)
+	defer cancel()
+
+	if tty {
+		go func() {
+			send := func(s clientremotecommand.TerminalSize) bool {
+				select {
+				case eio.chResize <- TermSize{Width: s.Width, Height: s.Height}:
+					return false
+				case <-ctx.Done():
+					return true
+				}
+			}
+
+			for {
+				select {
+				case s := <-resize:
+					if send(s) {
+						return
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	// Call our Kubelet proxy with the execIO
+	return c.collector.kubeletProxy.RunInContainer(c.ctx, c.namespace, c.pod, c.container, cmd, eio)
+}
+
+// metricsCollectorExecIO implements AttachIO interface for metrics collector
+type metricsCollectorExecIO struct {
+	tty      bool
+	stdin    io.Reader
+	stdout   io.WriteCloser
+	stderr   io.WriteCloser
+	chResize chan TermSize
+}
+
+func (e *metricsCollectorExecIO) TTY() bool {
+	return e.tty
+}
+
+func (e *metricsCollectorExecIO) Stdin() io.Reader {
+	return e.stdin
+}
+
+func (e *metricsCollectorExecIO) Stdout() io.Writer {
+	return e.stdout
+}
+
+func (e *metricsCollectorExecIO) Stderr() io.Writer {
+	return e.stderr
+}
+
+func (e *metricsCollectorExecIO) HasStdin() bool {
+	return e.stdin != nil
+}
+
+func (e *metricsCollectorExecIO) HasStdout() bool {
+	return e.stdout != nil
+}
+
+func (e *metricsCollectorExecIO) HasStderr() bool {
+	return e.stderr != nil
+}
+
+func (e *metricsCollectorExecIO) Resize() <-chan TermSize {
+	return e.chResize
+}
+
+// Note: getFirstValue function and remoteCommandOptions type are defined in server.go and shared across the package
