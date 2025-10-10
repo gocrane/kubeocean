@@ -976,30 +976,173 @@ func (mc *MetricsCollector) GetSummaryData(port string) (*Summary, bool) {
 // transformSummaryData transforms Summary data for metrics-server compatibility
 // 1. Convert physical node name to VNode name
 // 2. Filter pods to only include those in kubeocean-worker namespace
-func (mc *MetricsCollector) transformSummaryData(summary *Summary, physicalNodeName string) {
+// 3. Convert physical pod names and namespaces to virtual pod names and namespaces
+// 4. Aggregate CPU and Memory stats from all pods/containers to Node level
+func (mc *MetricsCollector) transformSummaryData(summary *Summary, VirtualNodeName string) {
 	if summary == nil {
 		return
 	}
 
-	summary.Node.NodeName = physicalNodeName
+	summary.Node.NodeName = VirtualNodeName
 
-	// 2. Filter pods to only include those in kubeocean-worker namespace
+	// 2. Filter pods and convert names to virtual pod info
 	originalPodCount := len(summary.Pods)
 	filteredPods := make([]PodStats, 0, originalPodCount)
+	skippedPods := 0
+	convertedPods := 0
 
 	for _, pod := range summary.Pods {
-		if pod.PodRef.Namespace == KubeoceanWorkerNamespace {
-			filteredPods = append(filteredPods, pod)
+		// Only process pods in kubeocean-worker namespace
+		if pod.PodRef.Namespace != KubeoceanWorkerNamespace {
+			continue
 		}
+
+		// Try to get virtual pod information for name conversion
+		virtualInfo, exists := GetVirtualPodInfo(pod.PodRef.Name)
+		if !exists {
+			// Skip pods without virtual mapping
+			mc.log.V(2).Info("No virtual mapping found for pod, skipping from summary",
+				"physicalPodName", pod.PodRef.Name,
+				"physicalNamespace", pod.PodRef.Namespace)
+			skippedPods++
+			continue
+		}
+
+		// Convert physical pod name and namespace to virtual pod name and namespace
+		pod.PodRef.Name = virtualInfo.VirtualPodName
+		pod.PodRef.Namespace = virtualInfo.VirtualPodNamespace
+
+		filteredPods = append(filteredPods, pod)
+		convertedPods++
+
+		mc.log.V(2).Info("Converted pod reference to virtual names",
+			"virtualPodName", virtualInfo.VirtualPodName,
+			"virtualNamespace", virtualInfo.VirtualPodNamespace,
+			"virtualNodeName", virtualInfo.VirtualNodeName)
 	}
 
 	summary.Pods = filteredPods
 
-	mc.log.V(2).Info("Filtered pods by namespace",
+	// 4. Aggregate CPU and Memory stats from all filtered pods/containers to Node level
+	mc.aggregateNodeStats(summary)
+
+	mc.log.V(2).Info("Transformed summary data",
 		"originalPodCount", originalPodCount,
-		"filteredPodCount", len(filteredPods),
+		"convertedPodCount", convertedPods,
+		"skippedPodCount", skippedPods,
 		"targetNamespace", KubeoceanWorkerNamespace,
 		"nodeName", summary.Node.NodeName)
+}
+
+// aggregateNodeStats aggregates CPU and Memory stats from all pods/containers to Node level
+func (mc *MetricsCollector) aggregateNodeStats(summary *Summary) {
+	if summary == nil || len(summary.Pods) == 0 {
+		return
+	}
+
+	// Initialize aggregation variables
+	var (
+		totalCPUUsageCoreNanoSeconds uint64
+		totalCPUUsageNanoCores       uint64
+		totalMemoryWorkingSetBytes   uint64
+		totalMemoryUsageBytes        uint64
+		totalMemoryRSSBytes          uint64
+		totalMemoryPageFaults        uint64
+		totalMemoryMajorPageFaults   uint64
+
+		cpuCount              int
+		memoryCount           int
+		latestCPUTime         metav1.Time
+		latestMemoryTime      metav1.Time
+		hasAnyCPUStats        bool
+		hasAnyMemoryStats     bool
+	)
+
+	// Aggregate from all pods and their containers
+	for _, pod := range summary.Pods {
+		for _, container := range pod.Containers {
+			// Aggregate CPU stats
+			if container.CPU != nil {
+				hasAnyCPUStats = true
+				if container.CPU.UsageCoreNanoSeconds != nil {
+					totalCPUUsageCoreNanoSeconds += *container.CPU.UsageCoreNanoSeconds
+					cpuCount++
+				}
+				if container.CPU.UsageNanoCores != nil {
+					totalCPUUsageNanoCores += *container.CPU.UsageNanoCores
+				}
+				// Track latest timestamp
+				if container.CPU.Time.After(latestCPUTime.Time) {
+					latestCPUTime = container.CPU.Time
+				}
+			}
+
+			// Aggregate Memory stats
+			if container.Memory != nil {
+				hasAnyMemoryStats = true
+				if container.Memory.WorkingSetBytes != nil {
+					totalMemoryWorkingSetBytes += *container.Memory.WorkingSetBytes
+					memoryCount++
+				}
+				if container.Memory.UsageBytes != nil {
+					totalMemoryUsageBytes += *container.Memory.UsageBytes
+				}
+				if container.Memory.RSSBytes != nil {
+					totalMemoryRSSBytes += *container.Memory.RSSBytes
+				}
+				if container.Memory.PageFaults != nil {
+					totalMemoryPageFaults += *container.Memory.PageFaults
+				}
+				if container.Memory.MajorPageFaults != nil {
+					totalMemoryMajorPageFaults += *container.Memory.MajorPageFaults
+				}
+				// Track latest timestamp
+				if container.Memory.Time.After(latestMemoryTime.Time) {
+					latestMemoryTime = container.Memory.Time
+				}
+			}
+		}
+	}
+
+	// Update Node CPU stats with aggregated values
+	if hasAnyCPUStats {
+		if summary.Node.CPU == nil {
+			summary.Node.CPU = &CPUStats{}
+		}
+		summary.Node.CPU.Time = latestCPUTime
+		if cpuCount > 0 {
+			summary.Node.CPU.UsageCoreNanoSeconds = &totalCPUUsageCoreNanoSeconds
+		}
+		summary.Node.CPU.UsageNanoCores = &totalCPUUsageNanoCores
+
+		mc.log.V(2).Info("Aggregated Node CPU stats",
+			"nodeName", summary.Node.NodeName,
+			"totalUsageCoreNanoSeconds", totalCPUUsageCoreNanoSeconds,
+			"totalUsageNanoCores", totalCPUUsageNanoCores,
+			"containerCount", cpuCount)
+	}
+
+	// Update Node Memory stats with aggregated values
+	if hasAnyMemoryStats {
+		if summary.Node.Memory == nil {
+			summary.Node.Memory = &MemoryStats{}
+		}
+		summary.Node.Memory.Time = latestMemoryTime
+		if memoryCount > 0 {
+			summary.Node.Memory.WorkingSetBytes = &totalMemoryWorkingSetBytes
+		}
+		summary.Node.Memory.UsageBytes = &totalMemoryUsageBytes
+		summary.Node.Memory.RSSBytes = &totalMemoryRSSBytes
+		summary.Node.Memory.PageFaults = &totalMemoryPageFaults
+		summary.Node.Memory.MajorPageFaults = &totalMemoryMajorPageFaults
+
+		mc.log.V(2).Info("Aggregated Node Memory stats",
+			"nodeName", summary.Node.NodeName,
+			"totalWorkingSetBytes", totalMemoryWorkingSetBytes,
+			"totalUsageBytes", totalMemoryUsageBytes,
+			"totalRSSBytes", totalMemoryRSSBytes,
+			"containerCount", memoryCount)
+	}
 }
 
 // parseLogOptions parses log options from query parameters (same as server.go)
