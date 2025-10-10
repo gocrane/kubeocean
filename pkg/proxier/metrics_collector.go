@@ -26,6 +26,10 @@ import (
 	"github.com/go-logr/logr"
 )
 
+const (
+	unknownValue = "unknown"
+)
+
 // NodeEventHandler defines the node event handling interface
 type NodeEventHandler interface {
 	OnNodeAdded(nodeName string, nodeInfo NodeInfo)
@@ -472,7 +476,7 @@ func (mc *MetricsCollector) printListeningPorts() {
 		return
 	}
 
-	var ports []string
+	ports := make([]string, 0, len(mc.httpServers))
 	for port, entry := range mc.httpServers {
 		ports = append(ports, fmt.Sprintf("%s(nodeIP:%s)", port, entry.nodeIP))
 	}
@@ -495,7 +499,7 @@ func (mc *MetricsCollector) createHandler(port string) http.HandlerFunc {
 			// Return status information
 			w.Header().Set("Content-Type", "application/json")
 			// Read nodeIP with a short-lived read lock to avoid scanning nodeStates
-			nodeIP := "unknown"
+			nodeIP := unknownValue
 			mc.mu.RLock()
 			if entry, exists := mc.httpServers[port]; exists {
 				nodeIP = entry.nodeIP
@@ -512,8 +516,8 @@ func (mc *MetricsCollector) writeRealMetrics(w http.ResponseWriter, port string)
 	// Snapshot needed data under a short read lock
 	mc.mu.RLock()
 	metricsData, exists := mc.metricsCache[port]
-	lastUpdate, _ := mc.lastUpdate[port]
-	nodeIP := "unknown"
+	lastUpdate := mc.lastUpdate[port]
+	nodeIP := unknownValue
 	if entry, ok := mc.httpServers[port]; ok {
 		nodeIP = entry.nodeIP
 	}
@@ -555,7 +559,7 @@ func (mc *MetricsCollector) getNodeIPByPort(port string) string {
 			return nodeInfo.InternalIP
 		}
 	}
-	return "unknown"
+	return unknownValue
 }
 
 // GetActivePorts gets current active ports list

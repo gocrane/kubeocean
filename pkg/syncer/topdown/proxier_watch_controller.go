@@ -461,7 +461,7 @@ func (r *ProxierWatchController) verifyVNodeIPUpdateWithRetry(ctx context.Contex
 
 // updateVNodeIPWithRetry updates VNode IP using Status().Patch() mechanism with retry
 // Uses JSON Patch for higher success rate and better conflict handling
-func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log logr.Logger, vNodeName, newIP, oldIP string) error {
+func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log logr.Logger, vNodeName, newIP, _ string) error {
 	const maxRetries = 3
 	const baseDelay = 100 * time.Millisecond
 

@@ -163,10 +163,27 @@ func NewMetricsParser() *MetricsParser {
 	}
 }
 
-// ParseAndStoreMetrics parses metrics data and stores it to the specified port
-func (mp *MetricsParser) ParseAndStoreMetrics(responseBody io.Reader, targetPort string) error {
-	// Initialize data storage for this port
+// metricLabels holds parsed metric labels
+type metricLabels struct {
+	podName       string
+	namespace     string
+	containerName string
+	containerID   string
+	interfaceName string
+	device        string
+	minorNumber   string
+	tcpState      string
+	major         string
+	minor         string
+	operation     string
+}
+
+// initializePortMetrics initializes metric storage for a specific port
+func (mp *MetricsParser) initializePortMetrics(targetPort string) {
 	mp.mu.Lock()
+	defer mp.mu.Unlock()
+
+	// Initialize maps if needed
 	if mp.containerMetrics[targetPort] == nil {
 		mp.containerMetrics[targetPort] = make(map[ContainerInfo]*ContainerMetrics)
 	}
@@ -182,16 +199,98 @@ func (mp *MetricsParser) ParseAndStoreMetrics(responseBody io.Reader, targetPort
 	if mp.gpuMetrics[targetPort] == nil {
 		mp.gpuMetrics[targetPort] = make(map[ContainerInfo]map[string]*GpuMetrics)
 	}
-	mp.mu.Unlock()
 
-	// Clear data for this port
-	mp.mu.Lock()
+	// Clear existing data for this port
 	mp.containerMetrics[targetPort] = make(map[ContainerInfo]*ContainerMetrics)
 	mp.networkMetrics[targetPort] = make(map[ContainerInfo]map[string]*NetworkMetrics)
 	mp.fsMetrics[targetPort] = make(map[ContainerInfo]map[string]*FilesystemMetrics)
 	mp.blkioMetrics[targetPort] = make(map[ContainerInfo]map[string]*BlkioMetrics)
 	mp.gpuMetrics[targetPort] = make(map[ContainerInfo]map[string]*GpuMetrics)
-	mp.mu.Unlock()
+}
+
+// parseMetricLabels parses labels from metric tags
+func (mp *MetricsParser) parseMetricLabels(metricName string, tags []prometheus.Tag) metricLabels {
+	var labels metricLabels
+
+	for _, label := range tags {
+		value := string([]byte(label.Value)) // Deep copy to avoid memory reference issues
+		switch label.Key {
+		case "pod", "pod_name":
+			labels.podName = value
+			if strings.Contains(metricName, "pod_filesystem_") {
+				pos := strings.Index(labels.podName, "-")
+				if pos > 0 {
+					labels.containerName = labels.podName[:pos]
+				} else {
+					labels.containerName = labels.podName
+				}
+			}
+		case "namespace":
+			labels.namespace = value
+		case "container", "container_name":
+			labels.containerName = value
+			if labels.containerName == "POD" {
+				labels.containerName = "pause"
+			}
+		case "id", "container_id":
+			labels.containerID = value
+			if strings.Contains(labels.containerID, "/kubepods/") || strings.Contains(labels.containerID, "/kubepods.slice/") {
+				labels.containerID = extractIDFromCgroupPath(labels.containerID)
+			}
+		case "interface":
+			labels.interfaceName = value
+		case "device":
+			labels.device = value
+		case "minor_number":
+			labels.minorNumber = value
+		case "tcp_state":
+			labels.tcpState = value
+		case "major":
+			labels.major = value
+		case "minor":
+			labels.minor = value
+		case "operation":
+			labels.operation = value
+		}
+	}
+
+	return labels
+}
+
+// processRowMetric processes a single metric row
+func (mp *MetricsParser) processRowMetric(targetPort string, metricName string, metricValue float64, timestamp int64, labels metricLabels) {
+	refID := ContainerInfo{
+		Id:        labels.containerID,
+		Name:      labels.containerName,
+		PodName:   labels.podName,
+		NameSpace: labels.namespace,
+	}
+
+	// Get metric storage objects
+	pStatInfo := mp.getContainerOriginStatInfoByPort(targetPort, refID)
+	var pNetworkStat *NetworkMetrics
+	var pFsStat *FilesystemMetrics
+	var pBlkioStat *BlkioMetrics
+	var pGpuStat *GpuMetrics
+
+	pFsStat = mp.getOriginFsStatInfoByPort(targetPort, refID, labels.device)
+	if labels.interfaceName != "" {
+		pNetworkStat = mp.getOriginNetworkStatInfoByPort(targetPort, refID, labels.interfaceName)
+	}
+	if labels.major != "" && labels.minor != "" && labels.operation != "" {
+		pBlkioStat = mp.getBlkioStatInfoByPort(targetPort, refID, labels.device, labels.major, labels.minor, labels.operation)
+	}
+	if labels.minorNumber != "" {
+		pGpuStat = mp.getEksOriginGpuStatInfoByPort(targetPort, refID, labels.minorNumber)
+	}
+
+	// Process metrics data
+	mp.processMetricForPort(targetPort, metricName, metricValue, timestamp, pStatInfo, pNetworkStat, pFsStat, pBlkioStat, pGpuStat, labels.tcpState)
+}
+
+// ParseAndStoreMetrics parses metrics data and stores it to the specified port
+func (mp *MetricsParser) ParseAndStoreMetrics(responseBody io.Reader, targetPort string) error {
+	mp.initializePortMetrics(targetPort)
 
 	// Parse metrics stream
 	nMetrics := 0
@@ -210,98 +309,17 @@ func (mp *MetricsParser) ParseAndStoreMetrics(responseBody io.Reader, targetPort
 		for i, iter := range rows {
 			if i < 5 { // Only print first 5 to avoid spamming
 				fmt.Printf("[DEBUG] row[%d] for port %s: metric=%s, tags=%v, value=%.2f, timestamp=%d\n",
-					i, targetPort, string(iter.Metric), iter.Tags, iter.Value, iter.Timestamp)
+					i, targetPort, iter.Metric, iter.Tags, iter.Value, iter.Timestamp)
 			}
 			metricName := string([]byte(iter.Metric)) // Deep copy to avoid memory reference issues
 
-			// Parse labels
-			podName := ""
-			namespace := ""
-			containerName := ""
-			containerID := ""
-			interfaceName := ""
-			device := ""
-			minorNumber := ""
-			tcpState := ""
-			major := ""
-			minor := ""
-			operation := ""
-
-			for _, label := range iter.Tags {
-				value := string([]byte(label.Value)) // Deep copy to avoid memory reference issues
-				switch label.Key {
-				case "pod", "pod_name":
-					podName = value
-					if strings.Contains(metricName, "pod_filesystem_") {
-						pos := strings.Index(podName, "-")
-						if pos > 0 {
-							containerName = podName[:pos]
-						} else {
-							containerName = podName
-						}
-					}
-				case "namespace":
-					namespace = value
-				case "container", "container_name":
-					containerName = value
-					if containerName == "POD" {
-						containerName = "pause"
-					}
-				case "id", "container_id":
-					containerID = value
-					if strings.Contains(containerID, "/kubepods/") || strings.Contains(containerID, "/kubepods.slice/") {
-						containerID = extractIDFromCgroupPath(containerID)
-					}
-				case "interface":
-					interfaceName = value
-				case "device":
-					device = value
-				case "minor_number":
-					minorNumber = value
-				case "tcp_state":
-					tcpState = value
-				case "major":
-					major = value
-				case "minor":
-					minor = value
-				case "operation":
-					operation = value
-				}
-			}
+			// Parse labels from tags
+			labels := mp.parseMetricLabels(metricName, iter.Tags)
 
 			// Only process valid container information
-			if containerName != "" && podName != "" && namespace != "" {
-				timestamp := iter.Timestamp // milliseconds
-				metricValue := iter.Value
+			if labels.containerName != "" && labels.podName != "" && labels.namespace != "" {
 				nMetrics++
-
-				refID := ContainerInfo{
-					Id:        containerID, // Fixed: use Id to be consistent with vnode-metrics
-					Name:      containerName,
-					PodName:   podName,
-					NameSpace: namespace,
-				}
-
-				// Use port-grouped data storage (ported from vnode_metrics)
-				pStatInfo := mp.getContainerOriginStatInfoByPort(targetPort, refID)
-				var pNetworkStat *NetworkMetrics = nil
-				var pFsStat *FilesystemMetrics = nil
-				var pBlkioStat *BlkioMetrics = nil
-				var pGpuStat *GpuMetrics = nil
-
-				pFsStat = mp.getOriginFsStatInfoByPort(targetPort, refID, device)
-				if interfaceName != "" {
-					pNetworkStat = mp.getOriginNetworkStatInfoByPort(targetPort, refID, interfaceName)
-				}
-				if major != "" && minor != "" && operation != "" {
-					pBlkioStat = mp.getBlkioStatInfoByPort(targetPort, refID, device, major, minor, operation)
-				}
-				if minorNumber != "" {
-					pGpuStat = mp.getEksOriginGpuStatInfoByPort(targetPort, refID, minorNumber)
-				}
-
-				// Process metrics data (consistent with vnode-metrics calling pattern)
-				mp.processMetricForPort(targetPort, metricName, metricValue, timestamp, pStatInfo, pNetworkStat, pFsStat, pBlkioStat, pGpuStat, tcpState)
+				mp.processRowMetric(targetPort, metricName, iter.Value, iter.Timestamp, labels)
 			}
 		}
 		return nil
@@ -320,371 +338,252 @@ func (mp *MetricsParser) ParseAndStoreMetrics(responseBody io.Reader, targetPort
 }
 
 // processMetricForPort processes metrics data and stores it to the specified port (consistent with vnode-metrics)
-func (mp *MetricsParser) processMetricForPort(targetPort, metricName string, metricValue float64, timestamp int64,
-	pStatInfo *ContainerMetrics, pNetworkStat *NetworkMetrics, pFsStat *FilesystemMetrics, pBlkioStat *BlkioMetrics, pGpuStat *GpuMetrics, tcpState string) {
+func (mp *MetricsParser) processMetricForPort(_ string, metricName string, metricValue float64, timestamp int64,
+	pStatInfo *ContainerMetrics, pNetworkStat *NetworkMetrics, pFsStat *FilesystemMetrics, pBlkioStat *BlkioMetrics, pGpuStat *GpuMetrics, _ string) {
 
-	// Use passed-in metrics objects, no need to get or create again (consistent with vnode-metrics)
+	// Dispatch to specialized handlers based on metric prefix
+	switch {
+	case strings.HasPrefix(metricName, "container_cpu_"):
+		mp.processCPUMetric(metricName, metricValue, timestamp, pStatInfo)
+	case strings.HasPrefix(metricName, "container_memory_") || metricName == "container_referenced_bytes":
+		mp.processMemoryMetric(metricName, metricValue, pStatInfo)
+	case strings.HasPrefix(metricName, "container_network_"):
+		mp.processNetworkMetricForPort(metricName, metricValue, pNetworkStat)
+	case strings.HasPrefix(metricName, "container_fs_"):
+		mp.processFilesystemMetricForPort(metricName, metricValue, pFsStat)
+	case strings.HasPrefix(metricName, "container_spec_"):
+		mp.processSpecMetric(metricName, metricValue, pStatInfo)
+	case strings.HasPrefix(metricName, "container_accelerator_"):
+		mp.processGPUMetric(metricName, metricValue, pGpuStat)
+	case metricName == "container_blkio_device_usage_total":
+		mp.processBlkioMetricForPort(metricValue, pBlkioStat)
+	default:
+		mp.processOtherMetric(metricName, metricValue, pStatInfo)
+	}
+}
 
-	// Process data according to metrics type
+// processCPUMetric processes CPU related metrics
+func (mp *MetricsParser) processCPUMetric(metricName string, metricValue float64, timestamp int64, pStatInfo *ContainerMetrics) {
+	if pStatInfo == nil {
+		return
+	}
+
 	switch metricName {
-	// CPU related metrics (directly use passed-in pStatInfo object)
 	case "container_cpu_usage_seconds_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPUUsageSecondsTotal = metricValue
-			}
-			pStatInfo.CPUStatTime = float64(timestamp) / 1000
-		}
+		pStatInfo.CPUUsageSecondsTotal = metricValue
+		pStatInfo.CPUStatTime = float64(timestamp) / 1000
 	case "container_cpu_cfs_periods_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPUCfsPeriodsTotal = metricValue
-			}
-		}
+		pStatInfo.CPUCfsPeriodsTotal = metricValue
 	case "container_cpu_cfs_throttled_periods_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPUCfsThrottledPeriodsTotal = metricValue
-			}
-		}
+		pStatInfo.CPUCfsThrottledPeriodsTotal = metricValue
 	case "container_cpu_cfs_throttled_seconds_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPUCfsThrottledSecondsTotal = metricValue
-			}
-		}
+		pStatInfo.CPUCfsThrottledSecondsTotal = metricValue
 	case "container_cpu_load_average_10s":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPULoadAverage10s = metricValue
-			}
-		}
+		pStatInfo.CPULoadAverage10s = metricValue
 	case "container_cpu_schedstat_run_periods_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPUSchedstatRunPeriodsTotal = metricValue
-			}
-		}
+		pStatInfo.CPUSchedstatRunPeriodsTotal = metricValue
 	case "container_cpu_schedstat_runqueue_seconds_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPUSchedstatRunqueueSecondsTotal = metricValue
-			}
-		}
+		pStatInfo.CPUSchedstatRunqueueSecondsTotal = metricValue
 	case "container_cpu_schedstat_run_seconds_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPUSchedstatRunSecondsTotal = metricValue
-			}
-		}
+		pStatInfo.CPUSchedstatRunSecondsTotal = metricValue
 	case "container_cpu_system_seconds_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPUSystemSecondsTotal = metricValue
-			}
-		}
+		pStatInfo.CPUSystemSecondsTotal = metricValue
 	case "container_cpu_user_seconds_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.CPUUserSecondsTotal = metricValue
-			}
-		}
+		pStatInfo.CPUUserSecondsTotal = metricValue
+	}
+}
 
-	// Memory related metrics
+// processMemoryMetric processes memory related metrics
+func (mp *MetricsParser) processMemoryMetric(metricName string, metricValue float64, pStatInfo *ContainerMetrics) {
+	if pStatInfo == nil {
+		return
+	}
+
+	switch metricName {
 	case "container_memory_usage_bytes":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryUsageBytes = metricValue
-			}
-		}
+		pStatInfo.MemoryUsageBytes = metricValue
 	case "container_memory_cache":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryCache = metricValue
-			}
-		}
+		pStatInfo.MemoryCache = metricValue
 	case "container_memory_working_set_bytes":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryWorkingSetBytes = metricValue
-			}
-		}
+		pStatInfo.MemoryWorkingSetBytes = metricValue
 	case "container_memory_failcnt":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryFailcnt = metricValue
-			}
-		}
+		pStatInfo.MemoryFailcnt = metricValue
 	case "container_memory_failures_total":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryFailuresTotal = metricValue
-			}
-		}
+		pStatInfo.MemoryFailuresTotal = metricValue
 	case "container_memory_mapped_file":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryMappedFile = metricValue
-			}
-		}
+		pStatInfo.MemoryMappedFile = metricValue
 	case "container_memory_max_usage_bytes":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryMaxUsageBytes = metricValue
-			}
-		}
+		pStatInfo.MemoryMaxUsageBytes = metricValue
 	case "container_memory_migrate":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryMigrate = metricValue
-			}
-		}
+		pStatInfo.MemoryMigrate = metricValue
 	case "container_memory_numa_pages":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryNumaPages = metricValue
-			}
-		}
+		pStatInfo.MemoryNumaPages = metricValue
 	case "container_memory_rss":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemoryRss = metricValue
-			}
-		}
+		pStatInfo.MemoryRss = metricValue
 	case "container_memory_swap":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.MemorySwap = metricValue
-			}
-		}
+		pStatInfo.MemorySwap = metricValue
 	case "container_referenced_bytes":
-		if pStatInfo != nil {
-			if pStatInfo != nil {
-				pStatInfo.ReferencedBytes = metricValue
-			}
-		}
+		pStatInfo.ReferencedBytes = metricValue
+	}
+}
 
-	// Process and file descriptor metrics
-	case "container_file_descriptors":
-		if pStatInfo != nil {
-			pStatInfo.FileDescriptors = metricValue
-		}
-	case "container_processes":
-		if pStatInfo != nil {
-			pStatInfo.Processes = metricValue
-		}
-	case "container_sockets":
-		if pStatInfo != nil {
-			pStatInfo.Sockets = metricValue
-		}
-	case "container_threads":
-		if pStatInfo != nil {
-			pStatInfo.Threads = metricValue
-		}
-	case "container_threads_max":
-		if pStatInfo != nil {
-			pStatInfo.ThreadsMax = metricValue
-		}
+// processNetworkMetricForPort processes network related metrics
+func (mp *MetricsParser) processNetworkMetricForPort(metricName string, metricValue float64, pNetworkStat *NetworkMetrics) {
+	if pNetworkStat == nil {
+		return
+	}
 
-	// Container specification metrics
-	case "container_spec_cpu_period":
-		if pStatInfo != nil {
-			pStatInfo.SpecCpuPeriod = metricValue
-		}
-	case "container_spec_cpu_quota":
-		if pStatInfo != nil {
-			pStatInfo.SpecCpuQuota = metricValue
-		}
-	case "container_spec_cpu_shares":
-		if pStatInfo != nil {
-			pStatInfo.SpecCpuShares = metricValue
-		}
-	case "container_spec_memory_limit_bytes":
-		if pStatInfo != nil {
-			pStatInfo.SpecMemoryLimitBytes = metricValue
-		}
-	case "container_spec_memory_reservation_limit_bytes":
-		if pStatInfo != nil {
-			pStatInfo.SpecMemoryReservationLimitBytes = metricValue
-		}
-	case "container_spec_memory_swap_limit_bytes":
-		if pStatInfo != nil {
-			pStatInfo.SpecMemorySwapLimitBytes = metricValue
-		}
-
-	// Other metrics
-	case "container_last_seen":
-		if pStatInfo != nil {
-			pStatInfo.LastSeen = metricValue
-		}
-	case "container_oom_events_total":
-		if pStatInfo != nil {
-			pStatInfo.OomEventsTotal = metricValue
-		}
-	case "container_start_time_seconds":
-		if pStatInfo != nil {
-			pStatInfo.StartTimeSeconds = metricValue
-		}
-	case "container_tasks_state":
-		if pStatInfo != nil {
-			pStatInfo.TasksState = metricValue
-		}
-	case "container_ulimits_soft":
-		if pStatInfo != nil {
-			pStatInfo.UlimitsSoft = metricValue
-		}
-
-	// Network related metrics (directly use passed-in pNetworkStat object)
+	switch metricName {
 	case "container_network_receive_bytes_total":
-		if pNetworkStat != nil {
-			pNetworkStat.RxBytes = metricValue
-		}
+		pNetworkStat.RxBytes = metricValue
 	case "container_network_receive_packets_total":
-		if pNetworkStat != nil {
-			pNetworkStat.RxPackets = metricValue
-		}
+		pNetworkStat.RxPackets = metricValue
 	case "container_network_receive_errors_total":
-		if pNetworkStat != nil {
-			pNetworkStat.RxErrors = metricValue
-		}
+		pNetworkStat.RxErrors = metricValue
 	case "container_network_receive_packets_dropped_total":
-		if pNetworkStat != nil {
-			pNetworkStat.RxDropped = metricValue
-		}
+		pNetworkStat.RxDropped = metricValue
 	case "container_network_transmit_bytes_total":
-		if pNetworkStat != nil {
-			pNetworkStat.TxBytes = metricValue
-		}
+		pNetworkStat.TxBytes = metricValue
 	case "container_network_transmit_packets_total":
-		if pNetworkStat != nil {
-			pNetworkStat.TxPackets = metricValue
-		}
+		pNetworkStat.TxPackets = metricValue
 	case "container_network_transmit_errors_total":
-		if pNetworkStat != nil {
-			pNetworkStat.TxErrors = metricValue
-		}
+		pNetworkStat.TxErrors = metricValue
 	case "container_network_transmit_packets_dropped_total":
-		if pNetworkStat != nil {
-			pNetworkStat.TxDropped = metricValue
-		}
+		pNetworkStat.TxDropped = metricValue
 	case "container_network_tcp_usage_total":
-		if pNetworkStat != nil {
-			pNetworkStat.TcpUsage = metricValue
-		}
+		pNetworkStat.TcpUsage = metricValue
 	case "container_network_tcp6_usage_total":
-		if pNetworkStat != nil {
-			pNetworkStat.Tcp6Usage = metricValue
-		}
+		pNetworkStat.Tcp6Usage = metricValue
 	case "container_network_udp_usage_total":
-		if pNetworkStat != nil {
-			pNetworkStat.UdpUsage = metricValue
-		}
+		pNetworkStat.UdpUsage = metricValue
 	case "container_network_udp6_usage_total":
-		if pNetworkStat != nil {
-			pNetworkStat.Udp6Usage = metricValue
-		}
-
-	// Filesystem related metrics (directly use passed-in pFsStat object)
-	case "container_fs_reads_total":
-		if pFsStat != nil {
-			pFsStat.ReadsTotal = metricValue
-		}
-	case "container_fs_writes_total":
-		if pFsStat != nil {
-			pFsStat.WritesTotal = metricValue
-		}
-	case "container_fs_reads_bytes_total":
-		if pFsStat != nil {
-			pFsStat.ReadsBytesTotal = metricValue
-		}
-	case "container_fs_writes_bytes_total":
-		if pFsStat != nil {
-			pFsStat.WritesBytesTotal = metricValue
-		}
-	case "container_fs_usage_bytes":
-		if pFsStat != nil {
-			pFsStat.UsageBytes = metricValue
-		}
-	case "container_fs_limit_bytes":
-		if pFsStat != nil {
-			pFsStat.LimitBytes = metricValue
-		}
-	case "container_fs_inodes_free":
-		if pFsStat != nil {
-			pFsStat.InodesFree = metricValue
-		}
-	case "container_fs_inodes_total":
-		if pFsStat != nil {
-			pFsStat.InodesTotal = metricValue
-		}
-	case "container_fs_io_current":
-		if pFsStat != nil {
-			pFsStat.IoCurrent = metricValue
-		}
-	case "container_fs_io_time_seconds_total":
-		if pFsStat != nil {
-			pFsStat.IoTimeSecondsTotal = metricValue
-		}
-	case "container_fs_io_time_weighted_seconds_total":
-		if pFsStat != nil {
-			pFsStat.IoTimeWeightedSecondsTotal = metricValue
-		}
-	case "container_fs_read_seconds_total":
-		if pFsStat != nil {
-			pFsStat.ReadSecondsTotal = metricValue
-		}
-	case "container_fs_reads_merged_total":
-		if pFsStat != nil {
-			pFsStat.ReadsMergedTotal = metricValue
-		}
-	case "container_fs_sector_reads_total":
-		if pFsStat != nil {
-			pFsStat.SectorReadsTotal = metricValue
-		}
-	case "container_fs_sector_writes_total":
-		if pFsStat != nil {
-			pFsStat.SectorWritesTotal = metricValue
-		}
-	case "container_fs_write_seconds_total":
-		if pFsStat != nil {
-			pFsStat.WriteSecondsTotal = metricValue
-		}
-	case "container_fs_writes_merged_total":
-		if pFsStat != nil {
-			pFsStat.WritesMergedTotal = metricValue
-		}
-
-	// Block device I/O metrics (supported by vnode_metrics but previously missing)
-	case "container_blkio_device_usage_total":
-		if pBlkioStat != nil {
-			// Directly use passed-in pBlkioStat object to store data
-			pBlkioStat.Value = metricValue
-			fmt.Printf("[DEBUG] Updated blkio metric: device=%s, operation=%s, value=%.2f\n", pBlkioStat.Device, pBlkioStat.Operation, metricValue)
-		}
-
-	// GPU metrics (supported by vnode_metrics but previously missing)
-	case "container_accelerator_duty_cycle":
-		if pGpuStat != nil {
-			pGpuStat.GpuDutyCycle = metricValue
-			fmt.Printf("[DEBUG] Updated GPU duty cycle: gpu=%s, value=%.2f\n", pGpuStat.MinorNumber, metricValue)
-		}
-	case "container_accelerator_memory_used_bytes":
-		if pGpuStat != nil {
-			pGpuStat.GpuMemUsedMib = metricValue // Fixed: use field name consistent with vnode-metrics
-			fmt.Printf("[DEBUG] Updated GPU memory used: gpu=%s, value=%.2f MiB\n", pGpuStat.MinorNumber, metricValue)
-		}
-	case "container_accelerator_memory_total_bytes":
-		if pGpuStat != nil {
-			pGpuStat.GpuMemoryTotalMib = metricValue // Fixed: use field name consistent with vnode-metrics
-			fmt.Printf("[DEBUG] Updated GPU memory total: gpu=%s, value=%.2f MiB\n", pGpuStat.MinorNumber, metricValue)
-		}
-
-	// Network TCP state metrics (additional network metrics supported by vnode_metrics)
+		pNetworkStat.Udp6Usage = metricValue
 	case "container_network_tcp_connection_count":
-		if pNetworkStat != nil {
-			// TCP state metrics can be extended for storage as needed
-			fmt.Printf("[DEBUG] Processing TCP connection count: value=%.2f\n", metricValue)
-		}
+		fmt.Printf("[DEBUG] Processing TCP connection count: value=%.2f\n", metricValue)
+	}
+}
+
+// processFilesystemMetricForPort processes filesystem related metrics
+func (mp *MetricsParser) processFilesystemMetricForPort(metricName string, metricValue float64, pFsStat *FilesystemMetrics) {
+	if pFsStat == nil {
+		return
+	}
+
+	switch metricName {
+	case "container_fs_reads_total":
+		pFsStat.ReadsTotal = metricValue
+	case "container_fs_writes_total":
+		pFsStat.WritesTotal = metricValue
+	case "container_fs_reads_bytes_total":
+		pFsStat.ReadsBytesTotal = metricValue
+	case "container_fs_writes_bytes_total":
+		pFsStat.WritesBytesTotal = metricValue
+	case "container_fs_usage_bytes":
+		pFsStat.UsageBytes = metricValue
+	case "container_fs_limit_bytes":
+		pFsStat.LimitBytes = metricValue
+	case "container_fs_inodes_free":
+		pFsStat.InodesFree = metricValue
+	case "container_fs_inodes_total":
+		pFsStat.InodesTotal = metricValue
+	case "container_fs_io_current":
+		pFsStat.IoCurrent = metricValue
+	case "container_fs_io_time_seconds_total":
+		pFsStat.IoTimeSecondsTotal = metricValue
+	case "container_fs_io_time_weighted_seconds_total":
+		pFsStat.IoTimeWeightedSecondsTotal = metricValue
+	case "container_fs_read_seconds_total":
+		pFsStat.ReadSecondsTotal = metricValue
+	case "container_fs_reads_merged_total":
+		pFsStat.ReadsMergedTotal = metricValue
+	case "container_fs_sector_reads_total":
+		pFsStat.SectorReadsTotal = metricValue
+	case "container_fs_sector_writes_total":
+		pFsStat.SectorWritesTotal = metricValue
+	case "container_fs_write_seconds_total":
+		pFsStat.WriteSecondsTotal = metricValue
+	case "container_fs_writes_merged_total":
+		pFsStat.WritesMergedTotal = metricValue
+	}
+}
+
+// processSpecMetric processes container specification metrics
+func (mp *MetricsParser) processSpecMetric(metricName string, metricValue float64, pStatInfo *ContainerMetrics) {
+	if pStatInfo == nil {
+		return
+	}
+
+	switch metricName {
+	case "container_spec_cpu_period":
+		pStatInfo.SpecCpuPeriod = metricValue
+	case "container_spec_cpu_quota":
+		pStatInfo.SpecCpuQuota = metricValue
+	case "container_spec_cpu_shares":
+		pStatInfo.SpecCpuShares = metricValue
+	case "container_spec_memory_limit_bytes":
+		pStatInfo.SpecMemoryLimitBytes = metricValue
+	case "container_spec_memory_reservation_limit_bytes":
+		pStatInfo.SpecMemoryReservationLimitBytes = metricValue
+	case "container_spec_memory_swap_limit_bytes":
+		pStatInfo.SpecMemorySwapLimitBytes = metricValue
+	}
+}
+
+// processGPUMetric processes GPU related metrics
+func (mp *MetricsParser) processGPUMetric(metricName string, metricValue float64, pGpuStat *GpuMetrics) {
+	if pGpuStat == nil {
+		return
+	}
+
+	switch metricName {
+	case "container_accelerator_duty_cycle":
+		pGpuStat.GpuDutyCycle = metricValue
+		fmt.Printf("[DEBUG] Updated GPU duty cycle: gpu=%s, value=%.2f\n", pGpuStat.MinorNumber, metricValue)
+	case "container_accelerator_memory_used_bytes":
+		pGpuStat.GpuMemUsedMib = metricValue
+		fmt.Printf("[DEBUG] Updated GPU memory used: gpu=%s, value=%.2f MiB\n", pGpuStat.MinorNumber, metricValue)
+	case "container_accelerator_memory_total_bytes":
+		pGpuStat.GpuMemoryTotalMib = metricValue
+		fmt.Printf("[DEBUG] Updated GPU memory total: gpu=%s, value=%.2f MiB\n", pGpuStat.MinorNumber, metricValue)
+	}
+}
+
+// processBlkioMetricForPort processes block I/O metrics
+func (mp *MetricsParser) processBlkioMetricForPort(metricValue float64, pBlkioStat *BlkioMetrics) {
+	if pBlkioStat == nil {
+		return
+	}
+	pBlkioStat.Value = metricValue
+	fmt.Printf("[DEBUG] Updated blkio metric: device=%s, operation=%s, value=%.2f\n", pBlkioStat.Device, pBlkioStat.Operation, metricValue)
+}
+
+// processOtherMetric processes other container metrics
+func (mp *MetricsParser) processOtherMetric(metricName string, metricValue float64, pStatInfo *ContainerMetrics) {
+	if pStatInfo == nil {
+		return
+	}
+
+	switch metricName {
+	case "container_file_descriptors":
+		pStatInfo.FileDescriptors = metricValue
+	case "container_processes":
+		pStatInfo.Processes = metricValue
+	case "container_sockets":
+		pStatInfo.Sockets = metricValue
+	case "container_threads":
+		pStatInfo.Threads = metricValue
+	case "container_threads_max":
+		pStatInfo.ThreadsMax = metricValue
+	case "container_last_seen":
+		pStatInfo.LastSeen = metricValue
+	case "container_oom_events_total":
+		pStatInfo.OomEventsTotal = metricValue
+	case "container_start_time_seconds":
+		pStatInfo.StartTimeSeconds = metricValue
+	case "container_tasks_state":
+		pStatInfo.TasksState = metricValue
+	case "container_ulimits_soft":
+		pStatInfo.UlimitsSoft = metricValue
 	}
 }
 
