@@ -8,6 +8,31 @@ This directory contains modular Makefile configurations for the kubeocean projec
 - `test.mk` - Test-related targets and configurations
 - `kind.mk` - KIND (Kubernetes in Docker) local development environment
 
+## Test Module Usage Guide
+
+The `test.mk` provides comprehensive testing capabilities including unit tests, integration tests, and end-to-end tests.
+
+### Test Commands
+
+#### Unit Tests
+```bash
+make test                # Run all tests (minimal output)
+make test-verbose        # Run tests with verbose output
+```
+
+#### Integration Tests
+```bash
+make test-int            # Run integration tests
+make test-int-focus FOCUS="test pattern"  # Run specific integration tests
+```
+
+#### End-to-End Tests
+```bash
+make test-k8s-e2e        # Run Kubernetes E2E tests on current cluster
+make test-k8s-e2e-focus FOCUS="test pattern"  # Run specific E2E tests
+make test-kind-k8s-e2e   # Run full E2E tests in KIND cluster with complete setup
+```
+
 ## KIND Module Usage Guide
 
 The `kind.mk` provides a complete local Kubernetes development environment, supporting the creation of a KIND cluster with multiple nodes (1 control-plane + 2 workers).
