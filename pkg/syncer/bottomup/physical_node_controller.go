@@ -893,6 +893,13 @@ func (r *PhysicalNodeReconciler) allocateProxierPort(nodeName string) string {
 	r.portMutex.Lock()
 	defer r.portMutex.Unlock()
 
+	if r.allocatedPorts == nil {
+		r.allocatedPorts = make(map[int]string)
+	}
+	if r.nodeNameToPort == nil {
+		r.nodeNameToPort = make(map[string]int)
+	}
+
 	if port, exists := r.nodeNameToPort[nodeName]; exists {
 		return strconv.Itoa(port)
 	}

@@ -117,6 +117,9 @@ func (r *ProxierWatchController) Reconcile(ctx context.Context, req ctrl.Request
 
 // SetupWithManager sets up the controller with the Manager
 func (r *ProxierWatchController) SetupWithManager(mgr ctrl.Manager) error {
+	// Generate unique controller name using cluster binding name
+	controllerName := fmt.Sprintf("proxierwatch-%s", r.ClusterBinding.Name)
+
 	// Create a predicate to filter Proxier pods
 	proxierPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		pod, ok := obj.(*corev1.Pod)
@@ -130,6 +133,7 @@ func (r *ProxierWatchController) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
 		WithEventFilter(proxierPredicate).
+		Named(controllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 1, // Process one at a time to avoid race conditions
 		}).
@@ -457,7 +461,7 @@ func (r *ProxierWatchController) verifyVNodeIPUpdateWithRetry(ctx context.Contex
 
 // updateVNodeIPWithRetry updates VNode IP using Status().Patch() mechanism with retry
 // Uses JSON Patch for higher success rate and better conflict handling
-func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log logr.Logger, vNodeName, newIP, oldIP string) error {
+func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log logr.Logger, vNodeName, newIP, _ string) error {
 	const maxRetries = 3
 	const baseDelay = 100 * time.Millisecond
 

@@ -46,7 +46,7 @@ func (m *GlobalVNodePortMapper) GetAllVNodes() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var vnodes []string
+	vnodes := make([]string, 0, len(m.nodes))
 	for vnodeName := range m.nodes {
 		vnodes = append(vnodes, vnodeName)
 	}
