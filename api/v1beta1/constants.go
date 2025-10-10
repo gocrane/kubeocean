@@ -45,7 +45,6 @@ const (
 	LabelPhysicalNodeUID     = "kubeocean.io/physical-node-uid"
 	LabelPhysicalNodeInnerIP = "kubeocean.io/physical-node-innerip"
 	LabelProxierPort         = "kubeocean.io/proxier_port"
-	LabelPrometheusURL       = "kubeocean.io/prometheus-url"
 	LabelPolicyApplied       = "kubeocean.io/policy-applied"
 	LabelHostPortFakePod     = "kubeocean.io/hostport-fake-pod"
 	LabelValueTrue           = "true"

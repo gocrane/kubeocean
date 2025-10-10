@@ -320,6 +320,8 @@ func (ts *KubeoceanSyncer) initializeSyncers() error {
 	// Initialize top-down syncer (virtual -> physical)
 	// Pass both virtualManager, physicalManager and physicalConfig from KubeoceanSyncer
 	ts.topDownSyncer = topdown.NewTopDownSyncer(ts.manager, ts.physicalManager, ts.physicalConfig, ts.Scheme, ts.clusterBinding)
+	// propagate prometheus vnode base port to top-down syncer (for ProxierWatchController)
+	ts.topDownSyncer.SetPrometheusVNodeBasePort(ts.prometheusVNodeBasePort)
 
 	ts.Log.Info("Syncers initialized successfully")
 	return nil
