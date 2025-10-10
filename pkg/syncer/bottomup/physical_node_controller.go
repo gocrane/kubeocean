@@ -889,12 +889,12 @@ func (r *PhysicalNodeReconciler) InitAllocatedPortsCache(ctx context.Context) er
 }
 
 // allocateProxierPort 分配唯一端口，线程安全，端口范围15000-65535
-func (r *PhysicalNodeReconciler) allocateProxierPort(nodeName string) string {
+func (r *PhysicalNodeReconciler) allocateProxierPort(nodeName string) (string, error) {
 	r.portMutex.Lock()
 	defer r.portMutex.Unlock()
 
 	if port, exists := r.nodeNameToPort[nodeName]; exists {
-		return strconv.Itoa(port)
+		return strconv.Itoa(port), nil
 	}
 
 	const (
@@ -907,22 +907,22 @@ func (r *PhysicalNodeReconciler) allocateProxierPort(nodeName string) string {
 	if _, used := r.allocatedPorts[basePort]; !used {
 		r.allocatedPorts[basePort] = nodeName
 		r.nodeNameToPort[nodeName] = basePort
-		return strconv.Itoa(basePort)
+		return strconv.Itoa(basePort), nil
 	}
 
 	for offset := 1; offset <= portMax-portMin; offset++ {
 		candidate := basePort + offset
 		if candidate > portMax {
-			candidate = portMin + (candidate-portMin)%(portMax-portMin+1)
+			candidate = portMin + (candidate - portMax - 1)
 		}
 		if _, used := r.allocatedPorts[candidate]; !used {
 			r.allocatedPorts[candidate] = nodeName
 			r.nodeNameToPort[nodeName] = candidate
-			return strconv.Itoa(candidate)
+			return strconv.Itoa(candidate), nil
 		}
 	}
 
-	return strconv.Itoa(10250)
+	return "", fmt.Errorf("no available ports for node %s", nodeName)
 }
 
 func (r *PhysicalNodeReconciler) releaseProxierPort(nodeName string) {
@@ -1106,7 +1106,10 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 	var proxiedPodIP, proxierPort string
 	if needCreate {
 		proxiedPodIP = r.getProxierPodIP()
-		proxierPort = r.allocateProxierPort(virtualNodeName)
+		proxierPort, err = r.allocateProxierPort(virtualNodeName)
+		if err != nil {
+			return fmt.Errorf("failed to allocate proxier port for virtual node %s: %w", virtualNodeName, err)
+		}
 	} else {
 		proxiedPodIP = r.getInternalIPFromNode(existingNode)
 		if proxiedPodIP == "" {
@@ -1116,7 +1119,10 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		if existingNode.Labels[cloudv1beta1.LabelProxierPort] != "" {
 			proxierPort = existingNode.Labels[cloudv1beta1.LabelProxierPort]
 		} else {
-			proxierPort = r.allocateProxierPort(virtualNodeName)
+			proxierPort, err = r.allocateProxierPort(virtualNodeName)
+			if err != nil {
+				return fmt.Errorf("failed to allocate proxier port for virtual node %s: %w", virtualNodeName, err)
+			}
 		}
 	}
 
@@ -1466,36 +1472,6 @@ func (r *PhysicalNodeReconciler) hashString(s string) uint32 {
 	}
 
 	return hash
-}
-
-// getExistingPortsFromInformer gets ports from informer cache
-func (r *PhysicalNodeReconciler) getExistingPortsFromInformer() map[int]bool {
-	ports := make(map[int]bool)
-
-	// If VirtualClient is not available, return empty map
-	if r.VirtualClient == nil {
-		r.Log.V(1).Info("VirtualClient not available, skipping port conflict detection")
-		return ports
-	}
-
-	// List all VNodes in the virtual cluster
-	virtualNodes := &corev1.NodeList{}
-	err := r.VirtualClient.List(context.Background(), virtualNodes)
-	if err != nil {
-		r.Log.Error(err, "Failed to list virtual nodes for port conflict detection")
-		return ports
-	}
-
-	// Extract ports from VNode labels
-	for _, node := range virtualNodes.Items {
-		if portStr, exists := node.Labels[cloudv1beta1.LabelProxierPort]; exists {
-			if port, err := strconv.Atoi(portStr); err == nil {
-				ports[port] = true
-			}
-		}
-	}
-
-	return ports
 }
 
 // isPortInUse checks if a port is already in use
