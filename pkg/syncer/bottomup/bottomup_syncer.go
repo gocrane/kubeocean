@@ -29,6 +29,14 @@ type BottomUpSyncer struct {
 
 	// Reconciler reference for triggering reconciliation
 	nodeReconciler *PhysicalNodeReconciler
+
+	// VNode Prometheus base port (injected from KubeoceanSyncer)
+	prometheusVNodeBasePort int
+}
+
+// SetPrometheusVNodeBasePort sets the base port used when constructing VNode Prometheus URLs
+func (bus *BottomUpSyncer) SetPrometheusVNodeBasePort(port int) {
+	bus.prometheusVNodeBasePort = port
 }
 
 // NewBottomUpSyncer creates a new BottomUpSyncer instance
@@ -146,17 +154,25 @@ func (bus *BottomUpSyncer) setupControllers() error {
 
 	// Setup Physical Node Controller
 	nodeReconciler := &PhysicalNodeReconciler{
-		PhysicalClient:     bus.physicalManager.GetClient(),
-		VirtualClient:      bus.virtualManager.GetClient(),
-		KubeClient:         kubeClient,
-		Scheme:             bus.Scheme,
-		ClusterBindingName: bus.ClusterBinding.Name,
-		ClusterBinding:     bus.ClusterBinding,
-		Log:                bus.Log.WithName("physical-node-controller"),
+		PhysicalClient:          bus.physicalManager.GetClient(),
+		VirtualClient:           bus.virtualManager.GetClient(),
+		KubeClient:              kubeClient,
+		Scheme:                  bus.Scheme,
+		ClusterBindingName:      bus.ClusterBinding.Name,
+		ClusterBinding:          bus.ClusterBinding,
+		Log:                     bus.Log.WithName("physical-node-controller"),
+		PrometheusVNodeBasePort: bus.prometheusVNodeBasePort,
 	}
 
 	// Save reference to the reconciler for triggering reconciliation
 	bus.nodeReconciler = nodeReconciler
+
+	// 初始化端口分配缓存（在 SetupWithManager 之前，直接 List VNode）
+	bus.Log.Info("Initializing port allocation cache before setting up node controller")
+	if err := nodeReconciler.InitAllocatedPortsCache(context.Background()); err != nil {
+		return fmt.Errorf("failed to initialize port allocation cache: %w", err)
+	}
+	bus.Log.Info("Port allocation cache initialized successfully")
 
 	if err := nodeReconciler.SetupWithManager(bus.physicalManager, bus.virtualManager); err != nil {
 		return fmt.Errorf("failed to setup physical node controller: %w", err)

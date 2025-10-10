@@ -178,6 +178,9 @@ syncer:
       hostPath:
         path: /etc/localtime
 
+  # VNode Prometheus server base port used in annotations
+  prometheusVNodeBasePort: 9006
+
 # Proxier configuration
 proxier:
   # Enable proxier deployment (managed by manager)
@@ -188,7 +191,7 @@ proxier:
     tag: latest
     pullPolicy: IfNotPresent
   # Default replica count for proxier instances
-  replicas: 1
+  replicas: 2
   # Listen port for kubelet API requests
   listenPort: 10250
   # Resources
@@ -215,6 +218,11 @@ proxier:
   metrics:
     enabled: false
     port: 8080
+    # Metrics collection configuration
+    collection:
+      enabled: true
+      interval: 60
+      targetNamespace: "kubeocean-worker"
   # TLS configuration
   tls:
     enabled: false

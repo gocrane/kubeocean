@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -36,8 +37,10 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/proxier"
@@ -58,6 +61,10 @@ func main() {
 	var listenPort int
 	var tlsSecretName string
 	var tlsSecretNamespace string
+	var metricsEnabled bool
+	var metricsCollectInterval int
+	var metricsTargetNamespace string
+	var vnodeBasePort int
 
 	flag.StringVar(&clusterBindingName, "cluster-binding-name", "",
 		"The name of the ClusterBinding resource this proxier is responsible for.")
@@ -67,10 +74,19 @@ func main() {
 		"The name of the Kubernetes secret containing TLS certificates for HTTPS.")
 	flag.StringVar(&tlsSecretNamespace, "tls-secret-namespace", "",
 		"The namespace of the Kubernetes secret containing TLS certificates.")
+	flag.BoolVar(&metricsEnabled, "metrics-enabled", true,
+		"Enable metrics collection from physical cluster nodes.")
+	flag.IntVar(&metricsCollectInterval, "metrics-collect-interval", 60,
+		"The interval in seconds for collecting metrics from nodes.")
+	flag.StringVar(&metricsTargetNamespace, "metrics-target-namespace", "",
+		"The target namespace for metrics collection. Empty means all namespaces.")
+	flag.IntVar(&vnodeBasePort, "prometheus-vnode-base-port", 9006,
+		"The port for Prometheus VNode HTTP server. Proxier will bind exactly this port.")
 
 	opts := zap.Options{
 		Development:     false,
 		StacktraceLevel: zapcore.DPanicLevel,
+		Level:           zapcore.InfoLevel, // 默认级别
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -133,6 +149,112 @@ func main() {
 	}
 
 	setupLog.Info("Connected to physical cluster", "host", physicalConfig.Host)
+
+	// Setup Token Manager using physical cluster config
+	tokenManager := proxier.NewTokenManager(
+		ctrl.Log.WithName("token-manager"),
+		physicalConfig, // Use physical cluster config
+	)
+
+	// Extract and save token from physical cluster kubeconfig
+	setupLog.Info("Extracting and saving authentication token from physical cluster")
+	if err := tokenManager.ExtractAndSaveToken(ctx); err != nil {
+		setupLog.Error(err, "unable to extract and save token from physical cluster")
+		os.Exit(1)
+	}
+
+	// Token is now saved in memory, no periodic refresh needed
+	setupLog.Info("Authentication token extracted and ready for use")
+
+	// Initialize global pod mapper
+	proxier.InitGlobalPodMapper()
+	setupLog.Info("Global pod mapper initialized")
+
+	// Setup POD Controller to monitor physical cluster pods
+	setupLog.Info("Setting up POD Controller for physical cluster")
+
+	// Create physical cluster manager for POD controller
+	physicalManager, err := ctrl.NewManager(physicalConfig, ctrl.Options{
+		Scheme: scheme,
+		Metrics: server.Options{
+			BindAddress: "0", // 禁用 metrics 服务器
+		},
+		HealthProbeBindAddress: "0", // 禁用 health check 服务器
+		// Watch all pods with specific labels in physical cluster
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.Pod{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+					}),
+				},
+			},
+		},
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create physical manager for pod controller")
+		os.Exit(1)
+	}
+
+	// Create POD controller
+	podController := proxier.NewPodController(
+		physicalManager.GetClient(),
+		physicalManager.GetScheme(),
+		ctrl.Log.WithName("pod-controller"),
+	)
+
+	// Setup POD controller
+	if err := podController.SetupWithManager(physicalManager); err != nil {
+		setupLog.Error(err, "unable to setup pod controller")
+		os.Exit(1)
+	}
+
+	// Start physical manager in background
+	go func() {
+		setupLog.Info("Starting physical cluster manager for pod controller")
+		if err := physicalManager.Start(ctx); err != nil {
+			setupLog.Error(err, "problem running physical manager")
+		}
+	}()
+
+	// Wait for manager to be ready and initialize existing pods
+	setupLog.Info("Waiting for pod controller to be ready")
+	time.Sleep(2 * time.Second) // Give manager time to start
+
+	// Initialize existing pods
+	setupLog.Info("Initializing existing pods in physical cluster")
+	if err := podController.InitializeExistingPods(ctx); err != nil {
+		setupLog.Error(err, "failed to initialize existing pods")
+		os.Exit(1)
+	}
+	setupLog.Info("Pod controller initialization completed")
+
+	// Setup MetricsCollector if enabled
+	var metricsCollector *proxier.MetricsCollector
+	if metricsEnabled {
+		metricsConfig := &proxier.MetricsConfig{
+			CollectInterval:    time.Duration(metricsCollectInterval) * time.Second,
+			MaxConcurrentNodes: 100,
+			TargetNamespace:    metricsTargetNamespace,
+			DebugLog:           false,
+		}
+
+		metricsCollector = proxier.NewMetricsCollector(
+			metricsConfig,
+			tokenManager,
+			ctrl.Log.WithName("metrics-collector"),
+		)
+
+		// Start metrics collector
+		setupLog.Info("Starting metrics collector", "collectInterval", metricsConfig.CollectInterval)
+		if err := metricsCollector.Start(ctx); err != nil {
+			setupLog.Error(err, "unable to start metrics collector")
+			os.Exit(1)
+		}
+		setupLog.Info("Metrics collector started successfully")
+	} else {
+		setupLog.Info("Metrics collection disabled")
+	}
 
 	// Determine TLS configuration with comprehensive priority handling
 	var finalSecretName, finalSecretNamespace string
@@ -229,6 +351,75 @@ func main() {
 		setupLog.Info("TLS disabled - running in HTTP mode")
 	}
 
+	// Setup Node Controller for proxier
+	setupLog.Info("Setting up Node Controller for proxier", "clusterBinding", clusterBindingName)
+
+	// Create virtual cluster manager for Node controller
+	virtualManager, err := ctrl.NewManager(virtualConfig, ctrl.Options{
+		Scheme: scheme,
+		Metrics: server.Options{
+			BindAddress: "0", // 禁用 metrics 服务器
+		},
+		HealthProbeBindAddress: "0", // 禁用 health check 服务器
+		// Only watch Node resources with specific labels
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.Node{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelClusterBinding: clusterBindingName,
+						cloudv1beta1.LabelManagedBy:      cloudv1beta1.LabelManagedByValue,
+					}),
+				},
+			},
+		},
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create virtual manager for node controller")
+		os.Exit(1)
+	}
+
+	// Create Node controller
+	nodeController := &proxier.NodeController{
+		Client:             virtualManager.GetClient(),
+		Scheme:             virtualManager.GetScheme(),
+		Log:                ctrl.Log.WithName("proxier-node-controller"),
+		ClusterBindingName: clusterBindingName,
+		CurrentNodes:       make(map[string]proxier.NodeInfo),
+	}
+
+	// Setup Node controller
+	if err := nodeController.SetupWithManager(virtualManager); err != nil {
+		setupLog.Error(err, "unable to setup node controller")
+		os.Exit(1)
+	}
+
+	// Connect NodeController with MetricsCollector
+	if metricsCollector != nil {
+		nodeController.SetMetricsCollector(metricsCollector)
+		setupLog.Info("Connected NodeController with MetricsCollector")
+	}
+
+	// Start virtual manager (runs in background)
+	go func() {
+		if err := virtualManager.Start(ctx); err != nil {
+			setupLog.Error(err, "problem running virtual manager")
+		}
+	}()
+
+	// Wait for manager cache to sync
+	if !virtualManager.GetCache().WaitForCacheSync(ctx) {
+		setupLog.Error(fmt.Errorf("failed to wait for cache sync"), "unable to sync caches")
+		os.Exit(1)
+	}
+
+	// Sync existing nodes
+	if err := nodeController.SyncExistingNodes(ctx); err != nil {
+		setupLog.Error(err, "failed to sync existing nodes")
+		os.Exit(1)
+	}
+
+	setupLog.Info("Node Controller setup completed successfully")
+
 	// Create Kubelet proxy
 	kubeletProxy := proxier.NewKubeletProxy(
 		virtualClient,
@@ -258,6 +449,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Start VNode HTTP server for metrics access
+	if metricsCollector != nil {
+		if err := proxier.StartVNodeHTTPServer(metricsCollector, ctrl.Log.WithName("vnode-http-server"), vnodeBasePort); err != nil {
+			setupLog.Error(err, "failed to start VNode HTTP server")
+			os.Exit(1)
+		}
+	}
+
 	setupLog.Info("Kubeocean Proxier started successfully")
 
 	// Wait for context cancellation
@@ -266,6 +465,10 @@ func main() {
 	setupLog.Info("Shutting down Kubeocean Proxier")
 
 	// Stop services
+	if metricsCollector != nil {
+		metricsCollector.Stop()
+	}
+
 	if err := httpServer.Stop(); err != nil {
 		setupLog.Error(err, "failed to stop HTTP server")
 	}

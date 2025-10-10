@@ -100,6 +100,28 @@ func (cm *CertificateManager) createTLSSecretWithAutoApproval(ctx context.Contex
 	// Create TLS Secret
 	secret, err := cm.createTLSSecret(ctx, secretName, certificate, privateKey)
 	if err != nil {
+		// Handle race condition: if secret already exists, try to get it
+		if errors.IsAlreadyExists(err) {
+			cm.log.Info("Secret already exists (race condition detected), attempting to get existing secret",
+				"secretName", secretName,
+				"error", err.Error())
+
+			// Try to get the existing secret
+			existingSecret, getErr := cm.getExistingSecret(ctx, secretName)
+			if getErr != nil {
+				cm.log.Error(getErr, "Failed to get existing secret after race condition",
+					"secretName", secretName,
+					"createError", err.Error())
+				return nil, fmt.Errorf("failed to create TLS secret and failed to get existing secret: create error=%w, get error=%w", err, getErr)
+			}
+
+			cm.log.Info("Successfully retrieved existing TLS secret (race condition resolved)",
+				"secretName", secretName,
+				"secretNamespace", existingSecret.Namespace)
+			return existingSecret, nil
+		}
+
+		cm.log.Error(err, "Failed to create TLS secret", "secretName", secretName)
 		return nil, fmt.Errorf("failed to create TLS secret: %w", err)
 	}
 
@@ -132,7 +154,43 @@ func (cm *CertificateManager) generateCertificateData(ctx context.Context) ([]by
 	csrName := fmt.Sprintf("kubeocean-proxier-%s-%d", cm.clusterBinding.Name, time.Now().Unix())
 	_, err = cm.submitCSR(ctx, csrName, csr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to submit CSR: %w", err)
+		// Handle CSR already exists error (race condition during concurrent startup)
+		if errors.IsAlreadyExists(err) {
+			cm.log.Info("CSR already exists (race condition detected), attempting to use existing CSR",
+				"csrName", csrName,
+				"error", err.Error())
+
+			// Try to get the existing CSR and check if it's already approved
+			existingCSR, getErr := cm.client.CertificatesV1().CertificateSigningRequests().Get(ctx, csrName, metav1.GetOptions{})
+			if getErr != nil {
+				cm.log.Error(getErr, "Failed to get existing CSR after race condition",
+					"csrName", csrName,
+					"createError", err.Error())
+				return nil, nil, fmt.Errorf("failed to submit CSR and failed to get existing CSR: create error=%w, get error=%w", err, getErr)
+			}
+
+			// Check if the existing CSR is already approved
+			approved := false
+			for _, condition := range existingCSR.Status.Conditions {
+				if condition.Type == certificatesv1.CertificateApproved {
+					approved = true
+					break
+				}
+			}
+
+			if !approved {
+				cm.log.Info("Existing CSR not approved, attempting to approve it", "csrName", csrName)
+				// Try to approve the existing CSR
+				if approveErr := cm.approveCSR(ctx, csrName); approveErr != nil {
+					cm.log.Error(approveErr, "Failed to approve existing CSR", "csrName", csrName)
+					return nil, nil, fmt.Errorf("failed to approve existing CSR: %w", approveErr)
+				}
+			} else {
+				cm.log.Info("Existing CSR already approved", "csrName", csrName)
+			}
+		} else {
+			return nil, nil, fmt.Errorf("failed to submit CSR: %w", err)
+		}
 	}
 
 	// 5. Automatically approve CSR

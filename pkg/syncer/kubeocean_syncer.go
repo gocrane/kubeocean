@@ -60,6 +60,9 @@ type KubeoceanSyncer struct {
 	// Physical client QPS and Burst
 	physicalClientQPS   int
 	physicalClientBurst int
+
+	// VNode Prometheus base port used by Syncer when constructing annotations
+	prometheusVNodeBasePort int
 }
 
 // NewKubeoceanSyncer creates a new KubeoceanSyncer instance
@@ -77,6 +80,11 @@ func NewKubeoceanSyncer(mgr manager.Manager, client client.Client, scheme *runti
 		physicalClientQPS:   physicalClientQPS,
 		physicalClientBurst: physicalClientBurst,
 	}, nil
+}
+
+// SetPrometheusVNodeBasePort sets the base port used in VNode Prometheus URL annotations
+func (ts *KubeoceanSyncer) SetPrometheusVNodeBasePort(port int) {
+	ts.prometheusVNodeBasePort = port
 }
 
 // Start starts the Kubeocean Syncer
@@ -306,6 +314,8 @@ func (ts *KubeoceanSyncer) initializeSyncers() error {
 	// Initialize bottom-up syncer (physical -> virtual)
 	// Pass both virtualManager and physicalManager from KubeoceanSyncer
 	ts.bottomUpSyncer = bottomup.NewBottomUpSyncer(ts.manager, ts.physicalManager, ts.Scheme, ts.clusterBinding)
+	// propagate prometheus vnode base port
+	ts.bottomUpSyncer.SetPrometheusVNodeBasePort(ts.prometheusVNodeBasePort)
 
 	// Initialize top-down syncer (virtual -> physical)
 	// Pass both virtualManager, physicalManager and physicalConfig from KubeoceanSyncer

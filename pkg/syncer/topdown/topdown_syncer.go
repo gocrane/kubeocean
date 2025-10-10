@@ -42,6 +42,7 @@ type TopDownSyncer struct {
 	virtualPVCController       *VirtualPVCReconciler
 	virtualPVController        *VirtualPVReconciler
 	virtualLogConfigController *VirtualLogConfigReconciler
+	proxierWatchController     *ProxierWatchController
 }
 
 // NewTopDownSyncer creates a new TopDownSyncer instance
@@ -201,13 +202,26 @@ func (tds *TopDownSyncer) setupControllers() error {
 		return fmt.Errorf("failed to setup virtual logconfig controller: %w", err)
 	}
 
+	// Setup Proxier Watch Controller
+	tds.proxierWatchController = NewProxierWatchController(
+		tds.virtualManager.GetClient(),
+		tds.Scheme,
+		tds.Log.WithName("proxier-watch-controller"),
+		tds.ClusterBinding,
+	)
+
+	if err := tds.proxierWatchController.SetupWithManager(tds.virtualManager); err != nil {
+		return fmt.Errorf("failed to setup proxier watch controller: %w", err)
+	}
+
 	tds.Log.Info("Controllers setup completed",
 		"virtualPodController", "enabled",
 		"virtualConfigMapController", "enabled",
 		"virtualSecretController", "enabled",
 		"virtualPVCController", "enabled",
 		"virtualPVController", "enabled",
-		"virtualLogConfigController", "enabled")
+		"virtualLogConfigController", "enabled",
+		"proxierWatchController", "enabled")
 	return nil
 }
 
