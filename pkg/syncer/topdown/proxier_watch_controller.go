@@ -19,12 +19,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
+	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -58,20 +59,22 @@ type ProxierWatchController struct {
 	Log            logr.Logger
 	ClusterBinding *cloudv1beta1.ClusterBinding
 
-	// Rate limiting for patch operations
-	patchLimiter  chan struct{}
-	lastPatchTime time.Time
-	patchMutex    sync.RWMutex
+	// Rate limiting for patch operations using golang.org/x/time/rate
+	rateLimiter *rate.Limiter // QPS limiter for VNode updates
 }
 
 // NewProxierWatchController creates a new ProxierWatchController
 func NewProxierWatchController(virtualClient client.Client, scheme *runtime.Scheme, log logr.Logger, clusterBinding *cloudv1beta1.ClusterBinding) *ProxierWatchController {
+	// Create rate limiter: 20 QPS with burst of 5
+	// This allows up to 20 VNode updates per second with a small burst capacity
+	limiter := rate.NewLimiter(20, 5)
+	
 	return &ProxierWatchController{
 		VirtualClient:  virtualClient,
 		Scheme:         scheme,
 		Log:            log,
 		ClusterBinding: clusterBinding,
-		patchLimiter:   make(chan struct{}, 1), // Allow only 1 concurrent patch operation
+		rateLimiter:    limiter,
 	}
 }
 
@@ -166,25 +169,6 @@ func (r *ProxierWatchController) handleProxierPodIPChange(ctx context.Context, l
 	newIP := pod.Status.PodIP
 	log.Info("Proxier pod IP changed, starting VNode update", "podName", pod.Name, "podIP", newIP)
 
-	// Rate limiting: acquire patch limiter
-	select {
-	case r.patchLimiter <- struct{}{}:
-		defer func() { <-r.patchLimiter }()
-	case <-ctx.Done():
-		return ctrl.Result{}, ctx.Err()
-	}
-
-	// Additional rate limiting: check if we've patched recently
-	r.patchMutex.Lock()
-	timeSinceLastPatch := time.Since(r.lastPatchTime)
-	if timeSinceLastPatch < 5*time.Second {
-		r.patchMutex.Unlock()
-		log.Info("Rate limiting: too soon since last patch, skipping", "timeSinceLastPatch", timeSinceLastPatch)
-		return ctrl.Result{}, nil
-	}
-	r.lastPatchTime = time.Now()
-	r.patchMutex.Unlock()
-
 	// Get all VNodes for this cluster binding
 	vNodes, err := r.getVNodesForClusterBinding(ctx)
 	if err != nil {
@@ -208,10 +192,10 @@ func (r *ProxierWatchController) handleProxierPodIPChange(ctx context.Context, l
 		"proxierIPs", runningProxierIPs,
 		"count", len(runningProxierIPs))
 
-	// Update VNode IPs with rate limiting between patches
+	// Update VNode IPs with rate limiting using golang.org/x/time/rate
 	updatedCount := 0
 	skippedCount := 0
-	for i, vNode := range vNodes {
+	for _, vNode := range vNodes {
 		// Check if VNode's current InternalIP is already a valid running Proxier Pod IP
 		currentIP := r.getVNodeInternalIP(&vNode)
 		if currentIP != "" && runningProxierIPs[currentIP] {
@@ -222,17 +206,18 @@ func (r *ProxierWatchController) handleProxierPodIPChange(ctx context.Context, l
 			continue
 		}
 
+		// Apply rate limiting before each update (20 QPS)
+		if err := r.rateLimiter.Wait(ctx); err != nil {
+			log.Error(err, "Rate limiter wait failed", "vNodeName", vNode.Name)
+			return ctrl.Result{}, err
+		}
+
 		if err := r.updateVNodeIP(ctx, log, &vNode, newIP); err != nil {
 			log.Error(err, "Failed to update VNode IP", "vNodeName", vNode.Name)
 			// Continue with other VNodes even if one fails
 			continue
 		}
 		updatedCount++
-
-		// Add small delay between patches to avoid overwhelming the API server
-		if i < len(vNodes)-1 {
-			time.Sleep(100 * time.Millisecond)
-		}
 	}
 
 	log.Info("VNode IP update completed",
@@ -450,7 +435,8 @@ func (r *ProxierWatchController) verifyVNodeIPUpdateWithRetry(ctx context.Contex
 	return false
 }
 
-// updateVNodeIPWithRetry updates VNode IP using Status().Update() mechanism with retry
+// updateVNodeIPWithRetry updates VNode IP using Status().Patch() mechanism with retry
+// Uses JSON Patch for higher success rate and better conflict handling
 func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log logr.Logger, vNodeName, newIP, oldIP string) error {
 	const maxRetries = 3
 	const baseDelay = 100 * time.Millisecond
@@ -467,9 +453,9 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 			time.Sleep(delay)
 		}
 
-		// Get the latest VNode object
-		updatedNode := &corev1.Node{}
-		err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: vNodeName}, updatedNode)
+		// Get the latest VNode object to check current state
+		currentNode := &corev1.Node{}
+		err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: vNodeName}, currentNode)
 		if err != nil {
 			log.Error(err, "Failed to fetch VNode for update",
 				"vNodeName", vNodeName,
@@ -481,7 +467,7 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 		}
 
 		// Check if IP is already correct
-		currentIP := r.getVNodeInternalIP(updatedNode)
+		currentIP := r.getVNodeInternalIP(currentNode)
 		if currentIP == newIP {
 			log.V(1).Info("VNode IP is already correct, no update needed",
 				"vNodeName", vNodeName,
@@ -490,64 +476,62 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 			return nil
 		}
 
-		// Update the InternalIP
-		updated := r.updateVNodeInternalIP(updatedNode, newIP)
-		if !updated {
-			log.V(1).Info("No InternalIP found to update, adding new one",
-				"vNodeName", vNodeName,
-				"newIP", newIP,
-				"attempt", attempt+1)
-		}
-
-		// Check if prometheus URL annotation needs updating before modifying
+		// Step 1: Update annotations using regular Patch (if needed)
 		needsAnnotationUpdate := false
-		if updatedNode.Annotations != nil {
-			if existingURL, exists := updatedNode.Annotations[cloudv1beta1.AnnotationPrometheusURL]; exists {
-				// Extract the current URL and check if it needs updating
-				if !strings.HasPrefix(existingURL, newIP+":") {
-					needsAnnotationUpdate = true
-				}
-			} else {
+		var newPrometheusURL string
+		
+		if proxierPort, exists := currentNode.Labels[cloudv1beta1.LabelProxierPort]; exists {
+			newPrometheusURL = fmt.Sprintf("%s:%s/%s", newIP, proxierPort, vNodeName)
+			
+			if currentNode.Annotations == nil {
+				needsAnnotationUpdate = true
+			} else if existingURL, hasAnnotation := currentNode.Annotations[cloudv1beta1.AnnotationPrometheusURL]; !hasAnnotation || existingURL != newPrometheusURL {
 				needsAnnotationUpdate = true
 			}
-		} else {
-			needsAnnotationUpdate = true
 		}
 
-		// Update prometheus URL annotation in memory only if needed
 		if needsAnnotationUpdate {
-			r.updateVNodePrometheusURL(updatedNode, newIP)
-
-			err = r.VirtualClient.Update(ctx, updatedNode)
+			// Create annotation patch
+			annotationPatch := map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"annotations": map[string]string{
+						cloudv1beta1.AnnotationPrometheusURL: newPrometheusURL,
+					},
+				},
+			}
+			annotationPatchData, err := json.Marshal(annotationPatch)
 			if err != nil {
-				if isConflictError(err) {
-					log.V(1).Info("VNode labels update conflict, will retry",
-						"vNodeName", vNodeName,
-						"attempt", attempt+1)
-					continue
-				}
-				log.Error(err, "Failed to update VNode labels", "vNodeName", vNodeName)
-				// Continue to status update even if labels update fails
+				log.Error(err, "Failed to marshal annotation patch", "vNodeName", vNodeName)
 			} else {
-				log.V(1).Info("Updated VNode prometheus URL label",
-					"vNodeName", vNodeName,
-					"newIP", newIP,
-					"attempt", attempt+1)
+				err = r.VirtualClient.Patch(ctx, currentNode, client.RawPatch(types.MergePatchType, annotationPatchData))
+				if err != nil {
+					log.Error(err, "Failed to patch VNode annotations", "vNodeName", vNodeName, "attempt", attempt+1)
+					// Continue to status patch even if annotation patch fails
+				} else {
+					log.V(1).Info("Successfully patched VNode prometheus URL annotation",
+						"vNodeName", vNodeName,
+						"prometheusURL", newPrometheusURL,
+						"attempt", attempt+1)
+				}
 			}
 		}
 
-		// Then update the status
-		log.V(1).Info("Applying VNode status update",
+		// Step 2: Update status.addresses using Status().Patch()
+		// Create JSON Patch for InternalIP update
+		statusPatchData := r.createVNodeIPPatch(currentNode, newIP)
+		
+		log.V(1).Info("Applying VNode status patch",
 			"vNodeName", vNodeName,
 			"oldIP", currentIP,
 			"newIP", newIP,
+			"patchData", string(statusPatchData),
 			"attempt", attempt+1)
 
-		err = r.VirtualClient.Status().Update(ctx, updatedNode)
+		err = r.VirtualClient.Status().Patch(ctx, currentNode, client.RawPatch(types.JSONPatchType, statusPatchData))
 		if err != nil {
 			// Check if it's a conflict error (ResourceVersion mismatch)
 			if isConflictError(err) {
-				log.V(1).Info("VNode update conflict, will retry with latest version",
+				log.V(1).Info("VNode status patch conflict, will retry with latest version",
 					"vNodeName", vNodeName,
 					"attempt", attempt+1,
 					"error", err.Error())
@@ -556,24 +540,24 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 
 			// Check if it's a forbidden error (permission issue)
 			if isForbiddenError(err) {
-				log.Error(err, "VNode status update forbidden, likely permission issue",
+				log.Error(err, "VNode status patch forbidden, likely permission issue",
 					"vNodeName", vNodeName,
 					"attempt", attempt+1)
-				return fmt.Errorf("VNode status update forbidden: %w", err)
+				return fmt.Errorf("VNode status patch forbidden: %w", err)
 			}
 
 			// Other errors
-			log.Error(err, "Failed to update VNode status",
+			log.Error(err, "Failed to patch VNode status",
 				"vNodeName", vNodeName,
 				"attempt", attempt+1)
 			if attempt == maxRetries-1 {
-				return fmt.Errorf("failed to update VNode after %d attempts: %w", maxRetries, err)
+				return fmt.Errorf("failed to patch VNode after %d attempts: %w", maxRetries, err)
 			}
 			continue
 		}
 
-		// Status update successful
-		log.Info("VNode status update successful",
+		// Status patch successful
+		log.Info("VNode status patch successful",
 			"vNodeName", vNodeName,
 			"oldIP", currentIP,
 			"newIP", newIP,
@@ -581,7 +565,7 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 		return nil
 	}
 
-	return fmt.Errorf("failed to update VNode after %d attempts", maxRetries)
+	return fmt.Errorf("failed to patch VNode after %d attempts", maxRetries)
 }
 
 // updateVNodePrometheusURL updates the prometheus URL annotation in the VNode object
