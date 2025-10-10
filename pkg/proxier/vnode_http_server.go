@@ -10,15 +10,15 @@ import (
 
 // VNodeHTTPServer handles HTTP requests for VNode metrics
 type VNodeHTTPServer struct {
-	metricsCollector *MetricsCollector
-	log              logr.Logger
+	vnodeProxierAgent *VNodeProxierAgent
+	log               logr.Logger
 }
 
 // NewVNodeHTTPServer creates a new VNode HTTP server
-func NewVNodeHTTPServer(metricsCollector *MetricsCollector, log logr.Logger) *VNodeHTTPServer {
+func NewVNodeHTTPServer(vnodeProxierAgent *VNodeProxierAgent, log logr.Logger) *VNodeHTTPServer {
 	return &VNodeHTTPServer{
-		metricsCollector: metricsCollector,
-		log:              log,
+		vnodeProxierAgent: vnodeProxierAgent,
+		log:               log,
 	}
 }
 
@@ -50,8 +50,8 @@ func (s *VNodeHTTPServer) createVNodeHandler() http.HandlerFunc {
 			return
 		}
 
-		// Get metrics data from MetricsCollector
-		metricsData, exists := s.metricsCollector.GetMetricsData(port)
+		// Get metrics data from VNodeProxierAgent
+		metricsData, exists := s.vnodeProxierAgent.GetMetricsData(port)
 		if !exists {
 			s.writeErrorResponse(w, http.StatusNotFound, fmt.Sprintf("No metrics data available for VNode '%s' (port: %s)", vnodeName, port))
 			return
@@ -85,8 +85,8 @@ func (s *VNodeHTTPServer) writeErrorResponse(w http.ResponseWriter, statusCode i
 }
 
 // StartVNodeHTTPServer starts the VNode HTTP server
-func StartVNodeHTTPServer(metricsCollector *MetricsCollector, log logr.Logger, basePort int) error {
-	server := NewVNodeHTTPServer(metricsCollector, log)
+func StartVNodeHTTPServer(vnodeProxierAgent *VNodeProxierAgent, log logr.Logger, basePort int) error {
+	server := NewVNodeHTTPServer(vnodeProxierAgent, log)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.createVNodeHandler())

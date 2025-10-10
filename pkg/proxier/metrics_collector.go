@@ -85,8 +85,8 @@ type MetricsConfig struct {
 	TLSSecretNamespace string // TLS secret namespace
 }
 
-// MetricsCollector metrics collector
-type MetricsCollector struct {
+// VNodeProxierAgent VNode proxier agent for data collection and service provision
+type VNodeProxierAgent struct {
 	config        *MetricsConfig
 	tokenManager  *TokenManager
 	kubeletClient *KubeletClient
@@ -115,13 +115,13 @@ type MetricsCollector struct {
 	wg       sync.WaitGroup
 }
 
-// NewMetricsCollector creates a new metrics collector
-func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, kubeletProxy KubeletProxy, kubeClient kubernetes.Interface, clusterID string, log logr.Logger) *MetricsCollector {
+// NewVNodeProxierAgent creates a new VNode proxier agent
+func NewVNodeProxierAgent(config *MetricsConfig, tokenManager *TokenManager, kubeletProxy KubeletProxy, kubeClient kubernetes.Interface, clusterID string, log logr.Logger) *VNodeProxierAgent {
 	// Initialize VictoriaMetrics unmarshal workers (referring to vnode_metrics)
 	log.Info("Starting VictoriaMetrics unmarshal workers")
 	common.StartUnmarshalWorkers()
 
-	mc := &MetricsCollector{
+	mc := &VNodeProxierAgent{
 		config:        config,
 		tokenManager:  tokenManager,
 		kubeletClient: NewKubeletClient(log.WithName("kubelet-client"), tokenManager),
@@ -158,55 +158,55 @@ func NewMetricsCollector(config *MetricsConfig, tokenManager *TokenManager, kube
 	return mc
 }
 
-// Start starts the metrics collector
-func (mc *MetricsCollector) Start(ctx context.Context) error {
-	mc.log.Info("Starting MetricsCollector")
+// Start starts the VNode proxier agent
+func (va *VNodeProxierAgent) Start(ctx context.Context) error {
+	va.log.Info("Starting VNodeProxierAgent")
 
 	// Start timed collection goroutine
-	mc.wg.Add(1)
+	va.wg.Add(1)
 	go func() {
-		defer mc.wg.Done()
-		ticker := time.NewTicker(mc.config.CollectInterval)
+		defer va.wg.Done()
+		ticker := time.NewTicker(va.config.CollectInterval)
 		defer ticker.Stop()
 
-		mc.log.Info("Metrics collection timer started", "interval", mc.config.CollectInterval)
+		va.log.Info("Metrics collection timer started", "interval", va.config.CollectInterval)
 
 		for {
 			select {
 			case <-ticker.C:
-				mc.log.V(1).Info("Timer tick received, starting metrics collection")
-				mc.collectMetricsFromAllNodes()
-			case <-mc.stopChan:
-				mc.log.Info("Metrics collection stopped")
+				va.log.V(1).Info("Timer tick received, starting metrics collection")
+				va.collectMetricsFromAllNodes()
+			case <-va.stopChan:
+				va.log.Info("Metrics collection stopped")
 				return
 			}
 		}
 	}()
 
-	mc.log.Info("MetricsCollector started successfully")
+	va.log.Info("VNodeProxierAgent started successfully")
 	return nil
 }
 
 // collectMetricsFromAllNodes collects metrics from all nodes
-func (mc *MetricsCollector) collectMetricsFromAllNodes() {
-	mc.mu.RLock()
+func (va *VNodeProxierAgent) collectMetricsFromAllNodes() {
+	va.mu.RLock()
 	nodeStates := make(map[string]NodeInfo)
-	for k, v := range mc.nodeStates {
+	for k, v := range va.nodeStates {
 		nodeStates[k] = v
 	}
-	mc.mu.RUnlock()
+	va.mu.RUnlock()
 
 	// Use Debug level to avoid too many logs
-	mc.log.V(1).Info("Collecting metrics from all nodes", "nodeCount", len(nodeStates))
+	va.log.V(1).Info("Collecting metrics from all nodes", "nodeCount", len(nodeStates))
 
 	// If no nodes available, log warning
 	if len(nodeStates) == 0 {
-		mc.log.Info("No nodes available for metrics collection")
+		va.log.Info("No nodes available for metrics collection")
 		return
 	}
 
 	// Collect metrics from all nodes concurrently, but serialize parsing to avoid VictoriaMetrics concurrency limits
-	semaphore := make(chan struct{}, mc.config.MaxConcurrentNodes)
+	semaphore := make(chan struct{}, va.config.MaxConcurrentNodes)
 	var wg sync.WaitGroup
 
 	// Used to store collected raw data
@@ -232,13 +232,13 @@ func (mc *MetricsCollector) collectMetricsFromAllNodes() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			mc.log.V(2).Info("Collecting raw metrics from node", "nodeName", name, "nodeIP", info.InternalIP, "port", info.ProxierPort)
+			va.log.V(2).Info("Collecting raw metrics from node", "nodeName", name, "nodeIP", info.InternalIP, "port", info.ProxierPort)
 
 			// Get cAdvisor Prometheus metrics from kubelet API
-			metricsData, metricsErr := mc.kubeletClient.GetCAdvisorMetrics(ctx, info.InternalIP, "10250")
+			metricsData, metricsErr := va.kubeletClient.GetCAdvisorMetrics(ctx, info.InternalIP, "10250")
 
 			// Get Summary stats from kubelet API (for metrics-server compatibility)
-			summaryData, summaryErr := mc.kubeletClient.GetSummary(ctx, info.InternalIP, "10250")
+			summaryData, summaryErr := va.kubeletClient.GetSummary(ctx, info.InternalIP, "10250")
 
 			// Combine errors if any
 			var combinedErr error
@@ -269,7 +269,7 @@ func (mc *MetricsCollector) collectMetricsFromAllNodes() {
 	// Serialize parsing of collected data
 	for collected := range collectedChan {
 		if collected.err != nil {
-			mc.log.Error(collected.err, "Failed to collect metrics from node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP)
+			va.log.Error(collected.err, "Failed to collect metrics from node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP)
 			// Continue processing if we have partial data
 			if collected.metricsData == nil && collected.summaryData == nil {
 				continue
@@ -283,39 +283,39 @@ func (mc *MetricsCollector) collectMetricsFromAllNodes() {
 
 			go func() {
 				reader := strings.NewReader(string(collected.metricsData))
-				parseErr <- mc.metricsParser.ParseAndStoreMetrics(reader, collected.nodeInfo.ProxierPort)
+				parseErr <- va.metricsParser.ParseAndStoreMetrics(reader, collected.nodeInfo.ProxierPort)
 			}()
 
 			select {
 			case err := <-parseErr:
 				parseCancel()
 				if err != nil {
-					mc.log.Error(err, "Failed to parse metrics from node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP)
+					va.log.Error(err, "Failed to parse metrics from node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP)
 				}
 			case <-parseCtx.Done():
 				parseCancel()
-				mc.log.Error(parseCtx.Err(), "Parse timeout for node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP, "port", collected.nodeInfo.ProxierPort)
+				va.log.Error(parseCtx.Err(), "Parse timeout for node", "nodeName", collected.nodeName, "nodeIP", collected.nodeInfo.InternalIP, "port", collected.nodeInfo.ProxierPort)
 			}
 
 			// Generate parsed metrics data
 			var buf strings.Builder
-			mc.metricsParser.WritePrometheusMetrics(&buf, collected.nodeInfo.ProxierPort, collected.nodeInfo.InternalIP, mc.config.TargetNamespace)
+			va.metricsParser.WritePrometheusMetrics(&buf, collected.nodeInfo.ProxierPort, collected.nodeInfo.InternalIP, va.config.TargetNamespace)
 			parsedMetricsData := []byte(buf.String())
 
 			// Update Prometheus metrics cache
-			mc.mu.Lock()
-			oldData, existed := mc.metricsCache[collected.nodeInfo.ProxierPort]
-			mc.metricsCache[collected.nodeInfo.ProxierPort] = parsedMetricsData
-			mc.mu.Unlock()
+			va.mu.Lock()
+			oldData, existed := va.metricsCache[collected.nodeInfo.ProxierPort]
+			va.metricsCache[collected.nodeInfo.ProxierPort] = parsedMetricsData
+			va.mu.Unlock()
 
 			// Log cache changes
 			if existed {
-				mc.log.V(1).Info("Updated Prometheus metrics cache",
+				va.log.V(1).Info("Updated Prometheus metrics cache",
 					"port", collected.nodeInfo.ProxierPort,
 					"oldSize", len(oldData),
 					"newSize", len(parsedMetricsData))
 			} else {
-				mc.log.V(1).Info("Created new Prometheus metrics cache entry",
+				va.log.V(1).Info("Created new Prometheus metrics cache entry",
 					"port", collected.nodeInfo.ProxierPort,
 					"size", len(parsedMetricsData))
 			}
@@ -324,20 +324,20 @@ func (mc *MetricsCollector) collectMetricsFromAllNodes() {
 		// Store Summary data if available (for metrics-server compatibility)
 		if collected.summaryData != nil {
 			// Transform Summary data for metrics-server compatibility
-			mc.transformSummaryData(collected.summaryData, collected.nodeName)
+			va.transformSummaryData(collected.summaryData, collected.nodeName)
 
-			mc.mu.Lock()
-			mc.summaryCache[collected.nodeInfo.ProxierPort] = collected.summaryData
-			mc.lastUpdate[collected.nodeInfo.ProxierPort] = time.Now()
-			mc.mu.Unlock()
+			va.mu.Lock()
+			va.summaryCache[collected.nodeInfo.ProxierPort] = collected.summaryData
+			va.lastUpdate[collected.nodeInfo.ProxierPort] = time.Now()
+			va.mu.Unlock()
 
-			mc.log.V(1).Info("Stored Summary data for metrics-server",
+			va.log.V(1).Info("Stored Summary data for metrics-server",
 				"port", collected.nodeInfo.ProxierPort,
 				"nodeName", collected.summaryData.Node.NodeName,
 				"podCount", len(collected.summaryData.Pods))
 		}
 
-		mc.log.V(2).Info("Successfully collected and stored metrics from node",
+		va.log.V(2).Info("Successfully collected and stored metrics from node",
 			"nodeName", collected.nodeName,
 			"nodeIP", collected.nodeInfo.InternalIP,
 			"port", collected.nodeInfo.ProxierPort,
@@ -345,63 +345,63 @@ func (mc *MetricsCollector) collectMetricsFromAllNodes() {
 			"hasSummary", collected.summaryData != nil)
 	}
 
-	mc.log.V(1).Info("Completed metrics collection from all nodes")
+	va.log.V(1).Info("Completed metrics collection from all nodes")
 }
 
 // OnNodeAdded handles node addition events
-func (mc *MetricsCollector) OnNodeAdded(nodeName string, nodeInfo NodeInfo) {
-	mc.log.Info("➕ Node added", "nodeName", nodeName, "nodeInfo", nodeInfo)
+func (va *VNodeProxierAgent) OnNodeAdded(nodeName string, nodeInfo NodeInfo) {
+	va.log.Info("➕ Node added", "nodeName", nodeName, "nodeInfo", nodeInfo)
 
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
+	va.mu.Lock()
+	defer va.mu.Unlock()
 
 	// Update node state
-	mc.nodeStates[nodeName] = nodeInfo
+	va.nodeStates[nodeName] = nodeInfo
 
 	// Start HTTP server (call outside lock)
 	go func() {
-		mc.startHTTPServerForNode(nodeInfo.ProxierPort, nodeInfo)
+		va.startHTTPServerForNode(nodeInfo.ProxierPort, nodeInfo)
 	}()
 }
 
 // OnNodeUpdated handles node update events
-func (mc *MetricsCollector) OnNodeUpdated(nodeName string, oldNodeInfo, newNodeInfo NodeInfo) {
-	mc.log.Info("🔄 Node updated", "nodeName", nodeName, "oldNodeInfo", oldNodeInfo, "newNodeInfo", newNodeInfo)
+func (va *VNodeProxierAgent) OnNodeUpdated(nodeName string, oldNodeInfo, newNodeInfo NodeInfo) {
+	va.log.Info("🔄 Node updated", "nodeName", nodeName, "oldNodeInfo", oldNodeInfo, "newNodeInfo", newNodeInfo)
 
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
+	va.mu.Lock()
+	defer va.mu.Unlock()
 
 	// Update node state
-	mc.nodeStates[nodeName] = newNodeInfo
+	va.nodeStates[nodeName] = newNodeInfo
 
 	// If port changes, need to restart HTTP server
 	if oldNodeInfo.ProxierPort != newNodeInfo.ProxierPort {
-		mc.log.Info("🔄 Port changed for node",
+		va.log.Info("🔄 Port changed for node",
 			"nodeName", nodeName,
 			"oldPort", oldNodeInfo.ProxierPort,
 			"newPort", newNodeInfo.ProxierPort,
 			"nodeIP", newNodeInfo.InternalIP)
 
 		// Stop old HTTP server
-		if entry, exists := mc.httpServers[oldNodeInfo.ProxierPort]; exists {
-			mc.log.Info("🛑 Stopping old HTTP server", "port", oldNodeInfo.ProxierPort, "nodeIP", entry.nodeIP)
+		if entry, exists := va.httpServers[oldNodeInfo.ProxierPort]; exists {
+			va.log.Info("🛑 Stopping old HTTP server", "port", oldNodeInfo.ProxierPort, "nodeIP", entry.nodeIP)
 			close(entry.stopChan)
-			delete(mc.httpServers, oldNodeInfo.ProxierPort)
+			delete(va.httpServers, oldNodeInfo.ProxierPort)
 		}
 
 		// Clean up old cache data
-		if _, exists := mc.metricsCache[oldNodeInfo.ProxierPort]; exists {
-			mc.log.V(1).Info("🧹 Clearing old metrics cache", "port", oldNodeInfo.ProxierPort)
-			delete(mc.metricsCache, oldNodeInfo.ProxierPort)
-			delete(mc.lastUpdate, oldNodeInfo.ProxierPort)
+		if _, exists := va.metricsCache[oldNodeInfo.ProxierPort]; exists {
+			va.log.V(1).Info("🧹 Clearing old metrics cache", "port", oldNodeInfo.ProxierPort)
+			delete(va.metricsCache, oldNodeInfo.ProxierPort)
+			delete(va.lastUpdate, oldNodeInfo.ProxierPort)
 		}
 
 		// Start new HTTP server (call outside lock)
 		go func() {
-			mc.startHTTPServerForNode(newNodeInfo.ProxierPort, newNodeInfo)
+			va.startHTTPServerForNode(newNodeInfo.ProxierPort, newNodeInfo)
 		}()
 	} else {
-		mc.log.V(1).Info("✅ Port unchanged for node",
+		va.log.V(1).Info("✅ Port unchanged for node",
 			"nodeName", nodeName,
 			"port", newNodeInfo.ProxierPort,
 			"nodeIP", newNodeInfo.InternalIP)
@@ -409,112 +409,112 @@ func (mc *MetricsCollector) OnNodeUpdated(nodeName string, oldNodeInfo, newNodeI
 }
 
 // OnNodeDeleted handles node deletion events
-func (mc *MetricsCollector) OnNodeDeleted(nodeName string, nodeInfo NodeInfo) {
-	mc.log.Info("🗑️ Node deleted", "nodeName", nodeName, "nodeInfo", nodeInfo)
+func (va *VNodeProxierAgent) OnNodeDeleted(nodeName string, nodeInfo NodeInfo) {
+	va.log.Info("🗑️ Node deleted", "nodeName", nodeName, "nodeInfo", nodeInfo)
 
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
+	va.mu.Lock()
+	defer va.mu.Unlock()
 
 	// Remove from node state
-	delete(mc.nodeStates, nodeName)
+	delete(va.nodeStates, nodeName)
 
 	// Stop HTTP server
-	if entry, exists := mc.httpServers[nodeInfo.ProxierPort]; exists {
-		mc.log.Info("🛑 Stopping HTTP server for deleted node", "port", nodeInfo.ProxierPort, "nodeIP", entry.nodeIP)
+	if entry, exists := va.httpServers[nodeInfo.ProxierPort]; exists {
+		va.log.Info("🛑 Stopping HTTP server for deleted node", "port", nodeInfo.ProxierPort, "nodeIP", entry.nodeIP)
 		close(entry.stopChan)
-		delete(mc.httpServers, nodeInfo.ProxierPort)
+		delete(va.httpServers, nodeInfo.ProxierPort)
 
 		// Print current listening ports list (call outside lock)
 		go func() {
-			mc.printListeningPorts()
+			va.printListeningPorts()
 		}()
 	}
 
 	// Clean up metrics cache
-	if _, exists := mc.metricsCache[nodeInfo.ProxierPort]; exists {
-		mc.log.V(1).Info("🧹 Clearing metrics cache for deleted node", "port", nodeInfo.ProxierPort)
-		delete(mc.metricsCache, nodeInfo.ProxierPort)
-		delete(mc.lastUpdate, nodeInfo.ProxierPort)
+	if _, exists := va.metricsCache[nodeInfo.ProxierPort]; exists {
+		va.log.V(1).Info("🧹 Clearing metrics cache for deleted node", "port", nodeInfo.ProxierPort)
+		delete(va.metricsCache, nodeInfo.ProxierPort)
+		delete(va.lastUpdate, nodeInfo.ProxierPort)
 	}
 }
 
 // GetCurrentNodeStates gets current node states (for debugging and testing)
-func (mc *MetricsCollector) GetCurrentNodeStates() map[string]NodeInfo {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
+func (va *VNodeProxierAgent) GetCurrentNodeStates() map[string]NodeInfo {
+	va.mu.RLock()
+	defer va.mu.RUnlock()
 
 	result := make(map[string]NodeInfo)
-	for k, v := range mc.nodeStates {
+	for k, v := range va.nodeStates {
 		result[k] = v
 	}
 	return result
 }
 
-// InitializeWithNodes initializes MetricsCollector with existing nodes
-func (mc *MetricsCollector) InitializeWithNodes(nodes map[string]NodeInfo) {
-	mc.log.Info("Initializing MetricsCollector with existing nodes", "nodeCount", len(nodes))
+// InitializeWithNodes initializes VNodeProxierAgent with existing nodes
+func (va *VNodeProxierAgent) InitializeWithNodes(nodes map[string]NodeInfo) {
+	va.log.Info("Initializing VNodeProxierAgent with existing nodes", "nodeCount", len(nodes))
 
 	// Clear existing state and add all nodes
-	mc.mu.Lock()
-	mc.nodeStates = make(map[string]NodeInfo)
+	va.mu.Lock()
+	va.nodeStates = make(map[string]NodeInfo)
 	for nodeName, nodeInfo := range nodes {
-		mc.nodeStates[nodeName] = nodeInfo
+		va.nodeStates[nodeName] = nodeInfo
 	}
-	mc.mu.Unlock()
+	va.mu.Unlock()
 
 	// Start HTTP servers for all nodes
 	for _, nodeInfo := range nodes {
 		// Start HTTP server (this method handles locking internally)
-		mc.startHTTPServerForNode(nodeInfo.ProxierPort, nodeInfo)
+		va.startHTTPServerForNode(nodeInfo.ProxierPort, nodeInfo)
 	}
 }
 
-// Stop stops the metrics collector
-func (mc *MetricsCollector) Stop() {
-	mc.log.Info("Stopping MetricsCollector")
-	close(mc.stopChan)
+// Stop stops the VNode proxier agent
+func (va *VNodeProxierAgent) Stop() {
+	va.log.Info("Stopping VNodeProxierAgent")
+	close(va.stopChan)
 
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
+	va.mu.Lock()
+	defer va.mu.Unlock()
 
 	// Stop all HTTP servers
-	for port, entry := range mc.httpServers {
-		mc.log.V(1).Info("Stopping HTTP server", "port", port, "nodeIP", entry.nodeIP)
+	for port, entry := range va.httpServers {
+		va.log.V(1).Info("Stopping HTTP server", "port", port, "nodeIP", entry.nodeIP)
 		close(entry.stopChan)
 	}
 
 	// Clear server mapping and cache
-	mc.httpServers = make(map[string]*ServerEntry)
-	mc.nodeStates = make(map[string]NodeInfo)
-	mc.metricsCache = make(map[string][]byte)
-	mc.summaryCache = make(map[string]*Summary)
-	mc.lastUpdate = make(map[string]time.Time)
+	va.httpServers = make(map[string]*ServerEntry)
+	va.nodeStates = make(map[string]NodeInfo)
+	va.metricsCache = make(map[string][]byte)
+	va.summaryCache = make(map[string]*Summary)
+	va.lastUpdate = make(map[string]time.Time)
 
 	// Wait for all goroutines to complete
-	mc.wg.Wait()
+	va.wg.Wait()
 
 	// Stop VictoriaMetrics unmarshal workers (referring to vnode_metrics)
-	mc.log.Info("Stopping VictoriaMetrics unmarshal workers")
+	va.log.Info("Stopping VictoriaMetrics unmarshal workers")
 	common.StopUnmarshalWorkers()
 
-	mc.log.Info("MetricsCollector stopped")
+	va.log.Info("VNodeProxierAgent stopped")
 }
 
 // startHTTPServerForNode starts HTTP/HTTPS server for specified node
-func (mc *MetricsCollector) startHTTPServerForNode(port string, nodeInfo NodeInfo) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
+func (va *VNodeProxierAgent) startHTTPServerForNode(port string, nodeInfo NodeInfo) {
+	va.mu.Lock()
+	defer va.mu.Unlock()
 
 	// Check if port is already listening
-	if _, exists := mc.httpServers[port]; exists {
-		mc.log.V(1).Info("Port already listening, skipping", "port", port, "nodeIP", nodeInfo.InternalIP)
+	if _, exists := va.httpServers[port]; exists {
+		va.log.V(1).Info("Port already listening, skipping", "port", port, "nodeIP", nodeInfo.InternalIP)
 		return
 	}
 
 	stopChan := make(chan struct{})
 
 	// Use gorilla/mux router to support multiple endpoints
-	router := mc.setupRoutes(port, nodeInfo)
+	router := va.setupRoutes(port, nodeInfo)
 
 	server := &http.Server{
 		Addr:    ":" + port,
@@ -524,28 +524,28 @@ func (mc *MetricsCollector) startHTTPServerForNode(port string, nodeInfo NodeInf
 	// Determine server type based on TLS configuration
 	serverType := "HTTP"
 	protocol := "http"
-	if mc.tlsConfig != nil {
+	if va.tlsConfig != nil {
 		serverType = "HTTPS"
 		protocol = "https"
-		server.TLSConfig = mc.tlsConfig
+		server.TLSConfig = va.tlsConfig
 	}
 
 	// Start server
-	mc.wg.Add(1)
+	va.wg.Add(1)
 	go func() {
-		defer mc.wg.Done()
-		mc.log.Info("🚀 Starting "+serverType+" server for metrics",
+		defer va.wg.Done()
+		va.log.Info("🚀 Starting "+serverType+" server for metrics",
 			"port", port,
 			"nodeIP", nodeInfo.InternalIP,
 			"endpoint", protocol+"://localhost:"+port+"/",
-			"tls", mc.tlsConfig != nil)
+			"tls", va.tlsConfig != nil)
 
 		var err error
-		if mc.tlsConfig != nil {
+		if va.tlsConfig != nil {
 			// Start HTTPS server
-			listener, listenErr := tls.Listen("tcp", ":"+port, mc.tlsConfig)
+			listener, listenErr := tls.Listen("tcp", ":"+port, va.tlsConfig)
 			if listenErr != nil {
-				mc.log.Error(listenErr, "Failed to create TLS listener", "port", port, "nodeIP", nodeInfo.InternalIP)
+				va.log.Error(listenErr, "Failed to create TLS listener", "port", port, "nodeIP", nodeInfo.InternalIP)
 				return
 			}
 			err = server.Serve(listener)
@@ -555,20 +555,20 @@ func (mc *MetricsCollector) startHTTPServerForNode(port string, nodeInfo NodeInf
 		}
 
 		if err != nil && err != http.ErrServerClosed {
-			mc.log.Error(err, serverType+" server error", "port", port, "nodeIP", nodeInfo.InternalIP)
+			va.log.Error(err, serverType+" server error", "port", port, "nodeIP", nodeInfo.InternalIP)
 		}
 	}()
 
 	// Graceful shutdown handling
 	go func() {
 		<-stopChan
-		mc.log.Info("🛑 Shutting down "+serverType+" server", "port", port, "nodeIP", nodeInfo.InternalIP)
+		va.log.Info("🛑 Shutting down "+serverType+" server", "port", port, "nodeIP", nodeInfo.InternalIP)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		server.Shutdown(ctx)
 	}()
 
-	mc.httpServers[port] = &ServerEntry{
+	va.httpServers[port] = &ServerEntry{
 		srv:      server,
 		stopChan: stopChan,
 		nodeIP:   nodeInfo.InternalIP,
@@ -576,86 +576,86 @@ func (mc *MetricsCollector) startHTTPServerForNode(port string, nodeInfo NodeInf
 
 	// Print current listening ports list (call outside lock)
 	go func() {
-		mc.printListeningPorts()
+		va.printListeningPorts()
 	}()
 }
 
 // printListeningPorts prints current listening ports list
-func (mc *MetricsCollector) printListeningPorts() {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
+func (va *VNodeProxierAgent) printListeningPorts() {
+	va.mu.RLock()
+	defer va.mu.RUnlock()
 
 	serverType := "HTTP"
-	if mc.tlsConfig != nil {
+	if va.tlsConfig != nil {
 		serverType = "HTTPS"
 	}
 
-	if len(mc.httpServers) == 0 {
-		mc.log.Info("📊 No " + serverType + " servers currently listening")
+	if len(va.httpServers) == 0 {
+		va.log.Info("📊 No " + serverType + " servers currently listening")
 		return
 	}
 
-	ports := make([]string, 0, len(mc.httpServers))
-	for port, entry := range mc.httpServers {
+	ports := make([]string, 0, len(va.httpServers))
+	for port, entry := range va.httpServers {
 		ports = append(ports, fmt.Sprintf("%s(nodeIP:%s)", port, entry.nodeIP))
 	}
 
-	mc.log.Info("📊 Currently listening ports",
-		"count", len(mc.httpServers),
+	va.log.Info("📊 Currently listening ports",
+		"count", len(va.httpServers),
 		"type", serverType,
 		"ports", strings.Join(ports, ", "))
 }
 
 // setupRoutes sets up HTTP routes for metrics server
-func (mc *MetricsCollector) setupRoutes(port string, nodeInfo NodeInfo) *mux.Router {
+func (va *VNodeProxierAgent) setupRoutes(port string, nodeInfo NodeInfo) *mux.Router {
 	router := mux.NewRouter()
 	router.StrictSlash(true)
 
 	// Metrics endpoint (Prometheus format)
-	router.HandleFunc("/metrics", mc.handleMetrics(port)).Methods("GET")
+	router.HandleFunc("/metrics", va.handleMetrics(port)).Methods("GET")
 
 	// Summary stats endpoint (metrics-server compatible)
-	router.HandleFunc("/stats/summary", mc.handleSummary(port)).Methods("GET")
+	router.HandleFunc("/stats/summary", va.handleSummary(port)).Methods("GET")
 
 	// Container logs endpoint (same as main server)
-	router.HandleFunc("/containerLogs/{namespace}/{pod}/{container}", mc.handleContainerLogs).Methods("GET")
+	router.HandleFunc("/containerLogs/{namespace}/{pod}/{container}", va.handleContainerLogs).Methods("GET")
 
 	// Container exec endpoint (same as main server)
-	router.HandleFunc("/exec/{namespace}/{pod}/{container}", mc.handleContainerExec).Methods("POST", "GET")
+	router.HandleFunc("/exec/{namespace}/{pod}/{container}", va.handleContainerExec).Methods("POST", "GET")
 
 	// Health check endpoint
-	router.HandleFunc("/healthz", mc.handleHealthz).Methods("GET")
+	router.HandleFunc("/healthz", va.handleHealthz).Methods("GET")
 
 	// Default handler for root path
-	router.HandleFunc("/", mc.handleRoot(port, nodeInfo)).Methods("GET")
+	router.HandleFunc("/", va.handleRoot(port, nodeInfo)).Methods("GET")
 
 	return router
 }
 
 // handleMetrics handles metrics endpoint (Prometheus format)
-func (mc *MetricsCollector) handleMetrics(port string) http.HandlerFunc {
+func (va *VNodeProxierAgent) handleMetrics(port string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		mc.writeRealMetrics(w, port)
+		va.writeRealMetrics(w, port)
 	}
 }
 
 // handleSummary handles /stats/summary endpoint (metrics-server compatible)
-func (mc *MetricsCollector) handleSummary(port string) http.HandlerFunc {
+func (va *VNodeProxierAgent) handleSummary(port string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mc.mu.RLock()
-		summary, exists := mc.summaryCache[port]
-		lastUpdate, _ := mc.lastUpdate[port]
-		mc.mu.RUnlock()
+		va.mu.RLock()
+		summary, exists := va.summaryCache[port]
+		lastUpdate, _ := va.lastUpdate[port]
+		va.mu.RUnlock()
 
 		if !exists || summary == nil {
-			mc.log.V(1).Info("No summary data available for port", "port", port)
+			va.log.V(1).Info("No summary data available for port", "port", port)
 			http.Error(w, fmt.Sprintf("No summary data available for port %s", port), http.StatusNotFound)
 			return
 		}
 
 		// Log access
-		mc.log.V(2).Info("Serving summary data",
+		va.log.V(2).Info("Serving summary data",
 			"port", port,
 			"nodeName", summary.Node.NodeName,
 			"podCount", len(summary.Pods),
@@ -670,19 +670,19 @@ func (mc *MetricsCollector) handleSummary(port string) http.HandlerFunc {
 		encoder := json.NewEncoder(w)
 		encoder.SetIndent("", "  ") // Pretty print for debugging
 		if err := encoder.Encode(summary); err != nil {
-			mc.log.Error(err, "Failed to encode summary JSON", "port", port)
+			va.log.Error(err, "Failed to encode summary JSON", "port", port)
 			return
 		}
 
-		mc.log.V(2).Info("Successfully served summary data",
+		va.log.V(2).Info("Successfully served summary data",
 			"port", port,
 			"nodeName", summary.Node.NodeName)
 	}
 }
 
 // handleContainerLogs handles container logs requests (same as main server)
-func (mc *MetricsCollector) handleContainerLogs(w http.ResponseWriter, r *http.Request) {
-	if mc.kubeletProxy == nil {
+func (va *VNodeProxierAgent) handleContainerLogs(w http.ResponseWriter, r *http.Request) {
+	if va.kubeletProxy == nil {
 		http.Error(w, "Kubelet proxy not available", http.StatusServiceUnavailable)
 		return
 	}
@@ -692,7 +692,7 @@ func (mc *MetricsCollector) handleContainerLogs(w http.ResponseWriter, r *http.R
 	pod := vars["pod"]
 	container := vars["container"]
 
-	mc.log.Info("Processing container logs request",
+	va.log.Info("Processing container logs request",
 		"namespace", namespace,
 		"pod", pod,
 		"container", container,
@@ -701,19 +701,19 @@ func (mc *MetricsCollector) handleContainerLogs(w http.ResponseWriter, r *http.R
 	)
 
 	// Parse log options from query parameters
-	opts, err := mc.parseLogOptions(r.URL.Query())
+	opts, err := va.parseLogOptions(r.URL.Query())
 	if err != nil {
-		mc.log.Error(err, "Failed to parse log options", "namespace", namespace, "pod", pod, "container", container)
+		va.log.Error(err, "Failed to parse log options", "namespace", namespace, "pod", pod, "container", container)
 		http.Error(w, fmt.Sprintf("Invalid log options: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	mc.log.Info("Parsed log options successfully", "namespace", namespace, "pod", pod, "container", container)
+	va.log.Info("Parsed log options successfully", "namespace", namespace, "pod", pod, "container", container)
 
 	// Get logs from proxy
-	logs, err := mc.kubeletProxy.GetContainerLogs(r.Context(), namespace, pod, container, opts)
+	logs, err := va.kubeletProxy.GetContainerLogs(r.Context(), namespace, pod, container, opts)
 	if err != nil {
-		mc.log.Error(err, "Failed to get container logs", "namespace", namespace, "pod", pod, "container", container)
+		va.log.Error(err, "Failed to get container logs", "namespace", namespace, "pod", pod, "container", container)
 		http.Error(w, fmt.Sprintf("Failed to get logs: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -726,13 +726,13 @@ func (mc *MetricsCollector) handleContainerLogs(w http.ResponseWriter, r *http.R
 	// Stream logs to client
 	_, err = io.Copy(w, logs)
 	if err != nil {
-		mc.log.Error(err, "Failed to stream logs to client", "namespace", namespace, "pod", pod, "container", container)
+		va.log.Error(err, "Failed to stream logs to client", "namespace", namespace, "pod", pod, "container", container)
 	}
 }
 
 // handleContainerExec handles container exec requests (same as main server)
-func (mc *MetricsCollector) handleContainerExec(w http.ResponseWriter, r *http.Request) {
-	if mc.kubeletProxy == nil {
+func (va *VNodeProxierAgent) handleContainerExec(w http.ResponseWriter, r *http.Request) {
+	if va.kubeletProxy == nil {
 		http.Error(w, "Kubelet proxy not available", http.StatusServiceUnavailable)
 		return
 	}
@@ -743,7 +743,7 @@ func (mc *MetricsCollector) handleContainerExec(w http.ResponseWriter, r *http.R
 	container := vars["container"]
 
 	// Log the request details for debugging
-	mc.log.Info("Handling container exec request",
+	va.log.Info("Handling container exec request",
 		"namespace", namespace,
 		"pod", pod,
 		"container", container,
@@ -765,7 +765,7 @@ func (mc *MetricsCollector) handleContainerExec(w http.ResponseWriter, r *http.R
 	}
 
 	// Log for debugging
-	mc.log.Info("Protocol negotiation",
+	va.log.Info("Protocol negotiation",
 		"clientSupported", clientSupportedProtocols,
 		"serverSupported", serverSupportedProtocols,
 	)
@@ -774,9 +774,9 @@ func (mc *MetricsCollector) handleContainerExec(w http.ResponseWriter, r *http.R
 	command := r.URL.Query()["command"]
 
 	// Parse exec options using the same method as official virtual-kubelet
-	streamOpts, err := getExecOptions(r, mc.log)
+	streamOpts, err := getExecOptions(r, va.log)
 	if err != nil {
-		mc.log.Error(err, "Failed to parse exec options",
+		va.log.Error(err, "Failed to parse exec options",
 			"namespace", namespace,
 			"pod", pod,
 			"container", container,
@@ -785,7 +785,7 @@ func (mc *MetricsCollector) handleContainerExec(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	mc.log.Info("Parsed exec options",
+	va.log.Info("Parsed exec options",
 		"namespace", namespace,
 		"pod", pod,
 		"container", container,
@@ -802,7 +802,7 @@ func (mc *MetricsCollector) handleContainerExec(w http.ResponseWriter, r *http.R
 
 	exec := &metricsCollectorExecContext{
 		ctx:       ctx,
-		collector: mc,
+		collector: va,
 		namespace: namespace,
 		pod:       pod,
 		container: container,
@@ -834,13 +834,13 @@ func (mc *MetricsCollector) handleContainerExec(w http.ResponseWriter, r *http.R
 }
 
 // handleHealthz handles health check requests
-func (mc *MetricsCollector) handleHealthz(w http.ResponseWriter, r *http.Request) {
+func (va *VNodeProxierAgent) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "ok")
 }
 
 // handleRoot handles root path requests
-func (mc *MetricsCollector) handleRoot(port string, nodeInfo NodeInfo) http.HandlerFunc {
+func (va *VNodeProxierAgent) handleRoot(port string, nodeInfo NodeInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"port":"%s","nodeIP":"%s","available_endpoints":["/metrics","/stats/summary","/containerLogs/{namespace}/{pod}/{container}","/exec/{namespace}/{pod}/{container}","/healthz"],"status":"running"}`,
@@ -849,19 +849,19 @@ func (mc *MetricsCollector) handleRoot(port string, nodeInfo NodeInfo) http.Hand
 }
 
 // writeRealMetrics writes real cAdvisor metrics data
-func (mc *MetricsCollector) writeRealMetrics(w http.ResponseWriter, port string) {
+func (va *VNodeProxierAgent) writeRealMetrics(w http.ResponseWriter, port string) {
 	// Snapshot needed data under a short read lock
-	mc.mu.RLock()
-	metricsData, exists := mc.metricsCache[port]
-	lastUpdate := mc.lastUpdate[port]
+	va.mu.RLock()
+	metricsData, exists := va.metricsCache[port]
+	lastUpdate := va.lastUpdate[port]
 	nodeIP := unknownValue
-	if entry, ok := mc.httpServers[port]; ok {
+	if entry, ok := va.httpServers[port]; ok {
 		nodeIP = entry.nodeIP
 	}
-	mc.mu.RUnlock()
+	va.mu.RUnlock()
 
 	// Log cache access
-	mc.log.V(2).Info("Accessing metrics cache",
+	va.log.V(2).Info("Accessing metrics cache",
 		"port", port,
 		"exists", exists,
 		"dataSize", len(metricsData),
@@ -869,7 +869,7 @@ func (mc *MetricsCollector) writeRealMetrics(w http.ResponseWriter, port string)
 
 	if !exists || len(metricsData) == 0 {
 		// If no cached data, return empty metrics with 200 status
-		mc.log.V(1).Info("No metrics data available for port", "port", port)
+		va.log.V(1).Info("No metrics data available for port", "port", port)
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "# No metrics data available for port %s\n", port)
 		fmt.Fprintf(w, "# This may indicate that metrics collection is still in progress or there is no metrics data available\n")
@@ -887,34 +887,34 @@ func (mc *MetricsCollector) writeRealMetrics(w http.ResponseWriter, port string)
 }
 
 // loadTLSConfigFromSecret loads TLS configuration from Kubernetes Secret
-func (mc *MetricsCollector) loadTLSConfigFromSecret() (*tls.Config, error) {
-	if mc.kubeClient == nil {
+func (va *VNodeProxierAgent) loadTLSConfigFromSecret() (*tls.Config, error) {
+	if va.kubeClient == nil {
 		return nil, fmt.Errorf("kubernetes client is not available")
 	}
 
-	mc.log.Info("Loading TLS certificate from Kubernetes Secret for metrics servers",
-		"secretName", mc.config.TLSSecretName,
-		"secretNamespace", mc.config.TLSSecretNamespace)
+	va.log.Info("Loading TLS certificate from Kubernetes Secret for metrics servers",
+		"secretName", va.config.TLSSecretName,
+		"secretNamespace", va.config.TLSSecretNamespace)
 
 	// Get the secret
-	secret, err := mc.kubeClient.CoreV1().Secrets(mc.config.TLSSecretNamespace).Get(
-		context.TODO(), mc.config.TLSSecretName, metav1.GetOptions{})
+	secret, err := va.kubeClient.CoreV1().Secrets(va.config.TLSSecretNamespace).Get(
+		context.TODO(), va.config.TLSSecretName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get secret %s/%s: %w",
-			mc.config.TLSSecretNamespace, mc.config.TLSSecretName, err)
+			va.config.TLSSecretNamespace, va.config.TLSSecretName, err)
 	}
 
 	// Extract certificate and key from secret
 	certData, exists := secret.Data["tls.crt"]
 	if !exists {
 		return nil, fmt.Errorf("secret %s/%s does not contain tls.crt key",
-			mc.config.TLSSecretNamespace, mc.config.TLSSecretName)
+			va.config.TLSSecretNamespace, va.config.TLSSecretName)
 	}
 
 	keyData, exists := secret.Data["tls.key"]
 	if !exists {
 		return nil, fmt.Errorf("secret %s/%s does not contain tls.key key",
-			mc.config.TLSSecretNamespace, mc.config.TLSSecretName)
+			va.config.TLSSecretNamespace, va.config.TLSSecretName)
 	}
 
 	// Load certificate and key
@@ -923,7 +923,7 @@ func (mc *MetricsCollector) loadTLSConfigFromSecret() (*tls.Config, error) {
 		return nil, fmt.Errorf("failed to load X509 key pair: %w", err)
 	}
 
-	mc.log.Info("Successfully loaded TLS certificate from Kubernetes Secret for metrics servers")
+	va.log.Info("Successfully loaded TLS certificate from Kubernetes Secret for metrics servers")
 
 	// Return TLS config - no client authentication required for metrics endpoints
 	return &tls.Config{
@@ -935,11 +935,11 @@ func (mc *MetricsCollector) loadTLSConfigFromSecret() (*tls.Config, error) {
 }
 
 // getNodeIPByPort gets node IP by port
-func (mc *MetricsCollector) getNodeIPByPort(port string) string {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
+func (va *VNodeProxierAgent) getNodeIPByPort(port string) string {
+	va.mu.RLock()
+	defer va.mu.RUnlock()
 
-	for _, nodeInfo := range mc.nodeStates {
+	for _, nodeInfo := range va.nodeStates {
 		if nodeInfo.ProxierPort == port {
 			return nodeInfo.InternalIP
 		}
@@ -948,32 +948,32 @@ func (mc *MetricsCollector) getNodeIPByPort(port string) string {
 }
 
 // GetActivePorts gets current active ports list
-func (mc *MetricsCollector) GetActivePorts() []string {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
+func (va *VNodeProxierAgent) GetActivePorts() []string {
+	va.mu.RLock()
+	defer va.mu.RUnlock()
 
-	ports := make([]string, 0, len(mc.httpServers))
-	for port := range mc.httpServers {
+	ports := make([]string, 0, len(va.httpServers))
+	for port := range va.httpServers {
 		ports = append(ports, port)
 	}
 	return ports
 }
 
 // GetMetricsData gets Prometheus metrics data for a specific port
-func (mc *MetricsCollector) GetMetricsData(port string) ([]byte, bool) {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
+func (va *VNodeProxierAgent) GetMetricsData(port string) ([]byte, bool) {
+	va.mu.RLock()
+	defer va.mu.RUnlock()
 
-	data, exists := mc.metricsCache[port]
+	data, exists := va.metricsCache[port]
 	return data, exists
 }
 
 // GetSummaryData gets Summary data for a specific port (for metrics-server compatibility)
-func (mc *MetricsCollector) GetSummaryData(port string) (*Summary, bool) {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
+func (va *VNodeProxierAgent) GetSummaryData(port string) (*Summary, bool) {
+	va.mu.RLock()
+	defer va.mu.RUnlock()
 
-	data, exists := mc.summaryCache[port]
+	data, exists := va.summaryCache[port]
 	return data, exists
 }
 
@@ -982,7 +982,7 @@ func (mc *MetricsCollector) GetSummaryData(port string) (*Summary, bool) {
 // 2. Filter pods to only include those in kubeocean-worker namespace
 // 3. Convert physical pod names and namespaces to virtual pod names and namespaces
 // 4. Aggregate CPU and Memory stats from all pods/containers to Node level
-func (mc *MetricsCollector) transformSummaryData(summary *Summary, VirtualNodeName string) {
+func (va *VNodeProxierAgent) transformSummaryData(summary *Summary, VirtualNodeName string) {
 	if summary == nil {
 		return
 	}
@@ -1005,7 +1005,7 @@ func (mc *MetricsCollector) transformSummaryData(summary *Summary, VirtualNodeNa
 		virtualInfo, exists := GetVirtualPodInfo(pod.PodRef.Name)
 		if !exists {
 			// Skip pods without virtual mapping
-			mc.log.V(2).Info("No virtual mapping found for pod, skipping from summary",
+			va.log.V(2).Info("No virtual mapping found for pod, skipping from summary",
 				"physicalPodName", pod.PodRef.Name,
 				"physicalNamespace", pod.PodRef.Namespace)
 			skippedPods++
@@ -1019,7 +1019,7 @@ func (mc *MetricsCollector) transformSummaryData(summary *Summary, VirtualNodeNa
 		filteredPods = append(filteredPods, pod)
 		convertedPods++
 
-		mc.log.V(2).Info("Converted pod reference to virtual names",
+		va.log.V(2).Info("Converted pod reference to virtual names",
 			"virtualPodName", virtualInfo.VirtualPodName,
 			"virtualNamespace", virtualInfo.VirtualPodNamespace,
 			"virtualNodeName", virtualInfo.VirtualNodeName)
@@ -1028,9 +1028,9 @@ func (mc *MetricsCollector) transformSummaryData(summary *Summary, VirtualNodeNa
 	summary.Pods = filteredPods
 
 	// 4. Aggregate CPU and Memory stats from all filtered pods/containers to Node level
-	mc.aggregateNodeStats(summary)
+	va.aggregateNodeStats(summary)
 
-	mc.log.V(2).Info("Transformed summary data",
+	va.log.V(2).Info("Transformed summary data",
 		"originalPodCount", originalPodCount,
 		"convertedPodCount", convertedPods,
 		"skippedPodCount", skippedPods,
@@ -1039,7 +1039,7 @@ func (mc *MetricsCollector) transformSummaryData(summary *Summary, VirtualNodeNa
 }
 
 // aggregateNodeStats aggregates CPU and Memory stats from all pods/containers to Node level
-func (mc *MetricsCollector) aggregateNodeStats(summary *Summary) {
+func (va *VNodeProxierAgent) aggregateNodeStats(summary *Summary) {
 	if summary == nil || len(summary.Pods) == 0 {
 		return
 	}
@@ -1054,12 +1054,12 @@ func (mc *MetricsCollector) aggregateNodeStats(summary *Summary) {
 		totalMemoryPageFaults        uint64
 		totalMemoryMajorPageFaults   uint64
 
-		cpuCount              int
-		memoryCount           int
-		latestCPUTime         metav1.Time
-		latestMemoryTime      metav1.Time
-		hasAnyCPUStats        bool
-		hasAnyMemoryStats     bool
+		cpuCount          int
+		memoryCount       int
+		latestCPUTime     metav1.Time
+		latestMemoryTime  metav1.Time
+		hasAnyCPUStats    bool
+		hasAnyMemoryStats bool
 	)
 
 	// Aggregate from all pods and their containers
@@ -1119,7 +1119,7 @@ func (mc *MetricsCollector) aggregateNodeStats(summary *Summary) {
 		}
 		summary.Node.CPU.UsageNanoCores = &totalCPUUsageNanoCores
 
-		mc.log.V(2).Info("Aggregated Node CPU stats",
+		va.log.V(2).Info("Aggregated Node CPU stats",
 			"nodeName", summary.Node.NodeName,
 			"totalUsageCoreNanoSeconds", totalCPUUsageCoreNanoSeconds,
 			"totalUsageNanoCores", totalCPUUsageNanoCores,
@@ -1140,7 +1140,7 @@ func (mc *MetricsCollector) aggregateNodeStats(summary *Summary) {
 		summary.Node.Memory.PageFaults = &totalMemoryPageFaults
 		summary.Node.Memory.MajorPageFaults = &totalMemoryMajorPageFaults
 
-		mc.log.V(2).Info("Aggregated Node Memory stats",
+		va.log.V(2).Info("Aggregated Node Memory stats",
 			"nodeName", summary.Node.NodeName,
 			"totalWorkingSetBytes", totalMemoryWorkingSetBytes,
 			"totalUsageBytes", totalMemoryUsageBytes,
@@ -1150,7 +1150,7 @@ func (mc *MetricsCollector) aggregateNodeStats(summary *Summary) {
 }
 
 // parseLogOptions parses log options from query parameters (same as server.go)
-func (mc *MetricsCollector) parseLogOptions(query map[string][]string) (ContainerLogOpts, error) {
+func (va *VNodeProxierAgent) parseLogOptions(query map[string][]string) (ContainerLogOpts, error) {
 	opts := ContainerLogOpts{}
 
 	if tailLines := getFirstValue(query, "tailLines"); tailLines != "" {
@@ -1282,9 +1282,9 @@ func getExecOptions(req *http.Request, log logr.Logger) (*remoteCommandOptions, 
 	}, nil
 }
 
-// metricsCollectorExecContext implements the Executor interface for metrics collector
+// metricsCollectorExecContext implements the Executor interface for VNode proxier agent
 type metricsCollectorExecContext struct {
-	collector *MetricsCollector
+	collector *VNodeProxierAgent
 	namespace string
 	pod       string
 	container string
@@ -1336,7 +1336,7 @@ func (c *metricsCollectorExecContext) ExecInContainer(name string, uid types.UID
 	return c.collector.kubeletProxy.RunInContainer(c.ctx, c.namespace, c.pod, c.container, cmd, eio)
 }
 
-// metricsCollectorExecIO implements AttachIO interface for metrics collector
+// metricsCollectorExecIO implements AttachIO interface for VNode proxier agent
 type metricsCollectorExecIO struct {
 	tty      bool
 	stdin    io.Reader

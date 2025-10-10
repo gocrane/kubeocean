@@ -38,7 +38,7 @@ type NodeController struct {
 	Log                logr.Logger
 	ClusterBindingName string
 	CurrentNodes       map[string]NodeInfo
-	metricsCollector   NodeEventHandler // Direct reference to MetricsCollector
+	vnodeProxierAgent  NodeEventHandler // Direct reference to VNodeProxierAgent
 	mu                 sync.RWMutex
 }
 
@@ -172,21 +172,21 @@ func (r *NodeController) handleNodeUpdate(node *corev1.Node) {
 		r.Log.V(1).Info("VNode port unchanged, no mapper update needed", "vnode", node.Name, "port", nodeInfo.ProxierPort)
 	}
 
-	// Call MetricsCollector directly
-	if r.metricsCollector != nil {
+	// Call VNodeProxierAgent directly
+	if r.vnodeProxierAgent != nil {
 		if !existed {
 			r.Log.Info("Node added to proxier", "node", node.Name, "nodeInfo", nodeInfo)
-			r.metricsCollector.OnNodeAdded(node.Name, *nodeInfo)
+			r.vnodeProxierAgent.OnNodeAdded(node.Name, *nodeInfo)
 		} else if oldNodeInfo != *nodeInfo {
 			r.Log.Info("Node updated in proxier", "node", node.Name, "oldNodeInfo", oldNodeInfo, "newNodeInfo", nodeInfo)
-			r.metricsCollector.OnNodeUpdated(node.Name, oldNodeInfo, *nodeInfo)
+			r.vnodeProxierAgent.OnNodeUpdated(node.Name, oldNodeInfo, *nodeInfo)
 		}
 	} else {
-		// If no MetricsCollector, only log
+		// If no VNodeProxierAgent, only log
 		if !existed {
-			r.Log.Info("Node added to proxier (no metrics collector)", "node", node.Name, "nodeInfo", nodeInfo)
+			r.Log.Info("Node added to proxier (no VNode proxier agent)", "node", node.Name, "nodeInfo", nodeInfo)
 		} else if oldNodeInfo != *nodeInfo {
-			r.Log.Info("Node updated in proxier (no metrics collector)", "node", node.Name, "oldNodeInfo", oldNodeInfo, "newNodeInfo", nodeInfo)
+			r.Log.Info("Node updated in proxier (no VNode proxier agent)", "node", node.Name, "oldNodeInfo", oldNodeInfo, "newNodeInfo", nodeInfo)
 		}
 	}
 }
@@ -206,9 +206,9 @@ func (r *NodeController) handleNodeDelete(nodeName string) {
 
 		r.Log.Info("Node removed from proxier", "node", nodeName, "nodeInfo", oldNodeInfo)
 
-		// Call MetricsCollector directly
-		if r.metricsCollector != nil {
-			r.metricsCollector.OnNodeDeleted(nodeName, oldNodeInfo)
+		// Call VNodeProxierAgent directly
+		if r.vnodeProxierAgent != nil {
+			r.vnodeProxierAgent.OnNodeDeleted(nodeName, oldNodeInfo)
 		}
 	}
 }
@@ -251,16 +251,16 @@ func (r *NodeController) SyncExistingNodes(ctx context.Context) error {
 	// Log final VNodePortMapper state
 	r.Log.Info("VNodePortMapper initialized", "totalVNodes", len(r.CurrentNodes))
 
-	// If MetricsCollector exists, initialize it directly
-	if r.metricsCollector != nil {
+	// If VNodeProxierAgent exists, initialize it directly
+	if r.vnodeProxierAgent != nil {
 		// Create a copy of node states
 		nodeStates := make(map[string]NodeInfo)
 		for k, v := range r.CurrentNodes {
 			nodeStates[k] = v
 		}
 
-		// Initialize MetricsCollector
-		if collector, ok := r.metricsCollector.(*MetricsCollector); ok {
+		// Initialize VNodeProxierAgent
+		if collector, ok := r.vnodeProxierAgent.(*VNodeProxierAgent); ok {
 			collector.InitializeWithNodes(nodeStates)
 		}
 	}
@@ -280,9 +280,9 @@ func (r *NodeController) GetCurrentNodes() map[string]NodeInfo {
 	return result
 }
 
-// SetMetricsCollector sets the MetricsCollector reference
+// SetMetricsCollector sets the VNodeProxierAgent reference
 func (r *NodeController) SetMetricsCollector(collector NodeEventHandler) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.metricsCollector = collector
+	r.vnodeProxierAgent = collector
 }

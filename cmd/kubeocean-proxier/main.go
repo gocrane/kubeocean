@@ -229,7 +229,7 @@ func main() {
 	}
 	setupLog.Info("Pod controller initialization completed")
 
-	// Determine TLS configuration first (moved before MetricsCollector setup)
+	// Determine TLS configuration first (moved before VNodeProxierAgent setup)
 	// This section determines finalSecretName, finalSecretNamespace, tlsConfigEnabled
 	var finalSecretName, finalSecretNamespace string
 	var tlsConfigEnabled bool
@@ -307,8 +307,8 @@ func main() {
 		}
 	}
 
-	// Declare metricsCollector variable (will be created later after kubeletProxy)
-	var metricsCollector *proxier.MetricsCollector
+	// Declare vnodeProxierAgent variable (will be created later after kubeletProxy)
+	var vnodeProxierAgent *proxier.VNodeProxierAgent
 	if !metricsEnabled {
 		setupLog.Info("Metrics collection disabled")
 	}
@@ -373,10 +373,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Connect NodeController with MetricsCollector
-	if metricsCollector != nil {
-		nodeController.SetMetricsCollector(metricsCollector)
-		setupLog.Info("Connected NodeController with MetricsCollector")
+	// Connect NodeController with VNodeProxierAgent
+	if vnodeProxierAgent != nil {
+		nodeController.SetMetricsCollector(vnodeProxierAgent)
+		setupLog.Info("Connected NodeController with VNodeProxierAgent")
 	}
 
 	// Start virtual manager (runs in background)
@@ -400,7 +400,7 @@ func main() {
 
 	setupLog.Info("Node Controller setup completed successfully")
 
-	// Create Kubelet proxy (before metrics collector so it can be passed to it)
+	// Create Kubelet proxy (before VNode proxier agent so it can be passed to it)
 	kubeletProxy := proxier.NewKubeletProxy(
 		virtualClient,
 		physicalClient,
@@ -409,10 +409,10 @@ func main() {
 		ctrl.Log.WithName("kubelet-proxy"),
 	)
 
-	// Update metrics collector with kubelet proxy if metrics is enabled
+	// Update vnodeProxierAgent with kubelet proxy if metrics is enabled
 	if metricsEnabled {
-		setupLog.Info("Associating kubelet proxy with metrics collector for logs/exec support")
-		// We need to set the kubeletProxy in the metrics collector
+		setupLog.Info("Associating kubelet proxy with VNode proxier agent for logs/exec support")
+		// We need to set the kubeletProxy in the vnodeProxierAgent
 		// Since we already created it, we'll need to recreate it with the proxy
 		// or add a setter method. For now, let's recreate it.
 
@@ -429,33 +429,33 @@ func main() {
 			metricsConfig.TLSSecretNamespace = finalSecretNamespace
 		}
 
-		// Recreate metrics collector with kubelet proxy and clusterID
-		metricsCollector = proxier.NewMetricsCollector(
+		// Recreate VNode proxier agent with kubelet proxy and clusterID
+		vnodeProxierAgent = proxier.NewVNodeProxierAgent(
 			metricsConfig,
 			tokenManager,
 			kubeletProxy, // Now we can pass the kubelet proxy
 			virtualClientset,
 			clusterBinding.Spec.ClusterID, // Pass ClusterID for VNode name transformation
-			ctrl.Log.WithName("metrics-collector"),
+			ctrl.Log.WithName("vnode-proxier-agent"),
 		)
 
-		// Start metrics collector
-		setupLog.Info("Starting metrics collector with kubelet proxy support")
-		if err := metricsCollector.Start(ctx); err != nil {
-			setupLog.Error(err, "unable to start metrics collector")
+		// Start VNode proxier agent
+		setupLog.Info("Starting VNode proxier agent with kubelet proxy support")
+		if err := vnodeProxierAgent.Start(ctx); err != nil {
+			setupLog.Error(err, "unable to start VNode proxier agent")
 			os.Exit(1)
 		}
-		setupLog.Info("Metrics collector started successfully with logs/exec endpoints")
+		setupLog.Info("VNode proxier agent started successfully with logs/exec endpoints")
 
-		// Connect the newly created MetricsCollector with NodeController
-		nodeController.SetMetricsCollector(metricsCollector)
-		setupLog.Info("Re-connected NodeController with newly created MetricsCollector")
+		// Connect the newly created VNodeProxierAgent with NodeController
+		nodeController.SetMetricsCollector(vnodeProxierAgent)
+		setupLog.Info("Re-connected NodeController with newly created VNodeProxierAgent")
 
-		// Initialize MetricsCollector with existing nodes from NodeController
+		// Initialize VNodeProxierAgent with existing nodes from NodeController
 		existingNodes := nodeController.GetCurrentNodes()
 		if len(existingNodes) > 0 {
-			setupLog.Info("Initializing MetricsCollector with existing nodes", "nodeCount", len(existingNodes))
-			metricsCollector.InitializeWithNodes(existingNodes)
+			setupLog.Info("Initializing VNodeProxierAgent with existing nodes", "nodeCount", len(existingNodes))
+			vnodeProxierAgent.InitializeWithNodes(existingNodes)
 		}
 	}
 
@@ -480,13 +480,13 @@ func main() {
 	}
 
 	// Start VNode HTTP server for metrics access
-	if metricsCollector != nil {
-		if err := proxier.StartVNodeHTTPServer(metricsCollector, ctrl.Log.WithName("vnode-http-server"), vnodeBasePort); err != nil {
+	if vnodeProxierAgent != nil {
+		if err := proxier.StartVNodeHTTPServer(vnodeProxierAgent, ctrl.Log.WithName("vnode-http-server"), vnodeBasePort); err != nil {
 			setupLog.Error(err, "failed to start VNode HTTP server")
 			os.Exit(1)
 		}
 	} else {
-		setupLog.Info("Metrics collector is not enabled, skipping VNode HTTP server")
+		setupLog.Info("VNode proxier agent is not enabled, skipping VNode HTTP server")
 	}
 
 	setupLog.Info("Kubeocean Proxier started successfully")
@@ -497,8 +497,8 @@ func main() {
 	setupLog.Info("Shutting down Kubeocean Proxier")
 
 	// Stop services
-	if metricsCollector != nil {
-		metricsCollector.Stop()
+	if vnodeProxierAgent != nil {
+		vnodeProxierAgent.Stop()
 	}
 
 	if err := httpServer.Stop(); err != nil {
@@ -574,7 +574,6 @@ func getClusterBindingSecretNamespaceAnnotation(clusterBinding *cloudv1beta1.Clu
 	}
 	return clusterBinding.Annotations["kubeocean.io/logs-proxy-secret-namespace"]
 }
-
 
 // validateExternalTLSSecret validates that an external TLS secret exists and contains valid certificate data
 func validateExternalTLSSecret(ctx context.Context, client kubernetes.Interface, secretName, secretNamespace string) error {
