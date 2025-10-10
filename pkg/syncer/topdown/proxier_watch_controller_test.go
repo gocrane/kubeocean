@@ -42,7 +42,7 @@ func TestProxierWatchController_isProxierPodForClusterBinding(t *testing.T) {
 		},
 	}
 
-	controller := NewProxierWatchController(nil, scheme, logr.Discard(), clusterBinding)
+	controller := NewProxierWatchController(nil, scheme, logr.Discard(), clusterBinding, 9006)
 
 	tests := []struct {
 		name     string
@@ -134,7 +134,7 @@ func TestProxierWatchController_getVNodeInternalIP(t *testing.T) {
 		},
 	}
 
-	controller := NewProxierWatchController(nil, scheme, logr.Discard(), clusterBinding)
+	controller := NewProxierWatchController(nil, scheme, logr.Discard(), clusterBinding, 9006)
 
 	tests := []struct {
 		name     string
@@ -196,7 +196,7 @@ func TestProxierWatchController_createVNodeIPPatch(t *testing.T) {
 		},
 	}
 
-	controller := NewProxierWatchController(nil, scheme, logr.Discard(), clusterBinding)
+	controller := NewProxierWatchController(nil, scheme, logr.Discard(), clusterBinding, 9006)
 
 	tests := []struct {
 		name     string
@@ -307,7 +307,7 @@ func TestProxierWatchController_Reconcile(t *testing.T) {
 		WithObjects(proxierPod, vNode1, vNode2).
 		Build()
 
-	controller := NewProxierWatchController(fakeClient, scheme, logr.Discard(), clusterBinding)
+	controller := NewProxierWatchController(fakeClient, scheme, logr.Discard(), clusterBinding, 9006)
 
 	// Test reconcile with Proxier pod (first time - should trigger update)
 	req := ctrl.Request{

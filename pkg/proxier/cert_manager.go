@@ -132,6 +132,51 @@ func (cm *CertificateManager) createTLSSecretWithAutoApproval(ctx context.Contex
 
 // generateCertificateData generates certificate data without creating a Secret
 func (cm *CertificateManager) generateCertificateData(ctx context.Context) ([]byte, *rsa.PrivateKey, error) {
+	// Try up to 3 times to handle race conditions
+	maxRetries := 3
+	baseDelay := 2 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		cm.log.Info("Attempting certificate generation", "attempt", attempt, "maxRetries", maxRetries)
+
+		certificate, privateKey, err := cm.generateCertificateDataOnce(ctx)
+		if err == nil {
+			return certificate, privateKey, nil
+		}
+
+		// Check if it's a CSR race condition error
+		if strings.Contains(err.Error(), "CSR race condition detected") ||
+			strings.Contains(err.Error(), "CSR was deleted while waiting for certificate") {
+			cm.log.V(1).Info("CSR race condition detected, retrying certificate generation",
+				"attempt", attempt,
+				"error", err.Error())
+
+			// If this is not the last attempt, wait and retry
+			if attempt < maxRetries {
+				delay := time.Duration(attempt) * baseDelay
+				cm.log.Info("Waiting before retry", "delay", delay.String())
+
+				select {
+				case <-ctx.Done():
+					return nil, nil, fmt.Errorf("context cancelled during retry wait: %w", ctx.Err())
+				case <-time.After(delay):
+					// Continue to next iteration
+				}
+				continue
+			}
+		}
+
+		// For other errors or final attempt, return the error
+		if attempt == maxRetries {
+			return nil, nil, fmt.Errorf("failed to generate certificate after %d attempts: %w", maxRetries, err)
+		}
+	}
+
+	return nil, nil, fmt.Errorf("unexpected error in certificate generation retry loop")
+}
+
+// generateCertificateDataOnce generates certificate data in a single attempt
+func (cm *CertificateManager) generateCertificateDataOnce(ctx context.Context) ([]byte, *rsa.PrivateKey, error) {
 	// 1. Get Pod IP
 	podIP, err := cm.getPodIP()
 	if err != nil {
@@ -150,8 +195,8 @@ func (cm *CertificateManager) generateCertificateData(ctx context.Context) ([]by
 		return nil, nil, fmt.Errorf("failed to create CSR: %w", err)
 	}
 
-	// 4. Submit CSR to Kubernetes
-	csrName := fmt.Sprintf("kubeocean-proxier-%s-%d", cm.clusterBinding.Name, time.Now().Unix())
+	// 4. Submit CSR to Kubernetes with unique name
+	csrName := cm.generateUniqueCSRName()
 	_, err = cm.submitCSR(ctx, csrName, csr)
 	if err != nil {
 		// Handle CSR already exists error (race condition during concurrent startup)
@@ -201,8 +246,8 @@ func (cm *CertificateManager) generateCertificateData(ctx context.Context) ([]by
 		return nil, nil, fmt.Errorf("failed to approve CSR: %w", err)
 	}
 
-	// 6. Wait for certificate to be issued
-	certificate, err := cm.waitForCertificate(ctx, csrName, 60*time.Second)
+	// 6. Wait for certificate to be issued with retry mechanism
+	certificate, err := cm.waitForCertificateWithRetry(ctx, csrName, 60*time.Second)
 	if err != nil {
 		// Clean up CSR
 		cm.client.CertificatesV1().CertificateSigningRequests().Delete(ctx, csrName, metav1.DeleteOptions{})
@@ -215,6 +260,21 @@ func (cm *CertificateManager) generateCertificateData(ctx context.Context) ([]by
 	cm.log.Info("Successfully generated certificate data", "podIP", podIP)
 
 	return certificate, privateKey, nil
+}
+
+// generateUniqueCSRName generates a unique CSR name to avoid conflicts between multiple pods
+func (cm *CertificateManager) generateUniqueCSRName() string {
+	// Get pod name for uniqueness
+	podName := os.Getenv("POD_NAME")
+	if podName == "" {
+		podName = "unknown-pod"
+	}
+
+	// Use nanosecond timestamp for better uniqueness
+	timestamp := time.Now().UnixNano()
+
+	// Generate unique CSR name with pod name and nanosecond timestamp
+	return fmt.Sprintf("kubeocean-proxier-%s-%s-%d", cm.clusterBinding.Name, podName, timestamp)
 }
 
 // getPodIP gets current pod IP
@@ -348,6 +408,61 @@ func (cm *CertificateManager) approveCSR(ctx context.Context, csrName string) er
 
 	cm.log.Info("Successfully approved CSR", "csrName", csrName)
 	return nil
+}
+
+// waitForCertificateWithRetry waits for certificate to be issued with retry mechanism
+func (cm *CertificateManager) waitForCertificateWithRetry(ctx context.Context, csrName string, timeout time.Duration) ([]byte, error) {
+	// Try up to 3 times with exponential backoff
+	maxRetries := 3
+	baseDelay := 5 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		cm.log.Info("Attempting to wait for certificate",
+			"csrName", csrName,
+			"attempt", attempt,
+			"maxRetries", maxRetries)
+
+		certificate, err := cm.waitForCertificate(ctx, csrName, timeout)
+		if err == nil {
+			return certificate, nil
+		}
+
+		// Check if it's a CSR deleted error (race condition)
+		if strings.Contains(err.Error(), "CSR was deleted while waiting for certificate") {
+			cm.log.V(1).Info("CSR was deleted during certificate wait (race condition detected)",
+				"csrName", csrName,
+				"attempt", attempt,
+				"error", err.Error())
+
+			// If this is not the last attempt, retry with a new CSR
+			if attempt < maxRetries {
+				cm.log.Info("Retrying certificate generation due to CSR race condition",
+					"csrName", csrName,
+					"attempt", attempt)
+
+				// Wait with exponential backoff before retry
+				delay := time.Duration(attempt) * baseDelay
+				cm.log.Info("Waiting before retry", "delay", delay.String())
+
+				select {
+				case <-ctx.Done():
+					return nil, fmt.Errorf("context cancelled during retry wait: %w", ctx.Err())
+				case <-time.After(delay):
+					// Continue to next iteration
+				}
+
+				// Return error to trigger full retry in generateCertificateData
+				return nil, fmt.Errorf("CSR race condition detected, retry needed: %w", err)
+			}
+		}
+
+		// For other errors, don't retry
+		if attempt == maxRetries {
+			return nil, fmt.Errorf("failed to get certificate after %d attempts: %w", maxRetries, err)
+		}
+	}
+
+	return nil, fmt.Errorf("unexpected error in retry loop")
 }
 
 // waitForCertificate waits for certificate to be issued
