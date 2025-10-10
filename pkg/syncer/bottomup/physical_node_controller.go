@@ -80,6 +80,11 @@ type PhysicalNodeReconciler struct {
 
 	// Base port for Prometheus VNode HTTP server (used in annotations)
 	PrometheusVNodeBasePort int
+
+	// Port allocation cache: port -> vnodeName, vnodeName -> port
+	allocatedPorts map[int]string // port -> vnodeName
+	nodeNameToPort map[string]int // vnodeName -> port
+	portMutex      sync.Mutex
 }
 
 //+kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;create;update;patch;delete
@@ -564,6 +569,9 @@ func (r *PhysicalNodeReconciler) handleNodeDeletion(ctx context.Context, physica
 	// Stop lease controller for the virtual node
 	r.stopLeaseController(virtualNodeName)
 
+	// Release proxier port for the virtual node
+	r.releaseProxierPort(virtualNodeName)
+
 	// Remove finalizer to allow virtual node deletion
 	logger.Info("Removing finalizer from virtual node", "virtualNode", virtualNodeName)
 	updatedVirtualNode := virtualNode.DeepCopy()
@@ -855,6 +863,78 @@ func (r *PhysicalNodeReconciler) initLeaseControllers() {
 	}
 }
 
+// InitAllocatedPortsCache 初始化端口分配缓存，遍历所有VNode写入本地map
+func (r *PhysicalNodeReconciler) InitAllocatedPortsCache(ctx context.Context) error {
+	r.portMutex.Lock()
+	defer r.portMutex.Unlock()
+	r.allocatedPorts = make(map[int]string)
+	r.nodeNameToPort = make(map[string]int)
+
+	vnodeList := &corev1.NodeList{}
+	if r.VirtualClient == nil {
+		return nil
+	}
+	if err := r.VirtualClient.List(ctx, vnodeList); err != nil {
+		return err
+	}
+	for _, vnode := range vnodeList.Items {
+		if portStr, ok := vnode.Labels[cloudv1beta1.LabelProxierPort]; ok {
+			if port, err := strconv.Atoi(portStr); err == nil {
+				r.allocatedPorts[port] = vnode.Name
+				r.nodeNameToPort[vnode.Name] = port
+			}
+		}
+	}
+	return nil
+}
+
+// allocateProxierPort 分配唯一端口，线程安全，端口范围15000-65535
+func (r *PhysicalNodeReconciler) allocateProxierPort(nodeName string) string {
+	r.portMutex.Lock()
+	defer r.portMutex.Unlock()
+
+	if port, exists := r.nodeNameToPort[nodeName]; exists {
+		return strconv.Itoa(port)
+	}
+
+	const (
+		portMin = 15000
+		portMax = 65535
+	)
+	hash := r.hashString(nodeName)
+	basePort := portMin + int(hash%(portMax-portMin+1))
+
+	if _, used := r.allocatedPorts[basePort]; !used {
+		r.allocatedPorts[basePort] = nodeName
+		r.nodeNameToPort[nodeName] = basePort
+		return strconv.Itoa(basePort)
+	}
+
+	for offset := 1; offset <= portMax-portMin; offset++ {
+		candidate := basePort + offset
+		if candidate > portMax {
+			candidate = portMin + (candidate-portMin)%(portMax-portMin+1)
+		}
+		if _, used := r.allocatedPorts[candidate]; !used {
+			r.allocatedPorts[candidate] = nodeName
+			r.nodeNameToPort[nodeName] = candidate
+			return strconv.Itoa(candidate)
+		}
+	}
+
+	return strconv.Itoa(10250)
+}
+
+func (r *PhysicalNodeReconciler) releaseProxierPort(nodeName string) {
+	r.portMutex.Lock()
+	defer r.portMutex.Unlock()
+
+	if port, exists := r.nodeNameToPort[nodeName]; exists {
+		delete(r.allocatedPorts, port)
+		delete(r.nodeNameToPort, nodeName)
+	}
+}
+
 // startLeaseController starts a lease controller for a virtual node
 func (r *PhysicalNodeReconciler) startLeaseController(virtualNodeName string) {
 	r.leaseControllersMutex.Lock()
@@ -1026,7 +1106,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 	var proxiedPodIP, proxierPort string
 	if needCreate {
 		proxiedPodIP = r.getProxierPodIP()
-		proxierPort = r.generateStableProxierPort(virtualNodeName)
+		proxierPort = r.allocateProxierPort(virtualNodeName)
 	} else {
 		proxiedPodIP = r.getInternalIPFromNode(existingNode)
 		if proxiedPodIP == "" {
@@ -1036,7 +1116,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		if existingNode.Labels[cloudv1beta1.LabelProxierPort] != "" {
 			proxierPort = existingNode.Labels[cloudv1beta1.LabelProxierPort]
 		} else {
-			proxierPort = r.generateStableProxierPort(virtualNodeName)
+			proxierPort = r.allocateProxierPort(virtualNodeName)
 		}
 	}
 
@@ -1110,14 +1190,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		newNode.Status.NodeInfo = virtualNode.Status.NodeInfo
 		newNode.Spec.Taints = virtualNode.Spec.Taints
 
-		// Preserve existing proxier port to avoid port changes
-		existingProxierPort := existingNode.Labels[cloudv1beta1.LabelProxierPort]
 		newNode.Labels = virtualNode.Labels
-		if existingProxierPort != "" {
-			newNode.Labels[cloudv1beta1.LabelProxierPort] = existingProxierPort
-			logger.V(1).Info("Preserved existing proxier port", "port", existingProxierPort)
-		}
-
 		newNode.Annotations = virtualNode.Annotations
 		newNode.Status.Addresses = virtualNode.Status.Addresses
 
@@ -1381,31 +1454,6 @@ func (r *PhysicalNodeReconciler) getPhysicalNodeInternalIP(physicalNode *corev1.
 	return ""
 }
 
-// generateStableProxierPort generates a stable port number for the VNode
-// This method ensures the same node name always gets the same port
-// Port range: 15000-65535 (50536 ports total)
-// Includes collision detection and resolution
-func (r *PhysicalNodeReconciler) generateStableProxierPort(nodeName string) string {
-	// Use a deterministic hash based on node name + cluster ID for stability
-	stableKey := nodeName + "-" + r.getClusterID()
-	hash := r.hashString(stableKey)
-
-	// Base port in range 15000-65535
-	basePort := 15000 + int(hash%50536)
-
-	// Check for conflicts and resolve if necessary
-	port := r.resolvePortConflict(nodeName, basePort)
-
-	r.Log.V(2).Info("Generated stable proxier port",
-		"nodeName", nodeName,
-		"clusterID", r.getClusterID(),
-		"stableKey", stableKey,
-		"basePort", basePort,
-		"finalPort", port)
-
-	return fmt.Sprintf("%d", port)
-}
-
 // hashString generates a more robust hash for the given string
 func (r *PhysicalNodeReconciler) hashString(s string) uint32 {
 	// Use FNV-1a hash algorithm for better distribution
@@ -1418,45 +1466,6 @@ func (r *PhysicalNodeReconciler) hashString(s string) uint32 {
 	}
 
 	return hash
-}
-
-// resolvePortConflict resolves port conflicts by finding an available port
-func (r *PhysicalNodeReconciler) resolvePortConflict(nodeName string, basePort int) int {
-	// Get existing VNode ports from informer cache
-	existingPorts := r.getExistingPortsFromInformer()
-
-	// Try the base port first
-	if !r.isPortInUse(basePort, existingPorts) {
-		return basePort
-	}
-
-	// If base port is in use, try with small offsets
-	for offset := 1; offset <= 100; offset++ {
-		candidatePort := basePort + offset
-
-		// Ensure port is in valid range
-		if candidatePort > 65535 {
-			candidatePort = 15000 + (candidatePort % 50536)
-		}
-
-		if !r.isPortInUse(candidatePort, existingPorts) {
-			r.Log.V(1).Info("Resolved port conflict",
-				"nodeName", nodeName,
-				"originalPort", basePort,
-				"resolvedPort", candidatePort)
-			return candidatePort
-		}
-	}
-
-	// If still no available port found, use a hash-based fallback
-	fallbackHash := r.hashString(nodeName + "-fallback")
-	fallbackPort := 15000 + (int(fallbackHash) % 50536)
-
-	r.Log.Info("Using fallback port due to conflicts",
-		"nodeName", nodeName,
-		"fallbackPort", fallbackPort)
-
-	return fallbackPort
 }
 
 // getExistingPortsFromInformer gets ports from informer cache

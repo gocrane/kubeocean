@@ -167,6 +167,13 @@ func (bus *BottomUpSyncer) setupControllers() error {
 	// Save reference to the reconciler for triggering reconciliation
 	bus.nodeReconciler = nodeReconciler
 
+	// 初始化端口分配缓存（在 SetupWithManager 之前，直接 List VNode）
+	bus.Log.Info("Initializing port allocation cache before setting up node controller")
+	if err := nodeReconciler.InitAllocatedPortsCache(context.Background()); err != nil {
+		return fmt.Errorf("failed to initialize port allocation cache: %w", err)
+	}
+	bus.Log.Info("Port allocation cache initialized successfully")
+
 	if err := nodeReconciler.SetupWithManager(bus.physicalManager, bus.virtualManager); err != nil {
 		return fmt.Errorf("failed to setup physical node controller: %w", err)
 	}
