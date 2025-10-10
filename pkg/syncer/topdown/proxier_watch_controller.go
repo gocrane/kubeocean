@@ -68,7 +68,7 @@ func NewProxierWatchController(virtualClient client.Client, scheme *runtime.Sche
 	// Create rate limiter: 20 QPS with burst of 5
 	// This allows up to 20 VNode updates per second with a small burst capacity
 	limiter := rate.NewLimiter(20, 5)
-	
+
 	return &ProxierWatchController{
 		VirtualClient:  virtualClient,
 		Scheme:         scheme,
@@ -90,9 +90,10 @@ func (r *ProxierWatchController) Reconcile(ctx context.Context, req ctrl.Request
 	err := r.VirtualClient.Get(ctx, req.NamespacedName, pod)
 	if err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			// Pod was deleted, no need to handle as there's no IP available
-			log.V(1).Info("Proxier pod deleted, no action needed")
-			return ctrl.Result{}, nil
+			// Pod was deleted - this is the key trigger for updating VNode IPs
+			// When a Proxier pod is deleted, we need to update all VNodes to point to a remaining running Proxier
+			log.Info("Proxier pod deleted, triggering VNode IP update")
+			return r.handleProxierPodDeletion(ctx, log)
 		}
 		log.Error(err, "unable to fetch Proxier pod")
 		return ctrl.Result{}, err
@@ -104,15 +105,14 @@ func (r *ProxierWatchController) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	// Check if pod is running and has an IP
-	if pod.Status.Phase != corev1.PodRunning || pod.Status.PodIP == "" {
-		log.V(1).Info("Proxier pod is not running or has no IP, skipping",
-			"phase", pod.Status.Phase, "podIP", pod.Status.PodIP)
-		return ctrl.Result{}, nil
-	}
+	// For pod creation/update events, we only log but don't trigger updates
+	// The actual update happens when old pods are deleted
+	log.V(1).Info("Proxier pod event received",
+		"phase", pod.Status.Phase,
+		"podIP", pod.Status.PodIP,
+		"note", "VNode updates will be triggered on pod deletion")
 
-	// Handle Proxier pod IP change
-	return r.handleProxierPodIPChange(ctx, log, pod)
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager
@@ -164,10 +164,10 @@ func (r *ProxierWatchController) isProxierPodForClusterBinding(pod *corev1.Pod) 
 	return true
 }
 
-// handleProxierPodIPChange handles when a Proxier pod IP changes
-func (r *ProxierWatchController) handleProxierPodIPChange(ctx context.Context, log logr.Logger, pod *corev1.Pod) (ctrl.Result, error) {
-	newIP := pod.Status.PodIP
-	log.Info("Proxier pod IP changed, starting VNode update", "podName", pod.Name, "podIP", newIP)
+// handleProxierPodDeletion handles Proxier pod deletion events
+// This is the main trigger for VNode IP updates during rolling updates
+func (r *ProxierWatchController) handleProxierPodDeletion(ctx context.Context, log logr.Logger) (ctrl.Result, error) {
+	log.Info("Proxier pod deleted, updating VNode IPs to point to remaining running Proxiers")
 
 	// Get all VNodes for this cluster binding
 	vNodes, err := r.getVNodesForClusterBinding(ctx)
@@ -181,18 +181,31 @@ func (r *ProxierWatchController) handleProxierPodIPChange(ctx context.Context, l
 		return ctrl.Result{}, nil
 	}
 
-	// Get all running Proxier Pod IPs for this cluster binding
+	// Get all currently running Proxier Pod IPs (excluding the deleted one)
 	runningProxierIPs, err := r.getRunningProxierPodIPs(ctx)
 	if err != nil {
 		log.Error(err, "Failed to get running Proxier Pod IPs")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Found running Proxier Pod IPs",
-		"proxierIPs", runningProxierIPs,
-		"count", len(runningProxierIPs))
+	if len(runningProxierIPs) == 0 {
+		log.Error(fmt.Errorf("no running Proxier pods found"), "Cannot update VNode IPs, no available Proxier")
+		return ctrl.Result{}, fmt.Errorf("no running Proxier pods available")
+	}
 
-	// Update VNode IPs with rate limiting using golang.org/x/time/rate
+	// Pick the first available running Proxier IP (they're all equivalent)
+	var targetIP string
+	for ip := range runningProxierIPs {
+		targetIP = ip
+		break
+	}
+
+	log.Info("Found running Proxier Pod IPs after deletion",
+		"remainingProxierIPs", runningProxierIPs,
+		"count", len(runningProxierIPs),
+		"targetIP", targetIP)
+
+	// Update VNode IPs with rate limiting
 	updatedCount := 0
 	skippedCount := 0
 	for _, vNode := range vNodes {
@@ -206,13 +219,20 @@ func (r *ProxierWatchController) handleProxierPodIPChange(ctx context.Context, l
 			continue
 		}
 
+		// VNode's current IP is invalid (points to deleted Proxier), update it
+		log.Info("VNode IP needs update",
+			"vNodeName", vNode.Name,
+			"currentIP", currentIP,
+			"targetIP", targetIP,
+			"reason", "current IP is not in running Proxier list")
+
 		// Apply rate limiting before each update (20 QPS)
 		if err := r.rateLimiter.Wait(ctx); err != nil {
 			log.Error(err, "Rate limiter wait failed", "vNodeName", vNode.Name)
 			return ctrl.Result{}, err
 		}
 
-		if err := r.updateVNodeIP(ctx, log, &vNode, newIP); err != nil {
+		if err := r.updateVNodeIP(ctx, log, &vNode, targetIP); err != nil {
 			log.Error(err, "Failed to update VNode IP", "vNodeName", vNode.Name)
 			// Continue with other VNodes even if one fails
 			continue
@@ -220,11 +240,11 @@ func (r *ProxierWatchController) handleProxierPodIPChange(ctx context.Context, l
 		updatedCount++
 	}
 
-	log.Info("VNode IP update completed",
+	log.Info("VNode IP update completed after Proxier deletion",
 		"totalVNodes", len(vNodes),
 		"updatedVNodes", updatedCount,
 		"skippedVNodes", skippedCount,
-		"newProxierIP", newIP)
+		"targetProxierIP", targetIP)
 
 	return ctrl.Result{}, nil
 }
@@ -479,10 +499,10 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 		// Step 1: Update annotations using regular Patch (if needed)
 		needsAnnotationUpdate := false
 		var newPrometheusURL string
-		
+
 		if proxierPort, exists := currentNode.Labels[cloudv1beta1.LabelProxierPort]; exists {
 			newPrometheusURL = fmt.Sprintf("%s:%s/%s", newIP, proxierPort, vNodeName)
-			
+
 			if currentNode.Annotations == nil {
 				needsAnnotationUpdate = true
 			} else if existingURL, hasAnnotation := currentNode.Annotations[cloudv1beta1.AnnotationPrometheusURL]; !hasAnnotation || existingURL != newPrometheusURL {
@@ -519,7 +539,7 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 		// Step 2: Update status.addresses using Status().Patch()
 		// Create JSON Patch for InternalIP update
 		statusPatchData := r.createVNodeIPPatch(currentNode, newIP)
-		
+
 		log.V(1).Info("Applying VNode status patch",
 			"vNodeName", vNodeName,
 			"oldIP", currentIP,
