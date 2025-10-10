@@ -306,6 +306,9 @@ func main() {
 				"managementType", "automatic")
 		}
 	}
+	finalSecretName := tlsConfig.SecretName
+	finalSecretNamespace := tlsConfig.SecretNamespace
+	tlsConfigEnabled := tlsConfig.Enabled
 
 	// Declare metricsCollector variable (will be created later after kubeletProxy)
 	var metricsCollector *proxier.MetricsCollector
@@ -573,6 +576,117 @@ func getClusterBindingSecretNamespaceAnnotation(clusterBinding *cloudv1beta1.Clu
 		return ""
 	}
 	return clusterBinding.Annotations["kubeocean.io/logs-proxy-secret-namespace"]
+}
+
+// tlsConfigResult holds TLS configuration result
+type tlsConfigResult struct {
+	Enabled         bool
+	SecretName      string
+	SecretNamespace string
+}
+
+// setupMetricsCollector sets up and starts the metrics collector if enabled
+func setupMetricsCollector(ctx context.Context, enabled bool, collectInterval int, targetNamespace string, tokenManager *proxier.TokenManager) *proxier.MetricsCollector {
+	if !enabled {
+		setupLog.Info("Metrics collection disabled")
+		return nil
+	}
+
+	metricsConfig := &proxier.MetricsConfig{
+		CollectInterval:    time.Duration(collectInterval) * time.Second,
+		MaxConcurrentNodes: 100,
+		TargetNamespace:    targetNamespace,
+		DebugLog:           false,
+	}
+
+	metricsCollector := proxier.NewMetricsCollector(
+		metricsConfig,
+		tokenManager,
+		ctrl.Log.WithName("metrics-collector"),
+	)
+
+	setupLog.Info("Starting metrics collector", "collectInterval", metricsConfig.CollectInterval)
+	if err := metricsCollector.Start(ctx); err != nil {
+		setupLog.Error(err, "unable to start metrics collector")
+		os.Exit(1)
+	}
+	setupLog.Info("Metrics collector started successfully")
+	return metricsCollector
+}
+
+// setupTLSConfiguration determines and sets up TLS configuration with priority handling
+func setupTLSConfiguration(ctx context.Context, virtualClientset kubernetes.Interface, clusterBinding *cloudv1beta1.ClusterBinding, tlsSecretName, tlsSecretNamespace string) (tlsConfigResult, *proxier.CertificateManager) {
+	var result tlsConfigResult
+	var certManager *proxier.CertificateManager
+
+	// Priority 1: Command line parameters (highest priority, external management)
+	if tlsSecretName != "" && tlsSecretNamespace != "" {
+		result.SecretName = tlsSecretName
+		result.SecretNamespace = tlsSecretNamespace
+		result.Enabled = true
+		setupLog.Info("Using TLS secret from command line parameters",
+			"secretName", result.SecretName,
+			"secretNamespace", result.SecretNamespace,
+			"managementType", "external")
+
+		if err := validateExternalTLSSecret(ctx, virtualClientset, result.SecretName, result.SecretNamespace); err != nil {
+			setupLog.Error(err, "External TLS secret validation failed")
+			os.Exit(1)
+		}
+		return result, nil
+	}
+
+	// Priority 2 & 3: ClusterBinding annotation or automatic management
+	certManager = proxier.NewCertificateManager(
+		virtualClientset,
+		clusterBinding,
+		"kubeocean-system",
+		ctrl.Log.WithName("cert-manager"),
+	)
+
+	// Check ClusterBinding annotation for external secret
+	if annotationSecretName := getClusterBindingSecretAnnotation(clusterBinding); annotationSecretName != "" {
+		annotationSecretNamespace := getClusterBindingSecretNamespaceAnnotation(clusterBinding)
+		if annotationSecretNamespace == "" {
+			annotationSecretNamespace = clusterBinding.Namespace
+		}
+
+		result.SecretName = annotationSecretName
+		result.SecretNamespace = annotationSecretNamespace
+		result.Enabled = true
+		setupLog.Info("Using TLS secret from ClusterBinding annotation",
+			"secretName", result.SecretName,
+			"secretNamespace", result.SecretNamespace,
+			"managementType", "external")
+
+		if err := validateExternalTLSSecret(ctx, virtualClientset, result.SecretName, result.SecretNamespace); err != nil {
+			setupLog.Error(err, "ClusterBinding annotated TLS secret validation failed")
+			os.Exit(1)
+		}
+		return result, certManager
+	}
+
+	// Priority 3: Automatic certificate management
+	setupLog.Info("No external TLS configuration found, using automatic certificate management",
+		"managementType", "automatic")
+
+	tlsSecret, err := certManager.GetOrCreateTLSSecret(ctx)
+	if err != nil {
+		setupLog.Error(err, "Failed to get or create TLS secret")
+		os.Exit(1)
+	}
+
+	certManager.StartAutoRenewal(ctx)
+
+	result.SecretName = tlsSecret.Name
+	result.SecretNamespace = tlsSecret.Namespace
+	result.Enabled = true
+	setupLog.Info("Using automatically managed TLS certificate",
+		"secretName", result.SecretName,
+		"secretNamespace", result.SecretNamespace,
+		"managementType", "automatic")
+
+	return result, certManager
 }
 
 // validateExternalTLSSecret validates that an external TLS secret exists and contains valid certificate data
