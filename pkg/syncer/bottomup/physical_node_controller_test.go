@@ -1287,7 +1287,7 @@ func TestPhysicalNodeReconciler_CalculateNodeResourceUsage(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	usage, err := reconciler.calculateNodeResourceUsage(ctx, "test-node")
+	physicalUsage, kubeoceanUsage, err := reconciler.calculateNodeResourceUsage(ctx, "test-node")
 
 	require.NoError(t, err)
 
@@ -1295,13 +1295,23 @@ func TestPhysicalNodeReconciler_CalculateNodeResourceUsage(t *testing.T) {
 	expectedCPU := resource.MustParse("1500m")
 	expectedMemory := resource.MustParse("3Gi")
 
-	actualCPU := usage[corev1.ResourceCPU]
-	actualMemory := usage[corev1.ResourceMemory]
+	actualCPU := physicalUsage[corev1.ResourceCPU]
+	actualMemory := physicalUsage[corev1.ResourceMemory]
 
 	assert.True(t, expectedCPU.Equal(actualCPU),
 		"CPU usage mismatch: expected %s, got %s", expectedCPU.String(), actualCPU.String())
 	assert.True(t, expectedMemory.Equal(actualMemory),
 		"Memory usage mismatch: expected %s, got %s", expectedMemory.String(), actualMemory.String())
+
+	// Kubeocean usage should be zero since no pods are managed by kubeocean
+	expectedZero := resource.MustParse("0")
+	kubeoceanCPU := kubeoceanUsage[corev1.ResourceCPU]
+	kubeoceanMemory := kubeoceanUsage[corev1.ResourceMemory]
+
+	assert.True(t, expectedZero.Equal(kubeoceanCPU),
+		"Kubeocean CPU usage should be 0, got %s", kubeoceanCPU.String())
+	assert.True(t, expectedZero.Equal(kubeoceanMemory),
+		"Kubeocean Memory usage should be 0, got %s", kubeoceanMemory.String())
 }
 
 // User customization tests

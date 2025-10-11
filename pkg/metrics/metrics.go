@@ -11,7 +11,7 @@ var (
 	// SyncLatency tracks the latency of synchronization operations
 	SyncLatency = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
-			Name:    "kubeocea_manager_sync_duration_seconds",
+			Name:    "kubeocean_manager_sync_duration_seconds",
 			Help:    "Duration of synchronization operations",
 			Buckets: prometheus.DefBuckets,
 		},
@@ -19,7 +19,7 @@ var (
 
 	SyncTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "kubeocea_manager_sync_total",
+			Name: "kubeocean_manager_sync_total",
 			Help: "Total number of synchronization operations",
 		},
 		[]string{"clusterbinding"},
@@ -28,7 +28,7 @@ var (
 	// SyncErrors tracks synchronization errors
 	SyncErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "kubeocea_manager_sync_errors_total",
+			Name: "kubeocean_manager_sync_errors_total",
 			Help: "Total number of synchronization errors",
 		},
 		[]string{"clusterbinding"},

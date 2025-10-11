@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	syncermetrics "github.com/TKEColocation/kubeocean/pkg/syncer/metrics"
 	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/token"
 	"github.com/TKEColocation/kubeocean/pkg/utils"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -215,7 +216,7 @@ func (r *VirtualPodReconciler) shouldCreatePhysicalPod(virtualPod *corev1.Pod) b
 		return false
 	}
 	// Skip DaemonSet pods unless they have the running annotation
-	if isDaemonSetPod(virtualPod) {
+	if utils.IsDaemonSetPod(virtualPod) {
 		// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
 		if virtualPod.Annotations == nil || virtualPod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
 			return false
@@ -487,7 +488,17 @@ func (r *VirtualPodReconciler) generatePhysicalPodMapping(ctx context.Context, v
 }
 
 // createPhysicalPod creates the physical pod based on virtual pod spec
-func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod *corev1.Pod, physicalNodeName string) error {
+func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod *corev1.Pod, physicalNodeName string) (err error) {
+	// Record pod creation attempt
+	syncermetrics.CreatePodTotal.WithLabelValues(r.ClusterBinding.Name).Inc()
+
+	// Record pod creation error if any
+	defer func() {
+		if err != nil {
+			syncermetrics.CreatePodErrorsTotal.WithLabelValues(r.ClusterBinding.Name).Inc()
+		}
+	}()
+
 	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
 
 	physicalNamespace := virtualPod.Annotations[cloudv1beta1.AnnotationPhysicalPodNamespace]
@@ -546,6 +557,9 @@ func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod
 		"physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName),
 		"physicalUID", string(physicalPod.UID))
 
+	// Record successful pod creation
+	syncermetrics.PodCreatedTotal.WithLabelValues(r.ClusterBinding.Name).Inc()
+
 	// skip updating virtual pod with physical pod UID, it will be updated by physical pod controller
 	return nil
 }
@@ -586,6 +600,10 @@ func (r *VirtualPodReconciler) setVirtualPodFailed(ctx context.Context, virtualP
 	}
 
 	logger.Info("Set virtual pod status to Failed", "reason", reason)
+
+	// Record failed pod
+	syncermetrics.PodCreatedFailedTotal.WithLabelValues(r.ClusterBinding.Name).Inc()
+
 	return ctrl.Result{}, nil
 }
 
@@ -1126,7 +1144,7 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 				return false
 			}
 			// Skip DaemonSet pods unless they have the running annotation
-			if isDaemonSetPod(pod) {
+			if utils.IsDaemonSetPod(pod) {
 				// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
 				if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
 					return false
@@ -1184,17 +1202,6 @@ func (r *VirtualPodReconciler) handlePhysicalPodEvent(pod *corev1.Pod, eventType
 			"eventType", eventType,
 		)
 	}
-}
-
-// isDaemonSetPod checks if a pod is managed by a DaemonSet
-func isDaemonSetPod(pod *corev1.Pod) bool {
-	// Check if the pod has DaemonSet as an owner reference
-	for _, ownerRef := range pod.OwnerReferences {
-		if ownerRef.Kind == "DaemonSet" {
-			return true
-		}
-	}
-	return false
 }
 
 // generatePhysicalName generates physical name using MD5 hash

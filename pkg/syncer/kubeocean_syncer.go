@@ -20,6 +20,7 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup"
+	syncermetrics "github.com/TKEColocation/kubeocean/pkg/syncer/metrics"
 	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown"
 )
 
@@ -320,6 +321,8 @@ func (ts *KubeoceanSyncer) initializeSyncers() error {
 	// Initialize top-down syncer (virtual -> physical)
 	// Pass both virtualManager, physicalManager and physicalConfig from KubeoceanSyncer
 	ts.topDownSyncer = topdown.NewTopDownSyncer(ts.manager, ts.physicalManager, ts.physicalConfig, ts.Scheme, ts.clusterBinding)
+
+	syncermetrics.MetricsCollectorInst.SetPhysicalClient(ts.physicalManager.GetClient())
 
 	ts.Log.Info("Syncers initialized successfully")
 	return nil

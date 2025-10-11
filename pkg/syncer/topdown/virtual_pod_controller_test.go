@@ -1583,84 +1583,6 @@ func TestVirtualPodReconciler_IsSystemPod(t *testing.T) {
 	}
 }
 
-func TestVirtualPodReconciler_IsDaemonSetPod(t *testing.T) {
-	tests := []struct {
-		name        string
-		pod         *corev1.Pod
-		isDaemonSet bool
-	}{
-		{
-			name: "pod managed by daemonset",
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "daemonset-pod",
-					Namespace: "default",
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							Kind: "DaemonSet",
-							Name: "test-daemonset",
-						},
-					},
-				},
-			},
-			isDaemonSet: true,
-		},
-		{
-			name: "pod managed by deployment",
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "deployment-pod",
-					Namespace: "default",
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							Kind: "ReplicaSet",
-							Name: "test-replicaset",
-						},
-					},
-				},
-			},
-			isDaemonSet: false,
-		},
-		{
-			name: "pod without owner references",
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "standalone-pod",
-					Namespace: "default",
-				},
-			},
-			isDaemonSet: false,
-		},
-		{
-			name: "pod with multiple owners including daemonset",
-			pod: &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "multi-owner-pod",
-					Namespace: "default",
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							Kind: "Job",
-							Name: "test-job",
-						},
-						{
-							Kind: "DaemonSet",
-							Name: "test-daemonset",
-						},
-					},
-				},
-			},
-			isDaemonSet: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isDaemonSetPod(tt.pod)
-			assert.Equal(t, tt.isDaemonSet, result)
-		})
-	}
-}
-
 func TestVirtualPodReconciler_IsPhysicalPodOwnedByVirtualPod(t *testing.T) {
 	reconciler := &VirtualPodReconciler{
 		PhysicalK8sClient: fake.NewSimpleClientset(),
@@ -1847,7 +1769,7 @@ func TestVirtualPodReconciler_PodFiltering(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Simulate the filter logic used in SetupWithManager
-			shouldSync := !utils.IsSystemPod(tt.pod) && !isDaemonSetPod(tt.pod) && tt.pod.Spec.NodeName != ""
+			shouldSync := !utils.IsSystemPod(tt.pod) && !utils.IsDaemonSetPod(tt.pod) && tt.pod.Spec.NodeName != ""
 
 			assert.Equal(t, tt.shouldSync, shouldSync)
 		})
@@ -7345,7 +7267,7 @@ func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
 							result = false
 						} else {
 							// Skip DaemonSet pods unless they have the running annotation
-							if isDaemonSetPod(pod) {
+							if utils.IsDaemonSetPod(pod) {
 								// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
 								if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
 									result = false
