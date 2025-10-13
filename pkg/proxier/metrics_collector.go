@@ -645,7 +645,7 @@ func (va *VNodeProxierAgent) handleSummary(port string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		va.mu.RLock()
 		summary, exists := va.summaryCache[port]
-		lastUpdate, _ := va.lastUpdate[port]
+		lastUpdate := va.lastUpdate[port]
 		va.mu.RUnlock()
 
 		if !exists || summary == nil {

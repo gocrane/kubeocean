@@ -57,55 +57,150 @@ func init() {
 }
 
 func main() {
-	var clusterBindingName string
-	var listenPort int
-	var tlsSecretName string
-	var tlsSecretNamespace string
-	var metricsEnabled bool
-	var metricsCollectInterval int
-	var metricsTargetNamespace string
-	var vnodeBasePort int
+	// Parse command line flags
+	config := parseFlags()
+	if config.ClusterBindingName == "" {
+		setupLog.Error(fmt.Errorf("cluster-binding-name is required"), "missing required parameter")
+		os.Exit(1)
+	}
 
-	flag.StringVar(&clusterBindingName, "cluster-binding-name", "",
+	// Setup logging
+	setupLogging()
+
+	setupLog.Info("Starting Kubeocean Proxier",
+		"clusterBinding", config.ClusterBindingName,
+		"listenPort", config.ListenPort)
+
+	// Setup context and signal handling
+	ctx, cancel := setupContextAndSignals()
+	defer cancel()
+
+	// Create clients and get cluster binding
+	virtualClient, physicalClient, physicalConfig, clusterBinding, err := setupClients(ctx, config.ClusterBindingName)
+	if err != nil {
+		setupLog.Error(err, "failed to setup clients")
+		os.Exit(1)
+	}
+
+	// Setup authentication
+	tokenManager, err := setupAuthentication(ctx, physicalConfig)
+	if err != nil {
+		setupLog.Error(err, "failed to setup authentication")
+		os.Exit(1)
+	}
+
+	// Setup pod monitoring
+	err = setupPodMonitoring(ctx, physicalConfig)
+	if err != nil {
+		setupLog.Error(err, "failed to setup pod monitoring")
+		os.Exit(1)
+	}
+
+	// Setup TLS configuration
+	tlsConfig, err := setupTLSConfiguration(ctx, config, clusterBinding)
+	if err != nil {
+		setupLog.Error(err, "failed to setup TLS configuration")
+		os.Exit(1)
+	}
+
+	// Setup proxier services
+	kubeletProxy, httpServer, vnodeProxierAgent, err := setupProxierServices(ctx, config, tlsConfig, virtualClient, physicalClient, physicalConfig, clusterBinding, tokenManager)
+	if err != nil {
+		setupLog.Error(err, "failed to setup proxier services")
+		os.Exit(1)
+	}
+
+	// Setup node monitoring
+	err = setupNodeMonitoring(ctx, config, vnodeProxierAgent)
+	if err != nil {
+		setupLog.Error(err, "failed to setup node monitoring")
+		os.Exit(1)
+	}
+
+	// Start all services
+	err = startServices(ctx, config, kubeletProxy, httpServer, vnodeProxierAgent)
+	if err != nil {
+		setupLog.Error(err, "failed to start services")
+		os.Exit(1)
+	}
+
+	setupLog.Info("Kubeocean Proxier started successfully")
+
+	// Wait for shutdown
+	<-ctx.Done()
+	setupLog.Info("Shutting down Kubeocean Proxier")
+
+	// Stop services
+	stopServices(vnodeProxierAgent, httpServer, kubeletProxy)
+	setupLog.Info("Kubeocean Proxier stopped")
+}
+
+// ProxierConfig holds configuration for the proxier
+type ProxierConfig struct {
+	ClusterBindingName      string
+	ListenPort              int
+	TLSSecretName           string
+	TLSSecretNamespace      string
+	MetricsEnabled          bool
+	MetricsCollectInterval  int
+	MetricsTargetNamespace  string
+	VnodeBasePort           int
+}
+
+// TLSConfiguration holds TLS setup results
+type TLSConfiguration struct {
+	Enabled           bool
+	SecretName        string
+	SecretNamespace   string
+	CertManager       *proxier.CertificateManager
+}
+
+// parseFlags parses command line flags and returns configuration
+func parseFlags() *ProxierConfig {
+	config := &ProxierConfig{}
+
+	flag.StringVar(&config.ClusterBindingName, "cluster-binding-name", "",
 		"The name of the ClusterBinding resource this proxier is responsible for.")
-	flag.IntVar(&listenPort, "listen-port", 10250,
+	flag.IntVar(&config.ListenPort, "listen-port", 10250,
 		"The port to listen on for Kubelet API requests.")
-	flag.StringVar(&tlsSecretName, "tls-secret-name", "",
+	flag.StringVar(&config.TLSSecretName, "tls-secret-name", "",
 		"The name of the Kubernetes secret containing TLS certificates for HTTPS.")
-	flag.StringVar(&tlsSecretNamespace, "tls-secret-namespace", "",
+	flag.StringVar(&config.TLSSecretNamespace, "tls-secret-namespace", "",
 		"The namespace of the Kubernetes secret containing TLS certificates.")
-	flag.BoolVar(&metricsEnabled, "metrics-enabled", true,
+	flag.BoolVar(&config.MetricsEnabled, "metrics-enabled", true,
 		"Enable metrics collection from physical cluster nodes.")
-	flag.IntVar(&metricsCollectInterval, "metrics-collect-interval", 60,
+	flag.IntVar(&config.MetricsCollectInterval, "metrics-collect-interval", 60,
 		"The interval in seconds for collecting metrics from nodes.")
-	flag.StringVar(&metricsTargetNamespace, "metrics-target-namespace", "",
+	flag.StringVar(&config.MetricsTargetNamespace, "metrics-target-namespace", "",
 		"The target namespace for metrics collection. Empty means all namespaces.")
-	flag.IntVar(&vnodeBasePort, "prometheus-vnode-base-port", 9006,
+	flag.IntVar(&config.VnodeBasePort, "prometheus-vnode-base-port", 9006,
 		"The port for Prometheus VNode HTTP server. Proxier will bind exactly this port.")
 
 	opts := zap.Options{
 		Development:     false,
 		StacktraceLevel: zapcore.DPanicLevel,
-		Level:           zapcore.InfoLevel, // 默认级别
+		Level:           zapcore.InfoLevel,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	if clusterBindingName == "" {
-		setupLog.Error(fmt.Errorf("cluster-binding-name is required"), "missing required parameter")
-		os.Exit(1)
+	return config
+}
+
+// setupLogging configures the logging system
+func setupLogging() {
+	opts := zap.Options{
+		Development:     false,
+		StacktraceLevel: zapcore.DPanicLevel,
+		Level:           zapcore.InfoLevel,
 	}
-
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+}
 
-	setupLog.Info("Starting Kubeocean Proxier",
-		"clusterBinding", clusterBindingName,
-		"listenPort", listenPort)
-
+// setupContextAndSignals sets up context and signal handling
+func setupContextAndSignals() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -114,73 +209,69 @@ func main() {
 		cancel()
 	}()
 
-	// Create virtual cluster client (in-cluster config)
+	return ctx, cancel
+}
+
+// setupClients creates virtual and physical cluster clients
+func setupClients(ctx context.Context, clusterBindingName string) (client.Client, kubernetes.Interface, *rest.Config, *cloudv1beta1.ClusterBinding, error) {
+	// Create virtual cluster client
 	virtualConfig := ctrl.GetConfigOrDie()
 	virtualClient, err := client.New(virtualConfig, client.Options{Scheme: scheme})
 	if err != nil {
-		setupLog.Error(err, "unable to create virtual cluster client")
-		os.Exit(1)
+		return nil, nil, nil, nil, fmt.Errorf("unable to create virtual cluster client: %w", err)
 	}
 
-	// Create virtual cluster Kubernetes clientset for TLS secret access
-	virtualClientset, err := kubernetes.NewForConfig(virtualConfig)
-	if err != nil {
-		setupLog.Error(err, "unable to create virtual cluster clientset")
-		os.Exit(1)
-	}
-
-	// Get ClusterBinding to retrieve physical cluster connection info
+	// Get ClusterBinding
 	clusterBinding := &cloudv1beta1.ClusterBinding{}
 	err = virtualClient.Get(ctx, types.NamespacedName{Name: clusterBindingName}, clusterBinding)
 	if err != nil {
-		setupLog.Error(err, "unable to get ClusterBinding", "name", clusterBindingName)
-		os.Exit(1)
+		return nil, nil, nil, nil, fmt.Errorf("unable to get ClusterBinding %s: %w", clusterBindingName, err)
 	}
 
 	setupLog.Info("Retrieved ClusterBinding",
 		"clusterID", clusterBinding.Spec.ClusterID,
 		"mountNamespace", clusterBinding.Spec.MountNamespace)
 
-	// Get physical cluster kubeconfig from secret
+	// Create physical cluster clients
 	physicalConfig, physicalClient, err := createPhysicalClusterClients(ctx, virtualClient, clusterBinding)
 	if err != nil {
-		setupLog.Error(err, "unable to create physical cluster clients")
-		os.Exit(1)
+		return nil, nil, nil, nil, fmt.Errorf("unable to create physical cluster clients: %w", err)
 	}
 
 	setupLog.Info("Connected to physical cluster", "host", physicalConfig.Host)
+	return virtualClient, physicalClient, physicalConfig, clusterBinding, nil
+}
 
-	// Setup Token Manager using physical cluster config
+// setupAuthentication sets up token manager and authentication
+func setupAuthentication(ctx context.Context, physicalConfig *rest.Config) (*proxier.TokenManager, error) {
 	tokenManager := proxier.NewTokenManager(
 		ctrl.Log.WithName("token-manager"),
-		physicalConfig, // Use physical cluster config
+		physicalConfig,
 	)
 
-	// Extract and save token from physical cluster kubeconfig
 	setupLog.Info("Extracting and saving authentication token from physical cluster")
 	if err := tokenManager.ExtractAndSaveToken(ctx); err != nil {
-		setupLog.Error(err, "unable to extract and save token from physical cluster")
-		os.Exit(1)
+		return nil, fmt.Errorf("unable to extract and save token from physical cluster: %w", err)
 	}
 
-	// Token is now saved in memory, no periodic refresh needed
 	setupLog.Info("Authentication token extracted and ready for use")
+	return tokenManager, nil
+}
 
-	// Initialize global pod mapper
+// setupPodMonitoring sets up pod controller and monitoring
+func setupPodMonitoring(ctx context.Context, physicalConfig *rest.Config) error {
 	proxier.InitGlobalPodMapper()
 	setupLog.Info("Global pod mapper initialized")
 
-	// Setup POD Controller to monitor physical cluster pods
 	setupLog.Info("Setting up POD Controller for physical cluster")
 
-	// Create physical cluster manager for POD controller
+	// Create physical cluster manager
 	physicalManager, err := ctrl.NewManager(physicalConfig, ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
-			BindAddress: "0", // 禁用 metrics 服务器
+			BindAddress: "0",
 		},
-		HealthProbeBindAddress: "0", // 禁用 health check 服务器
-		// Watch all pods with specific labels in physical cluster
+		HealthProbeBindAddress: "0",
 		Cache: cache.Options{
 			ByObject: map[client.Object]cache.ByObject{
 				&corev1.Pod{}: {
@@ -192,24 +283,21 @@ func main() {
 		},
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to create physical manager for pod controller")
-		os.Exit(1)
+		return fmt.Errorf("unable to create physical manager for pod controller: %w", err)
 	}
 
-	// Create POD controller
+	// Create and setup POD controller
 	podController := proxier.NewPodController(
 		physicalManager.GetClient(),
 		physicalManager.GetScheme(),
 		ctrl.Log.WithName("pod-controller"),
 	)
 
-	// Setup POD controller
 	if err := podController.SetupWithManager(physicalManager); err != nil {
-		setupLog.Error(err, "unable to setup pod controller")
-		os.Exit(1)
+		return fmt.Errorf("unable to setup pod controller: %w", err)
 	}
 
-	// Start physical manager in background
+	// Start physical manager
 	go func() {
 		setupLog.Info("Starting physical cluster manager for pod controller")
 		if err := physicalManager.Start(ctx); err != nil {
@@ -217,299 +305,15 @@ func main() {
 		}
 	}()
 
-	// Wait for manager to be ready and initialize existing pods
-	setupLog.Info("Waiting for pod controller to be ready")
-	time.Sleep(2 * time.Second) // Give manager time to start
-
 	// Initialize existing pods
+	time.Sleep(2 * time.Second)
 	setupLog.Info("Initializing existing pods in physical cluster")
 	if err := podController.InitializeExistingPods(ctx); err != nil {
-		setupLog.Error(err, "failed to initialize existing pods")
-		os.Exit(1)
+		return fmt.Errorf("failed to initialize existing pods: %w", err)
 	}
 	setupLog.Info("Pod controller initialization completed")
 
-	// Determine TLS configuration first (moved before VNodeProxierAgent setup)
-	// This section determines finalSecretName, finalSecretNamespace, tlsConfigEnabled
-	var finalSecretName, finalSecretNamespace string
-	var tlsConfigEnabled bool
-	var certManager *proxier.CertificateManager
-
-	// Priority 1: Command line parameters (highest priority, external management)
-	if tlsSecretName != "" && tlsSecretNamespace != "" {
-		finalSecretName = tlsSecretName
-		finalSecretNamespace = tlsSecretNamespace
-		tlsConfigEnabled = true
-		setupLog.Info("Using TLS secret from command line parameters",
-			"secretName", finalSecretName,
-			"secretNamespace", finalSecretNamespace,
-			"managementType", "external")
-
-		// Validate external secret exists and is valid
-		if err := validateExternalTLSSecret(ctx, virtualClientset, finalSecretName, finalSecretNamespace); err != nil {
-			setupLog.Error(err, "External TLS secret validation failed")
-			os.Exit(1)
-		}
-
-	} else {
-		// Priority 2 & 3: ClusterBinding annotation or automatic management
-		certManager = proxier.NewCertificateManager(
-			virtualClientset,
-			clusterBinding,
-			"kubeocean-system", // Default namespace for auto-managed certificates
-			ctrl.Log.WithName("cert-manager"),
-		)
-
-		// Check ClusterBinding annotation for external secret
-		if annotationSecretName := getClusterBindingSecretAnnotation(clusterBinding); annotationSecretName != "" {
-			// Priority 2: ClusterBinding annotation (external management)
-			annotationSecretNamespace := getClusterBindingSecretNamespaceAnnotation(clusterBinding)
-			if annotationSecretNamespace == "" {
-				annotationSecretNamespace = clusterBinding.Namespace // Default to ClusterBinding namespace
-			}
-
-			finalSecretName = annotationSecretName
-			finalSecretNamespace = annotationSecretNamespace
-			tlsConfigEnabled = true
-			setupLog.Info("Using TLS secret from ClusterBinding annotation",
-				"secretName", finalSecretName,
-				"secretNamespace", finalSecretNamespace,
-				"managementType", "external")
-
-			// Validate external secret exists and is valid
-			if err := validateExternalTLSSecret(ctx, virtualClientset, finalSecretName, finalSecretNamespace); err != nil {
-				setupLog.Error(err, "ClusterBinding annotated TLS secret validation failed")
-				os.Exit(1)
-			}
-
-		} else {
-			// Priority 3: Automatic certificate management (lowest priority)
-			setupLog.Info("No external TLS configuration found, using automatic certificate management",
-				"managementType", "automatic")
-
-			tlsSecret, err := certManager.GetOrCreateTLSSecret(ctx)
-			if err != nil {
-				setupLog.Error(err, "Failed to get or create TLS secret")
-				os.Exit(1)
-			}
-
-			// Start automatic certificate renewal for auto-managed certificates
-			certManager.StartAutoRenewal(ctx)
-			defer certManager.StopAutoRenewal()
-
-			finalSecretName = tlsSecret.Name
-			finalSecretNamespace = tlsSecret.Namespace
-			tlsConfigEnabled = true
-			setupLog.Info("Using automatically managed TLS certificate",
-				"secretName", finalSecretName,
-				"secretNamespace", finalSecretNamespace,
-				"managementType", "automatic")
-		}
-	}
-
-	// Declare vnodeProxierAgent variable (will be created later after kubeletProxy)
-	var vnodeProxierAgent *proxier.VNodeProxierAgent
-	if !metricsEnabled {
-		setupLog.Info("Metrics collection disabled")
-	}
-
-	// Create Kubelet proxy configuration
-	config := &proxier.Config{
-		Enabled:                     true,
-		ListenAddr:                  fmt.Sprintf(":%d", listenPort),
-		AllowUnauthenticatedClients: true, // Allow health probes and kubectl without client certs
-		TLSConfig:                   nil,  // Will be set if TLS is enabled
-		SecretName:                  finalSecretName,
-		SecretNamespace:             finalSecretNamespace,
-	}
-
-	// Enable TLS if we have a secret
-	if tlsConfigEnabled {
-		config.TLSConfig = &proxier.TLSConfig{} // Enable TLS
-		setupLog.Info("TLS enabled", "secretName", finalSecretName, "secretNamespace", finalSecretNamespace)
-	} else {
-		setupLog.Info("TLS disabled - running in HTTP mode")
-	}
-
-	// Setup Node Controller for proxier
-	setupLog.Info("Setting up Node Controller for proxier", "clusterBinding", clusterBindingName)
-
-	// Create virtual cluster manager for Node controller
-	virtualManager, err := ctrl.NewManager(virtualConfig, ctrl.Options{
-		Scheme: scheme,
-		Metrics: server.Options{
-			BindAddress: "0", // 禁用 metrics 服务器
-		},
-		HealthProbeBindAddress: "0", // 禁用 health check 服务器
-		// Only watch Node resources with specific labels
-		Cache: cache.Options{
-			ByObject: map[client.Object]cache.ByObject{
-				&corev1.Node{}: {
-					Label: labels.SelectorFromSet(map[string]string{
-						cloudv1beta1.LabelClusterBinding: clusterBindingName,
-						cloudv1beta1.LabelManagedBy:      cloudv1beta1.LabelManagedByValue,
-					}),
-				},
-			},
-		},
-	})
-	if err != nil {
-		setupLog.Error(err, "unable to create virtual manager for node controller")
-		os.Exit(1)
-	}
-
-	// Create Node controller
-	nodeController := &proxier.NodeController{
-		Client:             virtualManager.GetClient(),
-		Scheme:             virtualManager.GetScheme(),
-		Log:                ctrl.Log.WithName("proxier-node-controller"),
-		ClusterBindingName: clusterBindingName,
-		CurrentNodes:       make(map[string]proxier.NodeInfo),
-	}
-
-	// Setup Node controller
-	if err := nodeController.SetupWithManager(virtualManager); err != nil {
-		setupLog.Error(err, "unable to setup node controller")
-		os.Exit(1)
-	}
-
-	// Connect NodeController with VNodeProxierAgent
-	if vnodeProxierAgent != nil {
-		nodeController.SetMetricsCollector(vnodeProxierAgent)
-		setupLog.Info("Connected NodeController with VNodeProxierAgent")
-	}
-
-	// Start virtual manager (runs in background)
-	go func() {
-		if err := virtualManager.Start(ctx); err != nil {
-			setupLog.Error(err, "problem running virtual manager")
-		}
-	}()
-
-	// Wait for manager cache to sync
-	if !virtualManager.GetCache().WaitForCacheSync(ctx) {
-		setupLog.Error(fmt.Errorf("failed to wait for cache sync"), "unable to sync caches")
-		os.Exit(1)
-	}
-
-	// Sync existing nodes
-	if err := nodeController.SyncExistingNodes(ctx); err != nil {
-		setupLog.Error(err, "failed to sync existing nodes")
-		os.Exit(1)
-	}
-
-	setupLog.Info("Node Controller setup completed successfully")
-
-	// Create Kubelet proxy (before VNode proxier agent so it can be passed to it)
-	kubeletProxy := proxier.NewKubeletProxy(
-		virtualClient,
-		physicalClient,
-		physicalConfig,
-		clusterBinding,
-		ctrl.Log.WithName("kubelet-proxy"),
-	)
-
-	// Update vnodeProxierAgent with kubelet proxy if metrics is enabled
-	if metricsEnabled {
-		setupLog.Info("Associating kubelet proxy with VNode proxier agent for logs/exec support")
-		// We need to set the kubeletProxy in the vnodeProxierAgent
-		// Since we already created it, we'll need to recreate it with the proxy
-		// or add a setter method. For now, let's recreate it.
-
-		metricsConfig := &proxier.MetricsConfig{
-			CollectInterval:    time.Duration(metricsCollectInterval) * time.Second,
-			MaxConcurrentNodes: 100,
-			TargetNamespace:    metricsTargetNamespace,
-			DebugLog:           false,
-		}
-
-		// Add TLS configuration if enabled
-		if tlsConfigEnabled {
-			metricsConfig.TLSSecretName = finalSecretName
-			metricsConfig.TLSSecretNamespace = finalSecretNamespace
-		}
-
-		// Recreate VNode proxier agent with kubelet proxy and clusterID
-		vnodeProxierAgent = proxier.NewVNodeProxierAgent(
-			metricsConfig,
-			tokenManager,
-			kubeletProxy, // Now we can pass the kubelet proxy
-			virtualClientset,
-			clusterBinding.Spec.ClusterID, // Pass ClusterID for VNode name transformation
-			ctrl.Log.WithName("vnode-proxier-agent"),
-		)
-
-		// Start VNode proxier agent
-		setupLog.Info("Starting VNode proxier agent with kubelet proxy support")
-		if err := vnodeProxierAgent.Start(ctx); err != nil {
-			setupLog.Error(err, "unable to start VNode proxier agent")
-			os.Exit(1)
-		}
-		setupLog.Info("VNode proxier agent started successfully with logs/exec endpoints")
-
-		// Connect the newly created VNodeProxierAgent with NodeController
-		nodeController.SetMetricsCollector(vnodeProxierAgent)
-		setupLog.Info("Re-connected NodeController with newly created VNodeProxierAgent")
-
-		// Initialize VNodeProxierAgent with existing nodes from NodeController
-		existingNodes := nodeController.GetCurrentNodes()
-		if len(existingNodes) > 0 {
-			setupLog.Info("Initializing VNodeProxierAgent with existing nodes", "nodeCount", len(existingNodes))
-			vnodeProxierAgent.InitializeWithNodes(existingNodes)
-		}
-	}
-
-	// Create HTTP server
-	httpServer := proxier.NewHTTPServer(
-		config,
-		kubeletProxy,
-		virtualClientset, // Use virtual clientset for TLS secret access since secrets are in virtual cluster
-		ctrl.Log.WithName("http-server"),
-	)
-
-	// Start Kubelet proxy
-	if err := kubeletProxy.Start(ctx); err != nil {
-		setupLog.Error(err, "failed to start Kubelet proxy")
-		os.Exit(1)
-	}
-
-	// Start HTTP server
-	if err := httpServer.Start(ctx); err != nil {
-		setupLog.Error(err, "failed to start HTTP server")
-		os.Exit(1)
-	}
-
-	// Start VNode HTTP server for metrics access
-	if vnodeProxierAgent != nil {
-		if err := proxier.StartVNodeHTTPServer(vnodeProxierAgent, ctrl.Log.WithName("vnode-http-server"), vnodeBasePort); err != nil {
-			setupLog.Error(err, "failed to start VNode HTTP server")
-			os.Exit(1)
-		}
-	} else {
-		setupLog.Info("VNode proxier agent is not enabled, skipping VNode HTTP server")
-	}
-
-	setupLog.Info("Kubeocean Proxier started successfully")
-
-	// Wait for context cancellation
-	<-ctx.Done()
-
-	setupLog.Info("Shutting down Kubeocean Proxier")
-
-	// Stop services
-	if vnodeProxierAgent != nil {
-		vnodeProxierAgent.Stop()
-	}
-
-	if err := httpServer.Stop(); err != nil {
-		setupLog.Error(err, "failed to stop HTTP server")
-	}
-
-	if err := kubeletProxy.Stop(); err != nil {
-		setupLog.Error(err, "failed to stop Kubelet proxy")
-	}
-
-	setupLog.Info("Kubeocean Proxier stopped")
+	return nil
 }
 
 // createPhysicalClusterClients creates clients for the physical cluster
@@ -653,4 +457,265 @@ func validateExternalTLSSecret(ctx context.Context, client kubernetes.Interface,
 		"certExpiry", cert.NotAfter.Format(time.RFC3339))
 
 	return nil
+}
+
+// setupTLSConfiguration sets up TLS configuration based on priority
+func setupTLSConfiguration(ctx context.Context, config *ProxierConfig, clusterBinding *cloudv1beta1.ClusterBinding) (*TLSConfiguration, error) {
+	virtualClientset, err := kubernetes.NewForConfig(ctrl.GetConfigOrDie())
+	if err != nil {
+		return nil, fmt.Errorf("unable to create virtual cluster clientset: %w", err)
+	}
+
+	tlsConfig := &TLSConfiguration{}
+
+	// Priority 1: Command line parameters
+	if config.TLSSecretName != "" && config.TLSSecretNamespace != "" {
+		tlsConfig.Enabled = true
+		tlsConfig.SecretName = config.TLSSecretName
+		tlsConfig.SecretNamespace = config.TLSSecretNamespace
+		
+		setupLog.Info("Using TLS secret from command line parameters",
+			"secretName", tlsConfig.SecretName,
+			"secretNamespace", tlsConfig.SecretNamespace,
+			"managementType", "external")
+
+		if err := validateExternalTLSSecret(ctx, virtualClientset, tlsConfig.SecretName, tlsConfig.SecretNamespace); err != nil {
+			return nil, fmt.Errorf("external TLS secret validation failed: %w", err)
+		}
+		return tlsConfig, nil
+	}
+
+	// Priority 2 & 3: ClusterBinding annotation or automatic management
+	certManager := proxier.NewCertificateManager(
+		virtualClientset,
+		clusterBinding,
+		"kubeocean-system",
+		ctrl.Log.WithName("cert-manager"),
+	)
+	tlsConfig.CertManager = certManager
+
+	// Check ClusterBinding annotation
+	if annotationSecretName := getClusterBindingSecretAnnotation(clusterBinding); annotationSecretName != "" {
+		annotationSecretNamespace := getClusterBindingSecretNamespaceAnnotation(clusterBinding)
+		if annotationSecretNamespace == "" {
+			annotationSecretNamespace = clusterBinding.Namespace
+		}
+
+		tlsConfig.Enabled = true
+		tlsConfig.SecretName = annotationSecretName
+		tlsConfig.SecretNamespace = annotationSecretNamespace
+		
+		setupLog.Info("Using TLS secret from ClusterBinding annotation",
+			"secretName", tlsConfig.SecretName,
+			"secretNamespace", tlsConfig.SecretNamespace,
+			"managementType", "external")
+
+		if err := validateExternalTLSSecret(ctx, virtualClientset, tlsConfig.SecretName, tlsConfig.SecretNamespace); err != nil {
+			return nil, fmt.Errorf("clusterBinding annotated TLS secret validation failed: %w", err)
+		}
+		return tlsConfig, nil
+	}
+
+	// Priority 3: Automatic certificate management
+	setupLog.Info("No external TLS configuration found, using automatic certificate management", "managementType", "automatic")
+
+	tlsSecret, err := certManager.GetOrCreateTLSSecret(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get or create TLS secret: %w", err)
+	}
+
+	certManager.StartAutoRenewal(ctx)
+	tlsConfig.Enabled = true
+	tlsConfig.SecretName = tlsSecret.Name
+	tlsConfig.SecretNamespace = tlsSecret.Namespace
+	
+	setupLog.Info("Using automatically managed TLS certificate",
+		"secretName", tlsConfig.SecretName,
+		"secretNamespace", tlsConfig.SecretNamespace,
+		"managementType", "automatic")
+
+	return tlsConfig, nil
+}
+
+// setupProxierServices sets up kubelet proxy, HTTP server, and optionally VNode proxier agent
+func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig *TLSConfiguration, virtualClient client.Client, physicalClient kubernetes.Interface, physicalConfig *rest.Config, clusterBinding *cloudv1beta1.ClusterBinding, tokenManager *proxier.TokenManager) (proxier.KubeletProxy, proxier.HTTPServer, *proxier.VNodeProxierAgent, error) {
+	virtualClientset, err := kubernetes.NewForConfig(ctrl.GetConfigOrDie())
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("unable to create virtual cluster clientset: %w", err)
+	}
+
+	// Create kubelet proxy configuration
+	proxierConfig := &proxier.Config{
+		Enabled:                     true,
+		ListenAddr:                  fmt.Sprintf(":%d", config.ListenPort),
+		AllowUnauthenticatedClients: true,
+		TLSConfig:                   nil,
+		SecretName:                  tlsConfig.SecretName,
+		SecretNamespace:             tlsConfig.SecretNamespace,
+	}
+
+	if tlsConfig.Enabled {
+		proxierConfig.TLSConfig = &proxier.TLSConfig{}
+		setupLog.Info("TLS enabled", "secretName", tlsConfig.SecretName, "secretNamespace", tlsConfig.SecretNamespace)
+	} else {
+		setupLog.Info("TLS disabled - running in HTTP mode")
+	}
+
+	// Create Kubelet proxy
+	kubeletProxy := proxier.NewKubeletProxy(
+		virtualClient,
+		physicalClient,
+		physicalConfig,
+		clusterBinding,
+		ctrl.Log.WithName("kubelet-proxy"),
+	)
+
+	// Create HTTP server
+	httpServer := proxier.NewHTTPServer(
+		proxierConfig,
+		kubeletProxy,
+		virtualClientset,
+		ctrl.Log.WithName("http-server"),
+	)
+
+	// Create VNode proxier agent if metrics enabled
+	var vnodeProxierAgent *proxier.VNodeProxierAgent
+	if config.MetricsEnabled {
+		setupLog.Info("Setting up VNode proxier agent with kubelet proxy support")
+		
+		metricsConfig := &proxier.MetricsConfig{
+			CollectInterval:    time.Duration(config.MetricsCollectInterval) * time.Second,
+			MaxConcurrentNodes: 100,
+			TargetNamespace:    config.MetricsTargetNamespace,
+			DebugLog:           false,
+		}
+
+		if tlsConfig.Enabled {
+			metricsConfig.TLSSecretName = tlsConfig.SecretName
+			metricsConfig.TLSSecretNamespace = tlsConfig.SecretNamespace
+		}
+
+		vnodeProxierAgent = proxier.NewVNodeProxierAgent(
+			metricsConfig,
+			tokenManager,
+			kubeletProxy,
+			virtualClientset,
+			clusterBinding.Spec.ClusterID,
+			ctrl.Log.WithName("vnode-proxier-agent"),
+		)
+
+		if err := vnodeProxierAgent.Start(ctx); err != nil {
+			return nil, nil, nil, fmt.Errorf("unable to start VNode proxier agent: %w", err)
+		}
+		setupLog.Info("VNode proxier agent started successfully with logs/exec endpoints")
+	} else {
+		setupLog.Info("Metrics collection disabled")
+	}
+
+	return kubeletProxy, httpServer, vnodeProxierAgent, nil
+}
+
+// setupNodeMonitoring sets up node controller and monitoring
+func setupNodeMonitoring(ctx context.Context, config *ProxierConfig, vnodeProxierAgent *proxier.VNodeProxierAgent) error {
+	setupLog.Info("Setting up Node Controller for proxier", "clusterBinding", config.ClusterBindingName)
+
+	virtualConfig := ctrl.GetConfigOrDie()
+	virtualManager, err := ctrl.NewManager(virtualConfig, ctrl.Options{
+		Scheme: scheme,
+		Metrics: server.Options{
+			BindAddress: "0",
+		},
+		HealthProbeBindAddress: "0",
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.Node{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelClusterBinding: config.ClusterBindingName,
+						cloudv1beta1.LabelManagedBy:      cloudv1beta1.LabelManagedByValue,
+					}),
+				},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("unable to create virtual manager for node controller: %w", err)
+	}
+
+	nodeController := &proxier.NodeController{
+		Client:             virtualManager.GetClient(),
+		Scheme:             virtualManager.GetScheme(),
+		Log:                ctrl.Log.WithName("proxier-node-controller"),
+		ClusterBindingName: config.ClusterBindingName,
+		CurrentNodes:       make(map[string]proxier.NodeInfo),
+	}
+
+	if err := nodeController.SetupWithManager(virtualManager); err != nil {
+		return fmt.Errorf("unable to setup node controller: %w", err)
+	}
+
+	if vnodeProxierAgent != nil {
+		nodeController.SetMetricsCollector(vnodeProxierAgent)
+		setupLog.Info("Connected NodeController with VNodeProxierAgent")
+	}
+
+	go func() {
+		if err := virtualManager.Start(ctx); err != nil {
+			setupLog.Error(err, "problem running virtual manager")
+		}
+	}()
+
+	if !virtualManager.GetCache().WaitForCacheSync(ctx) {
+		return fmt.Errorf("failed to wait for cache sync")
+	}
+
+	if err := nodeController.SyncExistingNodes(ctx); err != nil {
+		return fmt.Errorf("failed to sync existing nodes: %w", err)
+	}
+
+	if vnodeProxierAgent != nil {
+		existingNodes := nodeController.GetCurrentNodes()
+		if len(existingNodes) > 0 {
+			setupLog.Info("Initializing VNodeProxierAgent with existing nodes", "nodeCount", len(existingNodes))
+			vnodeProxierAgent.InitializeWithNodes(existingNodes)
+		}
+	}
+
+	setupLog.Info("Node Controller setup completed successfully")
+	return nil
+}
+
+// startServices starts all the services
+func startServices(ctx context.Context, config *ProxierConfig, kubeletProxy proxier.KubeletProxy, httpServer proxier.HTTPServer, vnodeProxierAgent *proxier.VNodeProxierAgent) error {
+	if err := kubeletProxy.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start Kubelet proxy: %w", err)
+	}
+
+	if err := httpServer.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start HTTP server: %w", err)
+	}
+
+	if vnodeProxierAgent != nil {
+		if err := proxier.StartVNodeHTTPServer(vnodeProxierAgent, ctrl.Log.WithName("vnode-http-server"), config.VnodeBasePort); err != nil {
+			return fmt.Errorf("failed to start VNode HTTP server: %w", err)
+		}
+	} else {
+		setupLog.Info("VNode proxier agent is not enabled, skipping VNode HTTP server")
+	}
+
+	return nil
+}
+
+// stopServices stops all services gracefully
+func stopServices(vnodeProxierAgent *proxier.VNodeProxierAgent, httpServer proxier.HTTPServer, kubeletProxy proxier.KubeletProxy) {
+	if vnodeProxierAgent != nil {
+		vnodeProxierAgent.Stop()
+	}
+
+	if err := httpServer.Stop(); err != nil {
+		setupLog.Error(err, "failed to stop HTTP server")
+	}
+
+	if err := kubeletProxy.Stop(); err != nil {
+		setupLog.Error(err, "failed to stop Kubelet proxy")
+	}
 }
