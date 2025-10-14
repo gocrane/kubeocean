@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/metrics"
+	"github.com/TKEColocation/kubeocean/pkg/manager/metrics"
 	"github.com/TKEColocation/kubeocean/pkg/proxier"
 )
 

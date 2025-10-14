@@ -6,7 +6,7 @@ import (
 	"time"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	controllerpkg "github.com/TKEColocation/kubeocean/pkg/controller"
+	controllerpkg "github.com/TKEColocation/kubeocean/pkg/manager/controller"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
