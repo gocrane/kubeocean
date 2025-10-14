@@ -1,4 +1,4 @@
-package bottomup
+package rlp
 
 import (
 	"context"
@@ -27,6 +27,9 @@ const (
 	ConditionTypeActive = "Active"
 	// ReasonValidationError is the reason for validation error
 	ReasonValidationError = "ValidationError"
+
+	// Default policy sync interval
+	DefaultPolicySyncInterval = 300 * time.Second
 )
 
 // ResourceLeasingPolicyReconciler reconciles ResourceLeasingPolicy objects

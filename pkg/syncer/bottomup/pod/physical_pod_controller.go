@@ -1,4 +1,4 @@
-package bottomup
+package bottompod
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package bottomup
+package bottomnode
 
 import (
 	"context"
@@ -52,6 +52,9 @@ const (
 
 	// Annotation keys for deletion tracking
 	AnnotationDeletionTaintTime = "kubeocean.io/deletion-taint-time"
+
+	// Default node sync interval
+	DefaultNodeSyncInterval = 300 * time.Second
 )
 
 // ExpectedNodeMetadata represents the expected metadata for a virtual node

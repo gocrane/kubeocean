@@ -13,6 +13,9 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/hostport"
+	bottomnode "github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/node"
+	bottompod "github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/pod"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/rlp"
 	"github.com/TKEColocation/kubeocean/pkg/utils"
 )
 
@@ -28,7 +31,7 @@ type BottomUpSyncer struct {
 	virtualManager manager.Manager
 
 	// Reconciler reference for triggering reconciliation
-	nodeReconciler *PhysicalNodeReconciler
+	nodeReconciler *bottomnode.PhysicalNodeReconciler
 
 	// VNode Prometheus base port (injected from KubeoceanSyncer)
 	prometheusVNodeBasePort int
@@ -139,7 +142,7 @@ func (bus *BottomUpSyncer) setupControllers() error {
 	}
 
 	// Setup Physical CSINode Controller
-	csiNodeReconciler := &PhysicalCSINodeReconciler{
+	csiNodeReconciler := &bottomnode.PhysicalCSINodeReconciler{
 		PhysicalClient:     bus.physicalManager.GetClient(),
 		VirtualClient:      bus.virtualManager.GetClient(),
 		Scheme:             bus.Scheme,
@@ -153,7 +156,7 @@ func (bus *BottomUpSyncer) setupControllers() error {
 	}
 
 	// Setup Physical Node Controller
-	nodeReconciler := &PhysicalNodeReconciler{
+	nodeReconciler := &bottomnode.PhysicalNodeReconciler{
 		PhysicalClient:          bus.physicalManager.GetClient(),
 		VirtualClient:           bus.virtualManager.GetClient(),
 		KubeClient:              kubeClient,
@@ -180,7 +183,7 @@ func (bus *BottomUpSyncer) setupControllers() error {
 
 	// Setup Physical Pod Controller for status synchronization
 	// This implements requirement 3.4, 3.5 - Pod status monitoring and sync
-	podReconciler := &PhysicalPodReconciler{
+	podReconciler := &bottompod.PhysicalPodReconciler{
 		PhysicalClient: bus.physicalManager.GetClient(),
 		VirtualClient:  bus.virtualManager.GetClient(),
 		Scheme:         bus.Scheme,
@@ -193,7 +196,7 @@ func (bus *BottomUpSyncer) setupControllers() error {
 	}
 
 	// Setup ResourceLeasingPolicy Controller
-	policyReconciler := &ResourceLeasingPolicyReconciler{
+	policyReconciler := &rlp.ResourceLeasingPolicyReconciler{
 		Client:         bus.physicalManager.GetClient(),
 		ClusterBinding: bus.ClusterBinding,
 		Log:            bus.Log.WithName("resource-leasing-policy-controller"),
