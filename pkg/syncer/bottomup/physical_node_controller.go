@@ -1056,30 +1056,41 @@ func (r *PhysicalNodeReconciler) getBaseResources(node *corev1.Node) corev1.Reso
 }
 
 // buildVirtualNodeAddresses builds addresses for virtual node
-func (r *PhysicalNodeReconciler) buildVirtualNodeAddresses(physicalNode *corev1.Node, internalIP string) []corev1.NodeAddress {
-
-	// First find and update existing InternalIP
-	internalIPUpdated := false
-	addresses := make([]corev1.NodeAddress, len(physicalNode.Status.Addresses))
-	copy(addresses, physicalNode.Status.Addresses)
-
-	for i := range addresses {
-		if addresses[i].Type == corev1.NodeInternalIP {
-			addresses[i].Address = internalIP
-			internalIPUpdated = true
-			r.Log.Info("Updated existing InternalIP for virtual node to point to proxier pod", "node", physicalNode.Name, "podIP", internalIP)
+func (r *PhysicalNodeReconciler) buildVirtualNodeAddresses(physicalNode *corev1.Node, internalIP, virtualNodeName string) []corev1.NodeAddress {
+	// Find InternalIP from physical node first
+	var finalInternalIP string
+	physicalNodeHasInternalIP := false
+	
+	for _, addr := range physicalNode.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP {
+			finalInternalIP = addr.Address
+			physicalNodeHasInternalIP = true
 			break
 		}
 	}
-
-	// If no InternalIP found, add a new one
-	if !internalIPUpdated {
-		addresses = append(addresses, corev1.NodeAddress{
-			Type:    corev1.NodeInternalIP,
-			Address: internalIP,
-		})
-		r.Log.Info("Added new InternalIP for virtual node pointing to proxier pod", "node", physicalNode.Name, "podIP", internalIP)
+	
+	// If physical node doesn't have InternalIP, use the provided internalIP parameter
+	if !physicalNodeHasInternalIP {
+		finalInternalIP = internalIP
 	}
+
+	// Return only two items: NodeInternalIP and NodeHostName
+	addresses := []corev1.NodeAddress{
+		{
+			Type:    corev1.NodeInternalIP,
+			Address: finalInternalIP,
+		},
+		{
+			Type:    corev1.NodeHostName,
+			Address: virtualNodeName,
+		},
+	}
+
+	r.Log.V(1).Info("Built virtual node addresses", 
+		"physicalNode", physicalNode.Name,
+		"finalInternalIP", finalInternalIP, 
+		"physicalNodeHasInternalIP", physicalNodeHasInternalIP,
+		"hostname", virtualNodeName)
 
 	return addresses
 }
@@ -1145,7 +1156,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 	}
 
 	// Build virtual node addresses
-	addresses := r.buildVirtualNodeAddresses(physicalNode, proxiedPodIP)
+	addresses := r.buildVirtualNodeAddresses(physicalNode, proxiedPodIP, virtualNodeName)
 
 	virtualNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1479,11 +1490,6 @@ func (r *PhysicalNodeReconciler) hashString(s string) uint32 {
 	}
 
 	return hash
-}
-
-// isPortInUse checks if a port is already in use
-func (r *PhysicalNodeReconciler) isPortInUse(port int, existingPorts map[int]bool) bool {
-	return existingPorts[port]
 }
 
 // getClusterID returns a cluster identifier for the physical cluster
