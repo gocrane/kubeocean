@@ -1,4 +1,4 @@
-package topdown
+package pv
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 )
 
 // VirtualPVReconciler reconciles PersistentVolume objects from virtual cluster
@@ -25,7 +26,7 @@ type VirtualPVReconciler struct {
 	Scheme            *runtime.Scheme
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
-	clusterID         string // Cached cluster ID for performance
+	ClusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=core,resources=persistentvolumes,verbs=get;list;watch;create;update;patch;delete
@@ -53,9 +54,9 @@ func (r *VirtualPVReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// 2.5. Check if PV belongs to this cluster
-	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 	if virtualPV.Labels == nil || virtualPV.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
-		logger.V(1).Info("PV not managed by this cluster, skipping", "clusterID", r.clusterID)
+		logger.V(1).Info("PV not managed by this cluster, skipping", "ClusterID", r.ClusterID)
 		return ctrl.Result{}, nil
 	}
 
@@ -88,7 +89,7 @@ func (r *VirtualPVReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// 5.5. Check if clusterbinding is being deleted (indicated by annotation)
-	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.clusterID)
+	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.ClusterID)
 	if virtualPV.Annotations != nil && virtualPV.Annotations[clusterBindingDeletingAnnotation] == r.ClusterBinding.Name {
 		logger.Info("ClusterBinding is being deleted, handling PV deletion")
 		return r.handleVirtualPVDeletion(ctx, virtualPV, physicalName, physicalPVExists, physicalPV)
@@ -111,12 +112,12 @@ func (r *VirtualPVReconciler) handleVirtualPVDeletion(ctx context.Context, virtu
 
 	if !physicalPVExists {
 		logger.V(1).Info("Physical PV doesn't exist, nothing to delete")
-		return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPV, r.VirtualClient, r.Log, r.clusterID)
+		return ctrl.Result{}, topcommon.RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPV, r.VirtualClient, r.Log, r.ClusterID)
 	}
 
 	// Use the common deletion function
-	err := DeletePhysicalResource(ctx, DeletePhysicalResourceParams{
-		ResourceType:      ResourceTypePV,
+	err := topcommon.DeletePhysicalResource(ctx, topcommon.DeletePhysicalResourceParams{
+		ResourceType:      topcommon.ResourceTypePV,
 		PhysicalName:      physicalName,
 		PhysicalNamespace: "", // PV is cluster-scoped
 		PhysicalResource:  physicalPV,
@@ -127,12 +128,12 @@ func (r *VirtualPVReconciler) handleVirtualPVDeletion(ctx context.Context, virtu
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPV, r.VirtualClient, r.Log, r.clusterID)
+	return ctrl.Result{}, topcommon.RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPV, r.VirtualClient, r.Log, r.ClusterID)
 }
 
 // checkPhysicalPVExists checks if physical PV exists using both cached and direct client
 func (r *VirtualPVReconciler) checkPhysicalPVExists(ctx context.Context, physicalName string) (bool, *corev1.PersistentVolume, error) {
-	exists, obj, err := CheckPhysicalResourceExists(ctx, ResourceTypePV, physicalName, "", &corev1.PersistentVolume{},
+	exists, obj, err := topcommon.CheckPhysicalResourceExists(ctx, topcommon.ResourceTypePV, physicalName, "", &corev1.PersistentVolume{},
 		r.PhysicalClient, r.PhysicalK8sClient, r.Log)
 
 	if err != nil {
@@ -154,7 +155,7 @@ func (r *VirtualPVReconciler) checkPhysicalPVExists(ctx context.Context, physica
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualPVReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
 	// Cache cluster ID for performance
-	r.clusterID = r.ClusterBinding.Spec.ClusterID
+	r.ClusterID = r.ClusterBinding.Spec.ClusterID
 
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualpv-%s", r.ClusterBinding.Name)
@@ -179,7 +180,7 @@ func (r *VirtualPVReconciler) SetupWithManager(virtualManager, physicalManager c
 			}
 
 			// Only sync PVs managed by this cluster
-			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+			managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 			return pv.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
 		})).
 		Complete(r)

@@ -1,4 +1,4 @@
-package topdown
+package configmap
 
 import (
 	"context"
@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 )
 
 func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
@@ -34,7 +35,7 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 		},
 	}
 
-	// Helper function to add clusterID label to virtual ConfigMap
+	// Helper function to add ClusterID label to virtual ConfigMap
 	addClusterIDLabel := func(configMap *corev1.ConfigMap) {
 		if configMap != nil && configMap.Labels != nil {
 			configMap.Labels["kubeocean.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
@@ -273,7 +274,7 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Add clusterID label to virtual ConfigMap if it exists and has managed-by label
+			// Add ClusterID label to virtual ConfigMap if it exists and has managed-by label
 			if tt.virtualConfigMap != nil && tt.virtualConfigMap.Labels != nil &&
 				tt.virtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
 				addClusterIDLabel(tt.virtualConfigMap)
@@ -303,8 +304,8 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 				ClusterBinding:    clusterBinding,
 				Log:               zap.New(),
 			}
-			// Set clusterID manually for testing
-			reconciler.clusterID = clusterBinding.Spec.ClusterID
+			// Set ClusterID manually for testing
+			reconciler.ClusterID = clusterBinding.Spec.ClusterID
 
 			// Create request
 			req := reconcile.Request{
@@ -445,7 +446,7 @@ func TestVirtualConfigMapReconciler_CheckPhysicalConfigMapExists(t *testing.T) {
 	})
 }
 
-// TestVirtualConfigMapReconciler_ClusterIDFunctionality tests clusterID related functionality
+// TestVirtualConfigMapReconciler_ClusterIDFunctionality tests ClusterID related functionality
 func TestVirtualConfigMapReconciler_ClusterIDFunctionality(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -461,7 +462,7 @@ func TestVirtualConfigMapReconciler_ClusterIDFunctionality(t *testing.T) {
 		},
 	}
 
-	t.Run("clusterID caching", func(t *testing.T) {
+	t.Run("ClusterID caching", func(t *testing.T) {
 		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -472,14 +473,14 @@ func TestVirtualConfigMapReconciler_ClusterIDFunctionality(t *testing.T) {
 			Log:            ctrl.Log.WithName("test"),
 		}
 
-		// Set clusterID directly for testing
-		reconciler.clusterID = clusterBinding.Spec.ClusterID
+		// Set ClusterID directly for testing
+		reconciler.ClusterID = clusterBinding.Spec.ClusterID
 
-		// Verify clusterID is cached
-		assert.Equal(t, "test-cluster-id", reconciler.clusterID)
+		// Verify ClusterID is cached
+		assert.Equal(t, "test-cluster-id", reconciler.ClusterID)
 	})
 
-	t.Run("removeSyncedResourceFinalizer with clusterID", func(t *testing.T) {
+	t.Run("removeSyncedResourceFinalizer with ClusterID", func(t *testing.T) {
 		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -488,7 +489,7 @@ func TestVirtualConfigMapReconciler_ClusterIDFunctionality(t *testing.T) {
 			PhysicalClient: physicalClient,
 			ClusterBinding: clusterBinding,
 			Log:            ctrl.Log.WithName("test"),
-			clusterID:      "test-cluster-id",
+			ClusterID:      "test-cluster-id",
 		}
 
 		virtualConfigMap := &corev1.ConfigMap{
@@ -506,13 +507,13 @@ func TestVirtualConfigMapReconciler_ClusterIDFunctionality(t *testing.T) {
 		err := virtualClient.Create(context.Background(), virtualConfigMap)
 		require.NoError(t, err)
 
-		// Test removing the clusterID finalizer
-		err = RemoveSyncedResourceFinalizerAndLabels(context.Background(), virtualConfigMap, virtualClient, reconciler.Log, reconciler.clusterID)
+		// Test removing the ClusterID finalizer
+		err = topcommon.RemoveSyncedResourceFinalizerAndLabels(context.Background(), virtualConfigMap, virtualClient, reconciler.Log, reconciler.ClusterID)
 		result := ctrl.Result{}
 		require.NoError(t, err)
 		assert.Equal(t, ctrl.Result{}, result)
 
-		// Verify the clusterID finalizer is removed but other finalizer remains
+		// Verify the ClusterID finalizer is removed but other finalizer remains
 		updatedConfigMap := &corev1.ConfigMap{}
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-config", Namespace: "test-ns"}, updatedConfigMap)
 		require.NoError(t, err)

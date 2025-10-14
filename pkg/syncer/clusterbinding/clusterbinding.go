@@ -20,7 +20,7 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 )
 
 // BottomUpSyncerInterface defines the interface for BottomUpSyncer operations needed by ClusterBindingReconciler
@@ -201,7 +201,7 @@ func (r *ClusterBindingReconciler) handleClusterBindingDeletion(ctx context.Cont
 	}
 
 	// 继续根据 managedByClusterIDLabel 在虚拟集群中查找 configmap、secret、pv、pvc，并添加删除注解
-	managedByClusterIDLabel := topdown.GetManagedByClusterIDLabel(clusterBinding.Spec.ClusterID)
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(clusterBinding.Spec.ClusterID)
 	resourcesNames, err := r.checkAndCleanVirtualResources(ctx, managedByClusterIDLabel, clusterBinding)
 	if err != nil {
 		logger.Error(err, "Failed to check and clean virtual resources")
@@ -420,7 +420,7 @@ func (r *ClusterBindingReconciler) checkAndCleanVirtualResources(ctx context.Con
 		configMapNames = append(configMapNames, configMap.Name)
 
 		// Add clusterbinding-deleting annotation using common function
-		if err := topdown.AddClusterBindingDeletingAnnotation(ctx, configMap, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
+		if err := topcommon.AddClusterBindingDeletingAnnotation(ctx, configMap, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
 			return "", fmt.Errorf("failed to update ConfigMap %s with clusterbinding-deleting annotation: %w", configMap.Name, err)
 		}
 	}
@@ -442,7 +442,7 @@ func (r *ClusterBindingReconciler) checkAndCleanVirtualResources(ctx context.Con
 		secretNames = append(secretNames, secret.Name)
 
 		// Add clusterbinding-deleting annotation using common function
-		if err := topdown.AddClusterBindingDeletingAnnotation(ctx, secret, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
+		if err := topcommon.AddClusterBindingDeletingAnnotation(ctx, secret, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
 			return "", fmt.Errorf("failed to update Secret %s with clusterbinding-deleting annotation: %w", secret.Name, err)
 		}
 	}
@@ -464,7 +464,7 @@ func (r *ClusterBindingReconciler) checkAndCleanVirtualResources(ctx context.Con
 		pvNames = append(pvNames, pv.Name)
 
 		// Add clusterbinding-deleting annotation using common function
-		if err := topdown.AddClusterBindingDeletingAnnotation(ctx, pv, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
+		if err := topcommon.AddClusterBindingDeletingAnnotation(ctx, pv, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
 			return "", fmt.Errorf("failed to update PV %s with clusterbinding-deleting annotation: %w", pv.Name, err)
 		}
 	}
@@ -486,7 +486,7 @@ func (r *ClusterBindingReconciler) checkAndCleanVirtualResources(ctx context.Con
 		pvcNames = append(pvcNames, pvc.Name)
 
 		// Add clusterbinding-deleting annotation using common function
-		if err := topdown.AddClusterBindingDeletingAnnotation(ctx, pvc, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
+		if err := topcommon.AddClusterBindingDeletingAnnotation(ctx, pvc, r.Client, r.Log, clusterBinding.Spec.ClusterID, clusterBinding.Name); err != nil {
 			return "", fmt.Errorf("failed to update PVC %s with clusterbinding-deleting annotation: %w", pvc.Name, err)
 		}
 	}

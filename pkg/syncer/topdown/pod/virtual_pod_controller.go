@@ -1,4 +1,4 @@
-package topdown
+package toppod
 
 import (
 	"context"
@@ -31,6 +31,7 @@ import (
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	syncermetrics "github.com/TKEColocation/kubeocean/pkg/syncer/metrics"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/token"
 	"github.com/TKEColocation/kubeocean/pkg/utils"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -58,7 +59,7 @@ type VirtualPodReconciler struct {
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
 	workQueue         workqueue.TypedRateLimitingInterface[reconcile.Request]
-	clusterID         string // Cached cluster ID for performance
+	ClusterID         string // Cached cluster ID for performance
 	EventRecorder     record.EventRecorder
 	TokenManager      token.TokenManagerInterface
 	// Cached loadbalancer IPs and ports
@@ -344,7 +345,7 @@ func (r *VirtualPodReconciler) shouldManageVirtualPod(ctx context.Context, virtu
 	physicalClusterID := virtualNode.Labels[cloudv1beta1.LabelPhysicalClusterID]
 
 	currentClusterName := r.ClusterBinding.Name
-	currentClusterID := r.clusterID
+	currentClusterID := r.ClusterID
 
 	// Check cluster name match (preferred)
 	if physicalClusterName != "" && physicalClusterName != currentClusterName {
@@ -1094,7 +1095,7 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 	}
 
 	// Cache cluster ID for performance
-	r.clusterID = r.ClusterBinding.Spec.ClusterID
+	r.ClusterID = r.ClusterBinding.Spec.ClusterID
 
 	// Set up EventRecorder
 	r.EventRecorder = virtualManager.GetEventRecorderFor(fmt.Sprintf("kubeocean-syncer-%s", r.ClusterBinding.Name))
@@ -1624,7 +1625,7 @@ type ResourceMapping struct {
 }
 
 // syncResource syncs a single resource (ConfigMap, Secret, or PVC) and returns the physical resource name
-func (r *VirtualPodReconciler) syncResource(ctx context.Context, resourceType ResourceType, virtualNamespace, resourceName, physicalNamespace string, emptyObj client.Object, syncResourceOpt *SyncResourceOpt) (string, error) {
+func (r *VirtualPodReconciler) syncResource(ctx context.Context, resourceType topcommon.ResourceType, virtualNamespace, resourceName, physicalNamespace string, emptyObj client.Object, syncResourceOpt *topcommon.SyncResourceOpt) (string, error) {
 	logger := r.Log.WithValues(string(resourceType), fmt.Sprintf("%s/%s", virtualNamespace, resourceName))
 
 	// 1. Get virtual resource
@@ -1675,12 +1676,12 @@ func (r *VirtualPodReconciler) syncResource(ctx context.Context, resourceType Re
 
 // syncConfigMap syncs a single ConfigMap and returns the physical resource name
 func (r *VirtualPodReconciler) syncConfigMap(ctx context.Context, virtualNamespace, configMapName string) (string, error) {
-	return r.syncResource(ctx, ResourceTypeConfigMap, virtualNamespace, configMapName, r.ClusterBinding.Spec.MountNamespace, &corev1.ConfigMap{}, nil)
+	return r.syncResource(ctx, topcommon.ResourceTypeConfigMap, virtualNamespace, configMapName, r.ClusterBinding.Spec.MountNamespace, &corev1.ConfigMap{}, nil)
 }
 
 // syncSecret syncs a single Secret and returns the physical resource name
 func (r *VirtualPodReconciler) syncSecret(ctx context.Context, virtualNamespace, secretName string) (string, error) {
-	return r.syncResource(ctx, ResourceTypeSecret, virtualNamespace, secretName, r.ClusterBinding.Spec.MountNamespace, &corev1.Secret{}, nil)
+	return r.syncResource(ctx, topcommon.ResourceTypeSecret, virtualNamespace, secretName, r.ClusterBinding.Spec.MountNamespace, &corev1.Secret{}, nil)
 }
 
 // syncPVC syncs a single PVC and returns the physical resource name
@@ -1722,10 +1723,10 @@ func (r *VirtualPodReconciler) syncPVC(ctx context.Context, virtualNamespace, pv
 		"physicalPV", physicalPVName)
 
 	// Then sync the PVC itself, passing the physical PV name
-	syncOpt := &SyncResourceOpt{
+	syncOpt := &topcommon.SyncResourceOpt{
 		PhysicalPVName: physicalPVName,
 	}
-	physicalPVCName, err := r.syncResource(ctx, ResourceTypePVC, virtualNamespace, pvcName, r.ClusterBinding.Spec.MountNamespace, &corev1.PersistentVolumeClaim{}, syncOpt)
+	physicalPVCName, err := r.syncResource(ctx, topcommon.ResourceTypePVC, virtualNamespace, pvcName, r.ClusterBinding.Spec.MountNamespace, &corev1.PersistentVolumeClaim{}, syncOpt)
 	if err != nil {
 		return "", err
 	}
@@ -1751,10 +1752,10 @@ func (r *VirtualPodReconciler) syncPV(ctx context.Context, pvName string) (strin
 		logger.Info("PV has CSI nodePublishSecretRef, syncing the secret first")
 
 		// Sync the CSI secret using existing syncResource function
-		syncOpt := &SyncResourceOpt{
+		syncOpt := &topcommon.SyncResourceOpt{
 			IsPVRefSecret: true,
 		}
-		physicalSecretName, err := r.syncResource(ctx, ResourceTypeSecret, secretRef.Namespace, secretRef.Name, secretRef.Namespace, &corev1.Secret{}, syncOpt)
+		physicalSecretName, err := r.syncResource(ctx, topcommon.ResourceTypeSecret, secretRef.Namespace, secretRef.Name, secretRef.Namespace, &corev1.Secret{}, syncOpt)
 		if err != nil {
 			logger.Error(err, "Failed to sync CSI secret")
 			return "", fmt.Errorf("failed to sync CSI secret %s/%s for PV %s: %w", secretRef.Namespace, secretRef.Name, pvName, err)
@@ -1765,13 +1766,13 @@ func (r *VirtualPodReconciler) syncPV(ctx context.Context, pvName string) (strin
 			"physicalSecret", fmt.Sprintf("%s/%s", secretRef.Namespace, physicalSecretName))
 
 		// Sync PV with updated CSI secret reference using syncResource
-		syncOpt = &SyncResourceOpt{
+		syncOpt = &topcommon.SyncResourceOpt{
 			PhysicalPVRefSecretName: physicalSecretName,
 		}
-		return r.syncResource(ctx, ResourceTypePV, "", pvName, "", &corev1.PersistentVolume{}, syncOpt)
+		return r.syncResource(ctx, topcommon.ResourceTypePV, "", pvName, "", &corev1.PersistentVolume{}, syncOpt)
 	}
 	// No CSI secret reference, sync PV normally
-	return r.syncResource(ctx, ResourceTypePV, "", pvName, "", &corev1.PersistentVolume{}, nil)
+	return r.syncResource(ctx, topcommon.ResourceTypePV, "", pvName, "", &corev1.PersistentVolume{}, nil)
 }
 
 // cleanupServiceAccountToken cleans up the service account token secret when pod is deleted
@@ -1926,14 +1927,14 @@ func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, virt
 }
 
 // checkPhysicalResourceExists checks if physical resource exists using both cached and direct client
-func (r *VirtualPodReconciler) checkPhysicalResourceExists(ctx context.Context, resourceType ResourceType, physicalName, physicalNamespace string, obj client.Object) (bool, client.Object, error) {
-	return CheckPhysicalResourceExists(ctx, resourceType, physicalName, physicalNamespace, obj,
+func (r *VirtualPodReconciler) checkPhysicalResourceExists(ctx context.Context, resourceType topcommon.ResourceType, physicalName, physicalNamespace string, obj client.Object) (bool, client.Object, error) {
+	return topcommon.CheckPhysicalResourceExists(ctx, resourceType, physicalName, physicalNamespace, obj,
 		r.PhysicalClient, r.PhysicalK8sClient, r.Log)
 }
 
 // createPhysicalResourceWithOpt creates a physical resource by type with sync options
-func (r *VirtualPodReconciler) createPhysicalResourceWithOpt(ctx context.Context, resourceType ResourceType, virtualObj client.Object, physicalName, physicalNamespace string, syncResourceOpt *SyncResourceOpt) error {
-	return CreatePhysicalResourceWithOpt(ctx, resourceType, virtualObj, physicalName, physicalNamespace, r.PhysicalClient, r.Log, syncResourceOpt)
+func (r *VirtualPodReconciler) createPhysicalResourceWithOpt(ctx context.Context, resourceType topcommon.ResourceType, virtualObj client.Object, physicalName, physicalNamespace string, syncResourceOpt *topcommon.SyncResourceOpt) error {
+	return topcommon.CreatePhysicalResourceWithOpt(ctx, resourceType, virtualObj, physicalName, physicalNamespace, r.PhysicalClient, r.Log, syncResourceOpt)
 }
 
 // generatePhysicalResourceName generates physical resource name using MD5 hash
@@ -1943,7 +1944,7 @@ func (r *VirtualPodReconciler) generatePhysicalResourceName(resourceName, resour
 }
 
 // updateVirtualResourceLabelsAndAnnotations updates virtual resource labels and annotations with physical name mapping
-func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx context.Context, obj client.Object, physicalName, physicalNamespace string, syncResourceOpt *SyncResourceOpt) error {
+func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx context.Context, obj client.Object, physicalName, physicalNamespace string, syncResourceOpt *topcommon.SyncResourceOpt) error {
 	// Create logger with appropriate resource path
 	resourcePath := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 	logger := r.Log.WithValues("resourceKind", obj.GetObjectKind().GroupVersionKind().Kind, "resource", resourcePath)
@@ -1977,7 +1978,7 @@ func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx con
 	updatedObj.GetLabels()[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
 
 	// Add cluster-specific managed-by label
-	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 	updatedObj.GetLabels()[managedByClusterIDLabel] = "true"
 
 	if syncResourceOpt != nil && syncResourceOpt.IsPVRefSecret {
@@ -2009,13 +2010,13 @@ func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx con
 
 // hasSyncedResourceFinalizer checks if the resource has our finalizer
 func (r *VirtualPodReconciler) hasSyncedResourceFinalizer(obj client.Object) bool {
-	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.clusterID)
+	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.ClusterID)
 	return controllerutil.ContainsFinalizer(obj, clusterSpecificFinalizer)
 }
 
 // addSyncedResourceFinalizer adds our finalizer to the resource
 func (r *VirtualPodReconciler) addSyncedResourceFinalizer(obj client.Object) {
-	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.clusterID)
+	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.ClusterID)
 	controllerutil.AddFinalizer(obj, clusterSpecificFinalizer)
 }
 

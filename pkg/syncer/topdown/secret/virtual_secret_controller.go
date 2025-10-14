@@ -1,4 +1,4 @@
-package topdown
+package secret
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 )
 
 // VirtualSecretReconciler reconciles Secret objects from virtual cluster
@@ -26,7 +27,7 @@ type VirtualSecretReconciler struct {
 	Scheme            *runtime.Scheme
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
-	clusterID         string // Cached cluster ID for performance
+	ClusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -54,9 +55,9 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// 2.5. Check if secret belongs to this cluster
-	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 	if virtualSecret.Labels == nil || virtualSecret.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
-		logger.V(1).Info("Secret not managed by this cluster, skipping", "clusterID", r.clusterID)
+		logger.V(1).Info("Secret not managed by this cluster, skipping", "ClusterID", r.ClusterID)
 		return ctrl.Result{}, nil
 	}
 
@@ -94,7 +95,7 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// 5.5. Check if clusterbinding is being deleted (indicated by annotation)
-	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.clusterID)
+	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.ClusterID)
 	if virtualSecret.Annotations != nil && virtualSecret.Annotations[clusterBindingDeletingAnnotation] == r.ClusterBinding.Name {
 		logger.Info("ClusterBinding is being deleted, handling Secret deletion")
 		return r.handleVirtualSecretDeletion(ctx, virtualSecret, physicalNamespace, physicalName, physicalSecretExists, physicalSecret)
@@ -121,12 +122,12 @@ func (r *VirtualSecretReconciler) handleVirtualSecretDeletion(ctx context.Contex
 
 	if !physicalSecretExists {
 		logger.V(1).Info("Physical Secret doesn't exist, nothing to delete")
-		return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualSecret, r.VirtualClient, r.Log, r.clusterID)
+		return ctrl.Result{}, topcommon.RemoveSyncedResourceFinalizerAndLabels(ctx, virtualSecret, r.VirtualClient, r.Log, r.ClusterID)
 	}
 
 	// Use the common deletion function
-	err := DeletePhysicalResource(ctx, DeletePhysicalResourceParams{
-		ResourceType:      ResourceTypeSecret,
+	err := topcommon.DeletePhysicalResource(ctx, topcommon.DeletePhysicalResourceParams{
+		ResourceType:      topcommon.ResourceTypeSecret,
 		PhysicalName:      physicalName,
 		PhysicalNamespace: physicalNamespace,
 		PhysicalResource:  physicalSecret,
@@ -137,12 +138,12 @@ func (r *VirtualSecretReconciler) handleVirtualSecretDeletion(ctx context.Contex
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualSecret, r.VirtualClient, r.Log, r.clusterID)
+	return ctrl.Result{}, topcommon.RemoveSyncedResourceFinalizerAndLabels(ctx, virtualSecret, r.VirtualClient, r.Log, r.ClusterID)
 }
 
 // checkPhysicalSecretExists checks if physical secret exists using both cached and direct client
 func (r *VirtualSecretReconciler) checkPhysicalSecretExists(ctx context.Context, physicalNamespace, physicalName string) (bool, *corev1.Secret, error) {
-	exists, obj, err := CheckPhysicalResourceExists(ctx, ResourceTypeSecret, physicalName, physicalNamespace, &corev1.Secret{},
+	exists, obj, err := topcommon.CheckPhysicalResourceExists(ctx, topcommon.ResourceTypeSecret, physicalName, physicalNamespace, &corev1.Secret{},
 		r.PhysicalClient, r.PhysicalK8sClient, r.Log)
 
 	if err != nil {
@@ -165,7 +166,7 @@ func (r *VirtualSecretReconciler) checkPhysicalSecretExists(ctx context.Context,
 func (r *VirtualSecretReconciler) createPhysicalSecret(ctx context.Context, virtualSecret *corev1.Secret, physicalName string) (ctrl.Result, error) {
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
 
-	err := CreatePhysicalResource(ctx, ResourceTypeSecret, virtualSecret, physicalName, physicalNamespace, r.PhysicalClient, r.Log)
+	err := topcommon.CreatePhysicalResource(ctx, topcommon.ResourceTypeSecret, virtualSecret, physicalName, physicalNamespace, r.PhysicalClient, r.Log)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -190,8 +191,8 @@ func (r *VirtualSecretReconciler) updatePhysicalSecretIfNeeded(ctx context.Conte
 	updatedSecret.Data = virtualSecret.Data
 	updatedSecret.StringData = virtualSecret.StringData
 	updatedSecret.Type = virtualSecret.Type
-	updatedSecret.Labels = BuildPhysicalResourceLabels(virtualSecret)
-	updatedSecret.Annotations = BuildPhysicalResourceAnnotations(virtualSecret)
+	updatedSecret.Labels = topcommon.BuildPhysicalResourceLabels(virtualSecret)
+	updatedSecret.Annotations = topcommon.BuildPhysicalResourceAnnotations(virtualSecret)
 
 	err := r.PhysicalClient.Update(ctx, updatedSecret)
 	if err != nil {
@@ -222,7 +223,7 @@ func (r *VirtualSecretReconciler) validatePhysicalSecret(virtualSecret *corev1.S
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualSecretReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
 	// Cache cluster ID for performance
-	r.clusterID = r.ClusterBinding.Spec.ClusterID
+	r.ClusterID = r.ClusterBinding.Spec.ClusterID
 
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualsecret-%s", r.ClusterBinding.Name)
@@ -247,7 +248,7 @@ func (r *VirtualSecretReconciler) SetupWithManager(virtualManager, physicalManag
 			}
 
 			// Only sync secrets managed by this cluster
-			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+			managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 			return secret.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
 		})).
 		Complete(r)

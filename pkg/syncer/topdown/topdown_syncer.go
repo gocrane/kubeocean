@@ -18,6 +18,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/configmap"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/logconfig"
+	toppod "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/pod"
+	topproxier "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/proxier"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/pv"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/pvc"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/secret"
 	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/token"
 )
 
@@ -39,13 +46,13 @@ type TopDownSyncer struct {
 	prometheusVNodeBasePort int
 
 	// Controllers
-	virtualPodController       *VirtualPodReconciler
-	virtualConfigMapController *VirtualConfigMapReconciler
-	virtualSecretController    *VirtualSecretReconciler
-	virtualPVCController       *VirtualPVCReconciler
-	virtualPVController        *VirtualPVReconciler
-	virtualLogConfigController *VirtualLogConfigReconciler
-	proxierWatchController     *ProxierWatchController
+	virtualPodController       *toppod.VirtualPodReconciler
+	virtualConfigMapController *configmap.VirtualConfigMapReconciler
+	virtualSecretController    *secret.VirtualSecretReconciler
+	virtualPVCController       *pvc.VirtualPVCReconciler
+	virtualPVController        *pv.VirtualPVReconciler
+	virtualLogConfigController *logconfig.VirtualLogConfigReconciler
+	proxierWatchController     *topproxier.ProxierWatchController
 }
 
 // NewTopDownSyncer creates a new TopDownSyncer instance
@@ -120,13 +127,13 @@ func (tds *TopDownSyncer) setupControllers() error {
 	}
 
 	// Setup Virtual Pod Controller
-	tds.virtualPodController = &VirtualPodReconciler{
+	tds.virtualPodController = &toppod.VirtualPodReconciler{
 		VirtualClient:     tds.virtualManager.GetClient(),
 		PhysicalClient:    tds.physicalManager.GetClient(),
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
-		clusterID:         tds.ClusterBinding.Spec.ClusterID,
+		ClusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-pod-controller"),
 		TokenManager:      token.NewManager(virtualK8sClient, tds.Log.WithName("token-manager")),
 	}
@@ -136,13 +143,13 @@ func (tds *TopDownSyncer) setupControllers() error {
 	}
 
 	// Setup Virtual ConfigMap Controller
-	tds.virtualConfigMapController = &VirtualConfigMapReconciler{
+	tds.virtualConfigMapController = &configmap.VirtualConfigMapReconciler{
 		VirtualClient:     tds.virtualManager.GetClient(),
 		PhysicalClient:    tds.physicalManager.GetClient(),
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
-		clusterID:         tds.ClusterBinding.Spec.ClusterID,
+		ClusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-configmap-controller"),
 	}
 
@@ -151,13 +158,13 @@ func (tds *TopDownSyncer) setupControllers() error {
 	}
 
 	// Setup Virtual Secret Controller
-	tds.virtualSecretController = &VirtualSecretReconciler{
+	tds.virtualSecretController = &secret.VirtualSecretReconciler{
 		VirtualClient:     tds.virtualManager.GetClient(),
 		PhysicalClient:    tds.physicalManager.GetClient(),
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
-		clusterID:         tds.ClusterBinding.Spec.ClusterID,
+		ClusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-secret-controller"),
 	}
 
@@ -166,13 +173,13 @@ func (tds *TopDownSyncer) setupControllers() error {
 	}
 
 	// Setup Virtual PVC Controller
-	tds.virtualPVCController = &VirtualPVCReconciler{
+	tds.virtualPVCController = &pvc.VirtualPVCReconciler{
 		VirtualClient:     tds.virtualManager.GetClient(),
 		PhysicalClient:    tds.physicalManager.GetClient(),
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
-		clusterID:         tds.ClusterBinding.Spec.ClusterID,
+		ClusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-pvc-controller"),
 	}
 
@@ -181,13 +188,13 @@ func (tds *TopDownSyncer) setupControllers() error {
 	}
 
 	// Setup Virtual PV Controller
-	tds.virtualPVController = &VirtualPVReconciler{
+	tds.virtualPVController = &pv.VirtualPVReconciler{
 		VirtualClient:     tds.virtualManager.GetClient(),
 		PhysicalClient:    tds.physicalManager.GetClient(),
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
-		clusterID:         tds.ClusterBinding.Spec.ClusterID,
+		ClusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-pv-controller"),
 	}
 
@@ -196,13 +203,13 @@ func (tds *TopDownSyncer) setupControllers() error {
 	}
 
 	// Setup Virtual LogConfig Controller
-	tds.virtualLogConfigController = &VirtualLogConfigReconciler{
+	tds.virtualLogConfigController = &logconfig.VirtualLogConfigReconciler{
 		VirtualClient:     tds.virtualManager.GetClient(),
 		PhysicalClient:    tds.physicalManager.GetClient(),
 		PhysicalK8sClient: physicalK8sClient,
 		Scheme:            tds.Scheme,
 		ClusterBinding:    tds.ClusterBinding,
-		clusterID:         tds.ClusterBinding.Spec.ClusterID,
+		ClusterID:         tds.ClusterBinding.Spec.ClusterID,
 		Log:               tds.Log.WithName("virtual-logconfig-controller"),
 	}
 
@@ -211,7 +218,7 @@ func (tds *TopDownSyncer) setupControllers() error {
 	}
 
 	// Setup Proxier Watch Controller
-	tds.proxierWatchController = NewProxierWatchController(
+	tds.proxierWatchController = topproxier.NewProxierWatchController(
 		tds.virtualManager.GetClient(),
 		tds.Scheme,
 		tds.Log.WithName("proxier-watch-controller"),

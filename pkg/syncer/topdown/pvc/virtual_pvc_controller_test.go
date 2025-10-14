@@ -1,4 +1,4 @@
-package topdown
+package pvc
 
 import (
 	"context"
@@ -17,10 +17,11 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 )
 
 func TestVirtualPVCReconciler_Reconcile(t *testing.T) {
-	// Helper function to add clusterID label to virtual PVC
+	// Helper function to add ClusterID label to virtual PVC
 	addClusterIDLabel := func(pvc *corev1.PersistentVolumeClaim) {
 		if pvc != nil && pvc.Labels != nil {
 			pvc.Labels["kubeocean.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
@@ -207,7 +208,7 @@ func TestVirtualPVCReconciler_Reconcile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Add clusterID label to virtual PVC if it exists and has managed-by label
+			// Add ClusterID label to virtual PVC if it exists and has managed-by label
 			if tt.virtualPVC != nil && tt.virtualPVC.Labels != nil &&
 				tt.virtualPVC.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
 				addClusterIDLabel(tt.virtualPVC)
@@ -248,8 +249,8 @@ func TestVirtualPVCReconciler_Reconcile(t *testing.T) {
 				ClusterBinding:    tt.clusterBinding,
 				Log:               ctrl.Log.WithName("test"),
 			}
-			// Set clusterID manually for testing
-			reconciler.clusterID = tt.clusterBinding.Spec.ClusterID
+			// Set ClusterID manually for testing
+			reconciler.ClusterID = tt.clusterBinding.Spec.ClusterID
 
 			// Create request
 			req := ctrl.Request{
@@ -498,7 +499,7 @@ func TestVirtualPVCReconciler_SetupWithManager(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestVirtualPVCReconciler_ClusterIDFunctionality tests clusterID related functionality
+// TestVirtualPVCReconciler_ClusterIDFunctionality tests ClusterID related functionality
 func TestVirtualPVCReconciler_ClusterIDFunctionality(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -514,7 +515,7 @@ func TestVirtualPVCReconciler_ClusterIDFunctionality(t *testing.T) {
 		},
 	}
 
-	t.Run("clusterID caching", func(t *testing.T) {
+	t.Run("ClusterID caching", func(t *testing.T) {
 		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -525,14 +526,14 @@ func TestVirtualPVCReconciler_ClusterIDFunctionality(t *testing.T) {
 			Log:            ctrl.Log.WithName("test"),
 		}
 
-		// Set clusterID directly for testing
-		reconciler.clusterID = clusterBinding.Spec.ClusterID
+		// Set ClusterID directly for testing
+		reconciler.ClusterID = clusterBinding.Spec.ClusterID
 
-		// Verify clusterID is cached
-		assert.Equal(t, "test-cluster-id", reconciler.clusterID)
+		// Verify ClusterID is cached
+		assert.Equal(t, "test-cluster-id", reconciler.ClusterID)
 	})
 
-	t.Run("removeSyncedResourceFinalizer with clusterID", func(t *testing.T) {
+	t.Run("removeSyncedResourceFinalizer with ClusterID", func(t *testing.T) {
 		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -541,7 +542,7 @@ func TestVirtualPVCReconciler_ClusterIDFunctionality(t *testing.T) {
 			PhysicalClient: physicalClient,
 			ClusterBinding: clusterBinding,
 			Log:            ctrl.Log.WithName("test"),
-			clusterID:      "test-cluster-id",
+			ClusterID:      "test-cluster-id",
 		}
 
 		virtualPVC := &corev1.PersistentVolumeClaim{
@@ -559,13 +560,13 @@ func TestVirtualPVCReconciler_ClusterIDFunctionality(t *testing.T) {
 		err := virtualClient.Create(context.Background(), virtualPVC)
 		require.NoError(t, err)
 
-		// Test removing the clusterID finalizer
-		err = RemoveSyncedResourceFinalizerAndLabels(context.Background(), virtualPVC, virtualClient, reconciler.Log, reconciler.clusterID)
+		// Test removing the ClusterID finalizer
+		err = topcommon.RemoveSyncedResourceFinalizerAndLabels(context.Background(), virtualPVC, virtualClient, reconciler.Log, reconciler.ClusterID)
 		result := ctrl.Result{}
 		require.NoError(t, err)
 		assert.Equal(t, ctrl.Result{}, result)
 
-		// Verify the clusterID finalizer is removed but other finalizer remains
+		// Verify the ClusterID finalizer is removed but other finalizer remains
 		updatedPVC := &corev1.PersistentVolumeClaim{}
 		err = virtualClient.Get(context.Background(), types.NamespacedName{Name: "test-pvc", Namespace: "test-ns"}, updatedPVC)
 		require.NoError(t, err)

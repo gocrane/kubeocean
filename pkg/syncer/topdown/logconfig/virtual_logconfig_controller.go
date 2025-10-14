@@ -1,4 +1,4 @@
-package topdown
+package logconfig
 
 import (
 	"context"
@@ -21,6 +21,7 @@ import (
 
 	clsv1 "github.com/TKEColocation/kubeocean/api/cls/v1"
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 )
 
 const (
@@ -41,7 +42,7 @@ type VirtualLogConfigReconciler struct {
 	Scheme            *runtime.Scheme
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
-	clusterID         string // Cached cluster ID for performance
+	ClusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=cls.cloud.tencent.com,resources=logconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -140,7 +141,7 @@ func (r *VirtualLogConfigReconciler) handleVirtualLogConfigDeletion(ctx context.
 	logger.Info("Deleted physical LogConfigs during virtual LogConfig deletion", "deletedCount", deletedCount)
 
 	// Remove the finalizer
-	return ctrl.Result{}, RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualLogConfig, r.VirtualClient, r.Log, r.clusterID)
+	return ctrl.Result{}, topcommon.RemoveSyncedResourceFinalizerWithClusterID(ctx, virtualLogConfig, r.VirtualClient, r.Log, r.ClusterID)
 }
 
 // reconcilePhysicalLogConfigs handles LogConfig synchronization with unified approach
@@ -328,13 +329,13 @@ func (r *VirtualLogConfigReconciler) generateSafePhysicalName(virtualName string
 
 // hasSyncedResourceFinalizer checks if the LogConfig has our finalizer
 func (r *VirtualLogConfigReconciler) hasSyncedResourceFinalizer(obj client.Object) bool {
-	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.clusterID)
+	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.ClusterID)
 	return controllerutil.ContainsFinalizer(obj, clusterSpecificFinalizer)
 }
 
 // addSyncedResourceFinalizer adds our finalizer to the LogConfig
 func (r *VirtualLogConfigReconciler) addSyncedResourceFinalizer(ctx context.Context, obj client.Object) error {
-	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.clusterID)
+	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.ClusterID)
 
 	if controllerutil.ContainsFinalizer(obj, clusterSpecificFinalizer) {
 		return nil // Already has the finalizer
@@ -424,14 +425,14 @@ func (r *VirtualLogConfigReconciler) isLogConfigManagedByThisCluster(logConfig *
 	}
 
 	// Check if managed by this specific cluster
-	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 	return logConfig.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
 }
 
 // isManagedLabel checks if a label is managed by Kubeocean
 func (r *VirtualLogConfigReconciler) isManagedLabel(key string) bool {
 	managedLabels := []string{
-		GetManagedByClusterIDLabel(r.clusterID),
+		topcommon.GetManagedByClusterIDLabel(r.ClusterID),
 		cloudv1beta1.LabelVirtualNamespace,
 	}
 
@@ -461,7 +462,7 @@ func (r *VirtualLogConfigReconciler) isManagedAnnotation(key string) bool {
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualLogConfigReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
 	// Cache cluster ID for performance
-	r.clusterID = r.ClusterBinding.Spec.ClusterID
+	r.ClusterID = r.ClusterBinding.Spec.ClusterID
 
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtuallogconfig-%s", r.ClusterBinding.Name)
@@ -819,9 +820,9 @@ func (r *VirtualLogConfigReconciler) generateSinglePhysicalLogConfig(virtualLogC
 		ObjectMeta: metav1.ObjectMeta{
 			Name: physicalName,
 			Labels: map[string]string{
-				GetManagedByClusterIDLabel(r.clusterID): cloudv1beta1.LabelValueTrue,
-				cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-				"kubeocean.io/virtual-logconfig":        virtualLogConfig.Name, // Add this label for unified discovery           // Mark as single strategy
+				topcommon.GetManagedByClusterIDLabel(r.ClusterID): cloudv1beta1.LabelValueTrue,
+				cloudv1beta1.LabelManagedBy:                       cloudv1beta1.LabelManagedByValue,
+				"kubeocean.io/virtual-logconfig":                  virtualLogConfig.Name, // Add this label for unified discovery           // Mark as single strategy
 			},
 			Annotations: map[string]string{
 				cloudv1beta1.AnnotationVirtualName: virtualLogConfig.Name,
@@ -842,9 +843,9 @@ func (r *VirtualLogConfigReconciler) findAllRelatedPhysicalLogConfigs(ctx contex
 	// Use label selector to find all related physical LogConfigs
 	logConfigList := &clsv1.LogConfigList{}
 	err := r.PhysicalClient.List(ctx, logConfigList, client.MatchingLabels{
-		"kubeocean.io/virtual-logconfig":        virtualLogConfigName,
-		GetManagedByClusterIDLabel(r.clusterID): cloudv1beta1.LabelValueTrue,
-		cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
+		"kubeocean.io/virtual-logconfig":                  virtualLogConfigName,
+		topcommon.GetManagedByClusterIDLabel(r.ClusterID): cloudv1beta1.LabelValueTrue,
+		cloudv1beta1.LabelManagedBy:                       cloudv1beta1.LabelManagedByValue,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list related physical LogConfigs: %w", err)
@@ -889,9 +890,9 @@ func (r *VirtualLogConfigReconciler) generateMultiplePhysicalLogConfigs(virtualL
 			ObjectMeta: metav1.ObjectMeta{
 				Name: physicalName,
 				Labels: map[string]string{
-					GetManagedByClusterIDLabel(r.clusterID): cloudv1beta1.LabelValueTrue,
-					cloudv1beta1.LabelManagedBy:             cloudv1beta1.LabelManagedByValue,
-					"kubeocean.io/virtual-logconfig":        virtualLogConfig.Name,
+					topcommon.GetManagedByClusterIDLabel(r.ClusterID): cloudv1beta1.LabelValueTrue,
+					cloudv1beta1.LabelManagedBy:                       cloudv1beta1.LabelManagedByValue,
+					"kubeocean.io/virtual-logconfig":                  virtualLogConfig.Name,
 				},
 				Annotations: map[string]string{
 					cloudv1beta1.AnnotationVirtualName: virtualLogConfig.Name,

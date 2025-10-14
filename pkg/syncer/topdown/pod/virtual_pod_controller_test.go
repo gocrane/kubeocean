@@ -1,4 +1,4 @@
-package topdown
+package toppod
 
 import (
 	"context"
@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 	"github.com/TKEColocation/kubeocean/pkg/utils"
 	authenticationv1 "k8s.io/api/authentication/v1"
 )
@@ -79,13 +80,13 @@ func (m *MockTokenManager) requiresRefresh(ctx context.Context, tr *authenticati
 }
 
 // createTestVirtualNode creates a virtual node for testing
-func createTestVirtualNode(name, clusterName, clusterID, physicalNodeName string) *corev1.Node {
+func createTestVirtualNode(name, clusterName, ClusterID, physicalNodeName string) *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 			Labels: map[string]string{
 				cloudv1beta1.LabelManagedBy:         "kubeocean",
-				cloudv1beta1.LabelPhysicalClusterID: clusterID,
+				cloudv1beta1.LabelPhysicalClusterID: ClusterID,
 				cloudv1beta1.LabelPhysicalNodeName:  physicalNodeName,
 			},
 			Annotations: map[string]string{
@@ -2674,16 +2675,16 @@ func TestVirtualPodReconciler_syncResource(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		resourceType    ResourceType
+		resourceType    topcommon.ResourceType
 		virtualObj      client.Object
-		syncResourceOpt *SyncResourceOpt
+		syncResourceOpt *topcommon.SyncResourceOpt
 		setupClient     func() client.Client
 		expectedError   bool
 		validateFunc    func(t *testing.T, physicalClient client.Client, physicalName string)
 	}{
 		{
 			name:         "should sync ConfigMap with nil options",
-			resourceType: ResourceTypeConfigMap,
+			resourceType: topcommon.ResourceTypeConfigMap,
 			virtualObj: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
@@ -2711,7 +2712,7 @@ func TestVirtualPodReconciler_syncResource(t *testing.T) {
 		},
 		{
 			name:         "should sync Secret with PV reference label",
-			resourceType: ResourceTypeSecret,
+			resourceType: topcommon.ResourceTypeSecret,
 			virtualObj: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-secret",
@@ -2722,7 +2723,7 @@ func TestVirtualPodReconciler_syncResource(t *testing.T) {
 					"key1": []byte("value1"),
 				},
 			},
-			syncResourceOpt: &SyncResourceOpt{
+			syncResourceOpt: &topcommon.SyncResourceOpt{
 				IsPVRefSecret: true,
 			},
 			setupClient: func() client.Client {
@@ -2752,7 +2753,7 @@ func TestVirtualPodReconciler_syncResource(t *testing.T) {
 		},
 		{
 			name:         "should sync PVC with PV name",
-			resourceType: ResourceTypePVC,
+			resourceType: topcommon.ResourceTypePVC,
 			virtualObj: &corev1.PersistentVolumeClaim{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-pvc",
@@ -2769,7 +2770,7 @@ func TestVirtualPodReconciler_syncResource(t *testing.T) {
 					},
 				},
 			},
-			syncResourceOpt: &SyncResourceOpt{
+			syncResourceOpt: &topcommon.SyncResourceOpt{
 				PhysicalPVName: "test-pv-name",
 			},
 			setupClient: func() client.Client {
@@ -2789,7 +2790,7 @@ func TestVirtualPodReconciler_syncResource(t *testing.T) {
 		},
 		{
 			name:         "should sync PV with CSI secret reference",
-			resourceType: ResourceTypePV,
+			resourceType: topcommon.ResourceTypePV,
 			virtualObj: &corev1.PersistentVolume{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-pv",
@@ -2812,7 +2813,7 @@ func TestVirtualPodReconciler_syncResource(t *testing.T) {
 					},
 				},
 			},
-			syncResourceOpt: &SyncResourceOpt{
+			syncResourceOpt: &topcommon.SyncResourceOpt{
 				PhysicalPVRefSecretName: "physical-secret-name",
 			},
 			setupClient: func() client.Client {
@@ -3497,7 +3498,7 @@ func TestVirtualPodReconciler_forceDeleteVirtualPod_ErrorCases(t *testing.T) {
 	}
 }
 
-// TestVirtualPodReconciler_ClusterIDFunctionality tests clusterID related functionality
+// TestVirtualPodReconciler_ClusterIDFunctionality tests ClusterID related functionality
 func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -3513,7 +3514,7 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 		},
 	}
 
-	t.Run("clusterID caching", func(t *testing.T) {
+	t.Run("ClusterID caching", func(t *testing.T) {
 		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -3525,14 +3526,14 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 			workQueue:      workqueue.NewTypedRateLimitingQueue[reconcile.Request](workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]()),
 		}
 
-		// Set clusterID directly for testing
-		reconciler.clusterID = clusterBinding.Spec.ClusterID
+		// Set ClusterID directly for testing
+		reconciler.ClusterID = clusterBinding.Spec.ClusterID
 
-		// Verify clusterID is cached
-		assert.Equal(t, "test-cluster-id", reconciler.clusterID)
+		// Verify ClusterID is cached
+		assert.Equal(t, "test-cluster-id", reconciler.ClusterID)
 	})
 
-	t.Run("clusterID label and finalizer", func(t *testing.T) {
+	t.Run("ClusterID label and finalizer", func(t *testing.T) {
 		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -3542,7 +3543,7 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 			ClusterBinding: clusterBinding,
 			Log:            ctrl.Log.WithName("test"),
 			workQueue:      workqueue.NewTypedRateLimitingQueue[reconcile.Request](workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]()),
-			clusterID:      "test-cluster-id", // Set clusterID directly for testing
+			ClusterID:      "test-cluster-id", // Set ClusterID directly for testing
 		}
 
 		virtualPod := &corev1.Pod{
@@ -3557,7 +3558,7 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 		err := virtualClient.Create(context.Background(), virtualPod)
 		require.NoError(t, err)
 
-		// Test updateVirtualResourceLabelsAndAnnotations adds clusterID label
+		// Test updateVirtualResourceLabelsAndAnnotations adds ClusterID label
 		err = reconciler.updateVirtualResourceLabelsAndAnnotations(context.Background(), virtualPod, "physical-pod", "physical-ns", nil)
 		require.NoError(t, err)
 
@@ -3570,7 +3571,7 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 		assert.Equal(t, cloudv1beta1.LabelValueTrue, updatedPod.Labels[expectedClusterIDLabel])
 		assert.Equal(t, cloudv1beta1.LabelManagedByValue, updatedPod.Labels[cloudv1beta1.LabelManagedBy])
 
-		// Test clusterID finalizer methods
+		// Test ClusterID finalizer methods
 		assert.False(t, reconciler.hasSyncedResourceFinalizer(virtualPod))
 
 		reconciler.addSyncedResourceFinalizer(virtualPod)
@@ -3733,7 +3734,7 @@ func TestVirtualPodReconciler_CleanupServiceAccountToken(t *testing.T) {
 				PhysicalClient: physicalClient,
 				ClusterBinding: clusterBinding,
 				Log:            ctrl.Log.WithName("test"),
-				clusterID:      "test-cluster-id",
+				ClusterID:      "test-cluster-id",
 				TokenManager:   mockTokenManager,
 			}
 
@@ -3989,7 +3990,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 				PhysicalClient: physicalClient,
 				ClusterBinding: clusterBinding,
 				Log:            ctrl.Log.WithName("test"),
-				clusterID:      "test-cluster-id",
+				ClusterID:      "test-cluster-id",
 				TokenManager:   mockTokenManager,
 			}
 
@@ -4636,7 +4637,7 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithProjectedVolumes(t *testin
 				PhysicalClient: physicalClient,
 				ClusterBinding: clusterBinding,
 				Log:            ctrl.Log.WithName("test"),
-				clusterID:      "test-cluster-id",
+				ClusterID:      "test-cluster-id",
 			}
 
 			// Call the function
@@ -5658,7 +5659,7 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 		virtualPod          *corev1.Pod
 		physicalName        string
 		physicalNamespace   string
-		syncResourceOpt     *SyncResourceOpt
+		syncResourceOpt     *topcommon.SyncResourceOpt
 		expectedLabels      map[string]string
 		expectedAnnotations map[string]string
 		expectError         bool
@@ -5724,7 +5725,7 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 			},
 			physicalName:      "physical-pod",
 			physicalNamespace: "physical-ns",
-			syncResourceOpt: &SyncResourceOpt{
+			syncResourceOpt: &topcommon.SyncResourceOpt{
 				IsPVRefSecret: true,
 			},
 			expectedLabels: map[string]string{
@@ -5796,7 +5797,7 @@ func TestVirtualPodReconciler_UpdateVirtualResourceLabelsAndAnnotations(t *testi
 				PhysicalClient: physicalClient,
 				ClusterBinding: clusterBinding,
 				Log:            ctrl.Log.WithName("test"),
-				clusterID:      "test-cluster-id",
+				ClusterID:      "test-cluster-id",
 			}
 
 			// Add the pod to the client

@@ -1,4 +1,4 @@
-package topdown
+package configmap
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 )
 
 // VirtualConfigMapReconciler reconciles ConfigMap objects from virtual cluster
@@ -26,7 +27,7 @@ type VirtualConfigMapReconciler struct {
 	Scheme            *runtime.Scheme
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
-	clusterID         string // Cached cluster ID for performance
+	ClusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
@@ -54,9 +55,9 @@ func (r *VirtualConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// 2.5. Check if configmap belongs to this cluster
-	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
-		logger.V(1).Info("ConfigMap not managed by this cluster, skipping", "clusterID", r.clusterID)
+		logger.V(1).Info("ConfigMap not managed by this cluster, skipping", "ClusterID", r.ClusterID)
 		return ctrl.Result{}, nil
 	}
 
@@ -89,7 +90,7 @@ func (r *VirtualConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// 5.5. Check if clusterbinding is being deleted (indicated by annotation)
-	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.clusterID)
+	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.ClusterID)
 	if virtualConfigMap.Annotations != nil && virtualConfigMap.Annotations[clusterBindingDeletingAnnotation] == r.ClusterBinding.Name {
 		logger.Info("ClusterBinding is being deleted, handling ConfigMap deletion")
 		return r.handleVirtualConfigMapDeletion(ctx, virtualConfigMap, physicalName, physicalConfigMapExists, physicalConfigMap)
@@ -112,13 +113,13 @@ func (r *VirtualConfigMapReconciler) handleVirtualConfigMapDeletion(ctx context.
 
 	if !physicalConfigMapExists {
 		logger.V(1).Info("Physical ConfigMap doesn't exist, nothing to delete")
-		return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualConfigMap, r.VirtualClient, r.Log, r.clusterID)
+		return ctrl.Result{}, topcommon.RemoveSyncedResourceFinalizerAndLabels(ctx, virtualConfigMap, r.VirtualClient, r.Log, r.ClusterID)
 	}
 
 	// Use the common deletion function
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
-	err := DeletePhysicalResource(ctx, DeletePhysicalResourceParams{
-		ResourceType:      ResourceTypeConfigMap,
+	err := topcommon.DeletePhysicalResource(ctx, topcommon.DeletePhysicalResourceParams{
+		ResourceType:      topcommon.ResourceTypeConfigMap,
 		PhysicalName:      physicalName,
 		PhysicalNamespace: physicalNamespace,
 		PhysicalResource:  physicalConfigMap,
@@ -129,14 +130,14 @@ func (r *VirtualConfigMapReconciler) handleVirtualConfigMapDeletion(ctx context.
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualConfigMap, r.VirtualClient, r.Log, r.clusterID)
+	return ctrl.Result{}, topcommon.RemoveSyncedResourceFinalizerAndLabels(ctx, virtualConfigMap, r.VirtualClient, r.Log, r.ClusterID)
 }
 
 // checkPhysicalConfigMapExists checks if physical configmap exists using both cached and direct client
 func (r *VirtualConfigMapReconciler) checkPhysicalConfigMapExists(ctx context.Context, physicalName string) (bool, *corev1.ConfigMap, error) {
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
 
-	exists, obj, err := CheckPhysicalResourceExists(ctx, ResourceTypeConfigMap, physicalName, physicalNamespace, &corev1.ConfigMap{},
+	exists, obj, err := topcommon.CheckPhysicalResourceExists(ctx, topcommon.ResourceTypeConfigMap, physicalName, physicalNamespace, &corev1.ConfigMap{},
 		r.PhysicalClient, r.PhysicalK8sClient, r.Log)
 
 	if err != nil {
@@ -159,7 +160,7 @@ func (r *VirtualConfigMapReconciler) checkPhysicalConfigMapExists(ctx context.Co
 func (r *VirtualConfigMapReconciler) createPhysicalConfigMap(ctx context.Context, virtualConfigMap *corev1.ConfigMap, physicalName string) (ctrl.Result, error) {
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
 
-	err := CreatePhysicalResource(ctx, ResourceTypeConfigMap, virtualConfigMap, physicalName, physicalNamespace, r.PhysicalClient, r.Log)
+	err := topcommon.CreatePhysicalResource(ctx, topcommon.ResourceTypeConfigMap, virtualConfigMap, physicalName, physicalNamespace, r.PhysicalClient, r.Log)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -182,8 +183,8 @@ func (r *VirtualConfigMapReconciler) updatePhysicalConfigMapIfNeeded(ctx context
 	updatedConfigMap := physicalConfigMap.DeepCopy()
 	updatedConfigMap.Data = virtualConfigMap.Data
 	updatedConfigMap.BinaryData = virtualConfigMap.BinaryData
-	updatedConfigMap.Labels = BuildPhysicalResourceLabels(virtualConfigMap)
-	updatedConfigMap.Annotations = BuildPhysicalResourceAnnotations(virtualConfigMap)
+	updatedConfigMap.Labels = topcommon.BuildPhysicalResourceLabels(virtualConfigMap)
+	updatedConfigMap.Annotations = topcommon.BuildPhysicalResourceAnnotations(virtualConfigMap)
 
 	err := r.PhysicalClient.Update(ctx, updatedConfigMap)
 	if err != nil {
@@ -214,7 +215,7 @@ func (r *VirtualConfigMapReconciler) validatePhysicalConfigMap(virtualConfigMap 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualConfigMapReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
 	// Cache cluster ID for performance
-	r.clusterID = r.ClusterBinding.Spec.ClusterID
+	r.ClusterID = r.ClusterBinding.Spec.ClusterID
 
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualconfigmap-%s", r.ClusterBinding.Name)
@@ -239,7 +240,7 @@ func (r *VirtualConfigMapReconciler) SetupWithManager(virtualManager, physicalMa
 			}
 
 			// Only sync configmaps managed by this cluster
-			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+			managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 			return configMap.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
 		})).
 		Complete(r)

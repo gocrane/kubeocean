@@ -17,13 +17,14 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	toppod "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/pod"
 )
 
 // TestVirtualPodReconciler_Integration tests the VirtualPodReconciler integration
 func TestVirtualPodReconciler_Integration(t *testing.T) {
 	tests := []struct {
 		name string
-		test func(t *testing.T, reconciler *VirtualPodReconciler, virtualClient, physicalClient client.Client)
+		test func(t *testing.T, reconciler *toppod.VirtualPodReconciler, virtualClient, physicalClient client.Client)
 	}{
 		{
 			name: "VirtualPodReconciler handles virtual pod creation",
@@ -88,7 +89,7 @@ func TestVirtualPodReconciler_Integration(t *testing.T) {
 			}
 
 			// Create reconciler directly
-			reconciler := &VirtualPodReconciler{
+			reconciler := &toppod.VirtualPodReconciler{
 				VirtualClient:     virtualClient,
 				PhysicalClient:    physicalClient,
 				PhysicalK8sClient: fake.NewSimpleClientset(),
@@ -103,7 +104,7 @@ func TestVirtualPodReconciler_Integration(t *testing.T) {
 	}
 }
 
-func testVirtualPodCreationIntegration(t *testing.T, reconciler *VirtualPodReconciler, virtualClient, physicalClient client.Client) {
+func testVirtualPodCreationIntegration(t *testing.T, reconciler *toppod.VirtualPodReconciler, virtualClient, physicalClient client.Client) {
 	ctx := context.Background()
 
 	// Create a virtual pod
@@ -162,7 +163,7 @@ func testVirtualPodCreationIntegration(t *testing.T, reconciler *VirtualPodRecon
 	// Note: Physical pod verification skipped due to Status().Update() behavior in tests
 }
 
-func testVirtualPodDeletionIntegration(t *testing.T, reconciler *VirtualPodReconciler, virtualClient, physicalClient client.Client) {
+func testVirtualPodDeletionIntegration(t *testing.T, reconciler *toppod.VirtualPodReconciler, virtualClient, physicalClient client.Client) {
 	ctx := context.Background()
 
 	// Create a virtual pod with complete mapping
@@ -242,7 +243,7 @@ func testVirtualPodDeletionIntegration(t *testing.T, reconciler *VirtualPodRecon
 	assert.True(t, client.IgnoreNotFound(err) == nil)
 }
 
-func testMissingPhysicalPodIntegration(t *testing.T, reconciler *VirtualPodReconciler, virtualClient, physicalClient client.Client) {
+func testMissingPhysicalPodIntegration(t *testing.T, reconciler *toppod.VirtualPodReconciler, virtualClient, physicalClient client.Client) {
 	ctx := context.Background()
 
 	// Create a virtual pod with complete mapping but no physical pod
@@ -294,7 +295,7 @@ func testMissingPhysicalPodIntegration(t *testing.T, reconciler *VirtualPodRecon
 	assert.Contains(t, virtualPod.Status.Message, "Physical pod was deleted unexpectedly")
 }
 
-func testPodMappingGenerationIntegration(t *testing.T, reconciler *VirtualPodReconciler, virtualClient, physicalClient client.Client) {
+func testPodMappingGenerationIntegration(t *testing.T, reconciler *toppod.VirtualPodReconciler, virtualClient, physicalClient client.Client) {
 	ctx := context.Background()
 
 	// Create a virtual pod without any annotations
@@ -342,7 +343,7 @@ func testPodMappingGenerationIntegration(t *testing.T, reconciler *VirtualPodRec
 	// Note: Since we use Status().Update(), annotations won't be updated in fake client
 }
 
-func testCompleteWorkflowIntegration(t *testing.T, reconciler *VirtualPodReconciler, virtualClient, physicalClient client.Client) {
+func testCompleteWorkflowIntegration(t *testing.T, reconciler *toppod.VirtualPodReconciler, virtualClient, physicalClient client.Client) {
 	ctx := context.Background()
 
 	// Create a virtual pod
@@ -435,7 +436,7 @@ func BenchmarkVirtualPodReconciler_CompleteFlow(b *testing.B) {
 			},
 		}
 
-		reconciler := &VirtualPodReconciler{
+		reconciler := &toppod.VirtualPodReconciler{
 			VirtualClient:     virtualClient,
 			PhysicalClient:    physicalClient,
 			PhysicalK8sClient: fake.NewSimpleClientset(),

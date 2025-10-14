@@ -1,4 +1,4 @@
-package topdown
+package pvc
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
 )
 
 // VirtualPVCReconciler reconciles PersistentVolumeClaim objects from virtual cluster
@@ -25,7 +26,7 @@ type VirtualPVCReconciler struct {
 	Scheme            *runtime.Scheme
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
-	clusterID         string // Cached cluster ID for performance
+	ClusterID         string // Cached cluster ID for performance
 }
 
 //+kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
@@ -53,9 +54,9 @@ func (r *VirtualPVCReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// 2.5. Check if PVC belongs to this cluster
-	managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 	if virtualPVC.Labels == nil || virtualPVC.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
-		logger.V(1).Info("PVC not managed by this cluster, skipping", "clusterID", r.clusterID)
+		logger.V(1).Info("PVC not managed by this cluster, skipping", "ClusterID", r.ClusterID)
 		return ctrl.Result{}, nil
 	}
 
@@ -88,7 +89,7 @@ func (r *VirtualPVCReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// 5.5. Check if clusterbinding is being deleted (indicated by annotation)
-	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.clusterID)
+	clusterBindingDeletingAnnotation := cloudv1beta1.GetClusterBindingDeletingAnnotation(r.ClusterID)
 	if virtualPVC.Annotations != nil && virtualPVC.Annotations[clusterBindingDeletingAnnotation] == r.ClusterBinding.Name {
 		logger.Info("ClusterBinding is being deleted, handling PVC deletion")
 		return r.handleVirtualPVCDeletion(ctx, virtualPVC, physicalName, physicalPVCExists, physicalPVC)
@@ -111,13 +112,13 @@ func (r *VirtualPVCReconciler) handleVirtualPVCDeletion(ctx context.Context, vir
 
 	if !physicalPVCExists {
 		logger.V(1).Info("Physical PVC doesn't exist, nothing to delete")
-		return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPVC, r.VirtualClient, r.Log, r.clusterID)
+		return ctrl.Result{}, topcommon.RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPVC, r.VirtualClient, r.Log, r.ClusterID)
 	}
 
 	// Use the common deletion function
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
-	err := DeletePhysicalResource(ctx, DeletePhysicalResourceParams{
-		ResourceType:      ResourceTypePVC,
+	err := topcommon.DeletePhysicalResource(ctx, topcommon.DeletePhysicalResourceParams{
+		ResourceType:      topcommon.ResourceTypePVC,
 		PhysicalName:      physicalName,
 		PhysicalNamespace: physicalNamespace,
 		PhysicalResource:  physicalPVC,
@@ -128,14 +129,14 @@ func (r *VirtualPVCReconciler) handleVirtualPVCDeletion(ctx context.Context, vir
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPVC, r.VirtualClient, r.Log, r.clusterID)
+	return ctrl.Result{}, topcommon.RemoveSyncedResourceFinalizerAndLabels(ctx, virtualPVC, r.VirtualClient, r.Log, r.ClusterID)
 }
 
 // checkPhysicalPVCExists checks if physical PVC exists using both cached and direct client
 func (r *VirtualPVCReconciler) checkPhysicalPVCExists(ctx context.Context, physicalName string) (bool, *corev1.PersistentVolumeClaim, error) {
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
 
-	exists, obj, err := CheckPhysicalResourceExists(ctx, ResourceTypePVC, physicalName, physicalNamespace, &corev1.PersistentVolumeClaim{},
+	exists, obj, err := topcommon.CheckPhysicalResourceExists(ctx, topcommon.ResourceTypePVC, physicalName, physicalNamespace, &corev1.PersistentVolumeClaim{},
 		r.PhysicalClient, r.PhysicalK8sClient, r.Log)
 
 	if err != nil {
@@ -157,7 +158,7 @@ func (r *VirtualPVCReconciler) checkPhysicalPVCExists(ctx context.Context, physi
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualPVCReconciler) SetupWithManager(virtualManager, physicalManager ctrl.Manager) error {
 	// Cache cluster ID for performance
-	r.clusterID = r.ClusterBinding.Spec.ClusterID
+	r.ClusterID = r.ClusterBinding.Spec.ClusterID
 
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualpvc-%s", r.ClusterBinding.Name)
@@ -182,7 +183,7 @@ func (r *VirtualPVCReconciler) SetupWithManager(virtualManager, physicalManager 
 			}
 
 			// Only sync PVCs managed by this cluster
-			managedByClusterIDLabel := GetManagedByClusterIDLabel(r.clusterID)
+			managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
 			return pvc.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
 		})).
 		Complete(r)
