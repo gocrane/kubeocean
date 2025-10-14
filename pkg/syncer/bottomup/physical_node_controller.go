@@ -642,11 +642,13 @@ func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context,
 	physicalUsage := corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("0"),
 		corev1.ResourceMemory: resource.MustParse("0"),
+		corev1.ResourcePods:   resource.MustParse("0"),
 	}
 
 	kubeoceanUsage := corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("0"),
 		corev1.ResourceMemory: resource.MustParse("0"),
+		corev1.ResourcePods:   resource.MustParse("0"),
 	}
 
 	for idx := range podList.Items {
@@ -670,6 +672,10 @@ func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context,
 					kubeoceanUsage[resourceName] = quantity
 				}
 			}
+			// Count the pod itself
+			podCount := kubeoceanUsage[corev1.ResourcePods]
+			podCount.Add(resource.MustParse("1"))
+			kubeoceanUsage[corev1.ResourcePods] = podCount
 		} else {
 			for resourceName, quantity := range podUsage {
 				if existing, exists := physicalUsage[resourceName]; exists {
@@ -679,6 +685,10 @@ func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context,
 					physicalUsage[resourceName] = quantity
 				}
 			}
+			// Count the pod itself
+			podCount := physicalUsage[corev1.ResourcePods]
+			podCount.Add(resource.MustParse("1"))
+			physicalUsage[corev1.ResourcePods] = podCount
 		}
 	}
 
