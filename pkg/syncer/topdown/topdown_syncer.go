@@ -35,6 +35,9 @@ type TopDownSyncer struct {
 	// Physical cluster config for direct k8s client (passed from KubeoceanSyncer)
 	physicalConfig *rest.Config
 
+	// prometheusVNodeBasePort is the base port used in VNode Prometheus URL annotations
+	prometheusVNodeBasePort int
+
 	// Controllers
 	virtualPodController       *VirtualPodReconciler
 	virtualConfigMapController *VirtualConfigMapReconciler
@@ -57,6 +60,11 @@ func NewTopDownSyncer(virtualManager manager.Manager, physicalManager manager.Ma
 		Log:             log,
 		ClusterBinding:  binding,
 	}
+}
+
+// SetPrometheusVNodeBasePort sets the base port used in VNode Prometheus URL annotations
+func (tds *TopDownSyncer) SetPrometheusVNodeBasePort(port int) {
+	tds.prometheusVNodeBasePort = port
 }
 
 func (tds *TopDownSyncer) Setup(ctx context.Context) error {
@@ -208,6 +216,7 @@ func (tds *TopDownSyncer) setupControllers() error {
 		tds.Scheme,
 		tds.Log.WithName("proxier-watch-controller"),
 		tds.ClusterBinding,
+		tds.prometheusVNodeBasePort,
 	)
 
 	if err := tds.proxierWatchController.SetupWithManager(tds.virtualManager); err != nil {

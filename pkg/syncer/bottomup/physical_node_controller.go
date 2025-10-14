@@ -925,7 +925,7 @@ func (r *PhysicalNodeReconciler) InitAllocatedPortsCache(ctx context.Context) er
 }
 
 // allocateProxierPort 分配唯一端口，线程安全，端口范围15000-65535
-func (r *PhysicalNodeReconciler) allocateProxierPort(nodeName string) string {
+func (r *PhysicalNodeReconciler) allocateProxierPort(nodeName string) (string, error) {
 	r.portMutex.Lock()
 	defer r.portMutex.Unlock()
 
@@ -937,7 +937,7 @@ func (r *PhysicalNodeReconciler) allocateProxierPort(nodeName string) string {
 	}
 
 	if port, exists := r.nodeNameToPort[nodeName]; exists {
-		return strconv.Itoa(port)
+		return strconv.Itoa(port), nil
 	}
 
 	const (
@@ -950,22 +950,22 @@ func (r *PhysicalNodeReconciler) allocateProxierPort(nodeName string) string {
 	if _, used := r.allocatedPorts[basePort]; !used {
 		r.allocatedPorts[basePort] = nodeName
 		r.nodeNameToPort[nodeName] = basePort
-		return strconv.Itoa(basePort)
+		return strconv.Itoa(basePort), nil
 	}
 
 	for offset := 1; offset <= portMax-portMin; offset++ {
 		candidate := basePort + offset
 		if candidate > portMax {
-			candidate = portMin + (candidate-portMin)%(portMax-portMin+1)
+			candidate = portMin + (candidate - portMax - 1)
 		}
 		if _, used := r.allocatedPorts[candidate]; !used {
 			r.allocatedPorts[candidate] = nodeName
 			r.nodeNameToPort[nodeName] = candidate
-			return strconv.Itoa(candidate)
+			return strconv.Itoa(candidate), nil
 		}
 	}
 
-	return strconv.Itoa(10250)
+	return "", fmt.Errorf("no available ports for node %s", nodeName)
 }
 
 func (r *PhysicalNodeReconciler) releaseProxierPort(nodeName string) {
@@ -1092,30 +1092,41 @@ func (r *PhysicalNodeReconciler) getBaseResources(node *corev1.Node) corev1.Reso
 }
 
 // buildVirtualNodeAddresses builds addresses for virtual node
-func (r *PhysicalNodeReconciler) buildVirtualNodeAddresses(physicalNode *corev1.Node, internalIP string) []corev1.NodeAddress {
-
-	// First find and update existing InternalIP
-	internalIPUpdated := false
-	addresses := make([]corev1.NodeAddress, len(physicalNode.Status.Addresses))
-	copy(addresses, physicalNode.Status.Addresses)
-
-	for i := range addresses {
-		if addresses[i].Type == corev1.NodeInternalIP {
-			addresses[i].Address = internalIP
-			internalIPUpdated = true
-			r.Log.Info("Updated existing InternalIP for virtual node to point to proxier pod", "node", physicalNode.Name, "podIP", internalIP)
+func (r *PhysicalNodeReconciler) buildVirtualNodeAddresses(physicalNode *corev1.Node, internalIP, virtualNodeName string) []corev1.NodeAddress {
+	// Find InternalIP from physical node first
+	var finalInternalIP string
+	physicalNodeHasInternalIP := false
+	
+	for _, addr := range physicalNode.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP {
+			finalInternalIP = addr.Address
+			physicalNodeHasInternalIP = true
 			break
 		}
 	}
-
-	// If no InternalIP found, add a new one
-	if !internalIPUpdated {
-		addresses = append(addresses, corev1.NodeAddress{
-			Type:    corev1.NodeInternalIP,
-			Address: internalIP,
-		})
-		r.Log.Info("Added new InternalIP for virtual node pointing to proxier pod", "node", physicalNode.Name, "podIP", internalIP)
+	
+	// If physical node doesn't have InternalIP, use the provided internalIP parameter
+	if !physicalNodeHasInternalIP {
+		finalInternalIP = internalIP
 	}
+
+	// Return only two items: NodeInternalIP and NodeHostName
+	addresses := []corev1.NodeAddress{
+		{
+			Type:    corev1.NodeInternalIP,
+			Address: finalInternalIP,
+		},
+		{
+			Type:    corev1.NodeHostName,
+			Address: virtualNodeName,
+		},
+	}
+
+	r.Log.V(1).Info("Built virtual node addresses", 
+		"physicalNode", physicalNode.Name,
+		"finalInternalIP", finalInternalIP, 
+		"physicalNodeHasInternalIP", physicalNodeHasInternalIP,
+		"hostname", virtualNodeName)
 
 	return addresses
 }
@@ -1149,7 +1160,10 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 	var proxiedPodIP, proxierPort string
 	if needCreate {
 		proxiedPodIP = r.getProxierPodIP()
-		proxierPort = r.allocateProxierPort(virtualNodeName)
+		proxierPort, err = r.allocateProxierPort(virtualNodeName)
+		if err != nil {
+			return fmt.Errorf("failed to allocate proxier port for virtual node %s: %w", virtualNodeName, err)
+		}
 	} else {
 		proxiedPodIP = r.getInternalIPFromNode(existingNode)
 		if proxiedPodIP == "" {
@@ -1159,8 +1173,16 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 		if existingNode.Labels[cloudv1beta1.LabelProxierPort] != "" {
 			proxierPort = existingNode.Labels[cloudv1beta1.LabelProxierPort]
 		} else {
-			proxierPort = r.allocateProxierPort(virtualNodeName)
+			proxierPort, err = r.allocateProxierPort(virtualNodeName)
+			if err != nil {
+				return fmt.Errorf("failed to allocate proxier port for virtual node %s: %w", virtualNodeName, err)
+			}
 		}
+	}
+
+	proxierPortInt, err := strconv.Atoi(proxierPort)
+	if err != nil {
+		proxierPortInt = 10250
 	}
 
 	// Get applicable policy for taint management
@@ -1170,7 +1192,7 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 	}
 
 	// Build virtual node addresses
-	addresses := r.buildVirtualNodeAddresses(physicalNode, proxiedPodIP)
+	addresses := r.buildVirtualNodeAddresses(physicalNode, proxiedPodIP, virtualNodeName)
 
 	virtualNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1184,14 +1206,14 @@ func (r *PhysicalNodeReconciler) createOrUpdateVirtualNode(ctx context.Context, 
 			Taints: r.transformTaints(logger, physicalNode.Spec.Taints, disableNodeDefaultTaint, policy),
 		},
 		Status: corev1.NodeStatus{
-			Capacity:    resources,
-			Allocatable: resources,
-			Conditions:  physicalNode.Status.Conditions,
-			NodeInfo:    physicalNode.Status.NodeInfo,
-			Phase:       physicalNode.Status.Phase,
-			Addresses:   addresses,
-			//DaemonEndpoints: nodeDaemonEndpoints(int32(proxierPort),
-			DaemonEndpoints: nodeDaemonEndpoints(int32(10250)),
+			Capacity:        resources,
+			Allocatable:     resources,
+			Conditions:      physicalNode.Status.Conditions,
+			NodeInfo:        physicalNode.Status.NodeInfo,
+			Phase:           physicalNode.Status.Phase,
+			Addresses:       addresses,
+			DaemonEndpoints: nodeDaemonEndpoints(int32(proxierPortInt)),
+			//DaemonEndpoints: nodeDaemonEndpoints(int32(10250)),
 		},
 	}
 
@@ -1504,41 +1526,6 @@ func (r *PhysicalNodeReconciler) hashString(s string) uint32 {
 	}
 
 	return hash
-}
-
-// getExistingPortsFromInformer gets ports from informer cache
-func (r *PhysicalNodeReconciler) getExistingPortsFromInformer() map[int]bool {
-	ports := make(map[int]bool)
-
-	// If VirtualClient is not available, return empty map
-	if r.VirtualClient == nil {
-		r.Log.V(1).Info("VirtualClient not available, skipping port conflict detection")
-		return ports
-	}
-
-	// List all VNodes in the virtual cluster
-	virtualNodes := &corev1.NodeList{}
-	err := r.VirtualClient.List(context.Background(), virtualNodes)
-	if err != nil {
-		r.Log.Error(err, "Failed to list virtual nodes for port conflict detection")
-		return ports
-	}
-
-	// Extract ports from VNode labels
-	for _, node := range virtualNodes.Items {
-		if portStr, exists := node.Labels[cloudv1beta1.LabelProxierPort]; exists {
-			if port, err := strconv.Atoi(portStr); err == nil {
-				ports[port] = true
-			}
-		}
-	}
-
-	return ports
-}
-
-// isPortInUse checks if a port is already in use
-func (r *PhysicalNodeReconciler) isPortInUse(port int, existingPorts map[int]bool) bool {
-	return existingPorts[port]
 }
 
 // getClusterID returns a cluster identifier for the physical cluster

@@ -61,20 +61,24 @@ type ProxierWatchController struct {
 
 	// Rate limiting for patch operations using golang.org/x/time/rate
 	rateLimiter *rate.Limiter // QPS limiter for VNode updates
+
+	// PrometheusVNodeBasePort is the base port used in VNode Prometheus URL annotations
+	PrometheusVNodeBasePort int
 }
 
 // NewProxierWatchController creates a new ProxierWatchController
-func NewProxierWatchController(virtualClient client.Client, scheme *runtime.Scheme, log logr.Logger, clusterBinding *cloudv1beta1.ClusterBinding) *ProxierWatchController {
+func NewProxierWatchController(virtualClient client.Client, scheme *runtime.Scheme, log logr.Logger, clusterBinding *cloudv1beta1.ClusterBinding, prometheusVNodeBasePort int) *ProxierWatchController {
 	// Create rate limiter: 20 QPS with burst of 5
 	// This allows up to 20 VNode updates per second with a small burst capacity
 	limiter := rate.NewLimiter(20, 5)
 
 	return &ProxierWatchController{
-		VirtualClient:  virtualClient,
-		Scheme:         scheme,
-		Log:            log,
-		ClusterBinding: clusterBinding,
-		rateLimiter:    limiter,
+		VirtualClient:           virtualClient,
+		Scheme:                  scheme,
+		Log:                     log,
+		ClusterBinding:          clusterBinding,
+		rateLimiter:             limiter,
+		PrometheusVNodeBasePort: prometheusVNodeBasePort,
 	}
 }
 
@@ -598,7 +602,7 @@ func (r *ProxierWatchController) updateVNodePrometheusURL(vNode *corev1.Node, ne
 		vNode.Annotations = make(map[string]string)
 	}
 
-	// Get proxier port from existing label
+	// Get proxier port from existing label (each VNode has its own dedicated port)
 	proxierPort, exists := vNode.Labels[cloudv1beta1.LabelProxierPort]
 	if !exists {
 		r.Log.V(1).Info("No proxier port label found on VNode, cannot update prometheus URL",
@@ -607,6 +611,7 @@ func (r *ProxierWatchController) updateVNodePrometheusURL(vNode *corev1.Node, ne
 	}
 
 	// Format: {InternalIP}:{proxierPort}/{VNodeName}
+	// Note: proxierPort comes from VNode label, not PrometheusVNodeBasePort
 	prometheusURL := fmt.Sprintf("%s:%s/%s", newIP, proxierPort, vNode.Name)
 	vNode.Annotations[cloudv1beta1.AnnotationPrometheusURL] = prometheusURL
 

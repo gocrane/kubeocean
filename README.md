@@ -50,6 +50,17 @@ go build -o bin/kubeocean-syncer cmd/kubeocean-syncer/main.go
 make docker-build
 ```
 
+## 文档
+
+- [架构设计](docs/architecture.md) - 系统整体架构介绍
+- [管理器组件](docs/kubeocean-manager.md) - Kubeocean Manager 详细说明
+- [同步器架构](docs/syncer-template-architecture.md) - Syncer 组件架构
+- [自上而下同步](docs/topdown-syncer.md) - 从虚拟集群到物理集群的同步机制
+- [自下而上同步](docs/bottomup-syncer.md) - 从物理集群到虚拟集群的同步机制
+- [ClusterBinding控制器](docs/clusterbinding-controller.md) - 集群绑定控制器说明
+- [CSI节点同步](docs/csinode-sync.md) - CSI节点同步机制
+- [Vnode cAdvisor指标采集](docs/vnode-cadvisor-metrics.md) - 虚拟节点监控指标采集方案
+
 ## 开发
 
 ### 生成代码
