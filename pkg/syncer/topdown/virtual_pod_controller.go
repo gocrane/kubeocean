@@ -790,6 +790,10 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 			},
 		},
 	}
+	spec.NodeSelector = nil
+	spec.SchedulerName = ""
+	//preemptNever := corev1.PreemptNever
+	//spec.PreemptionPolicy = &preemptNever
 
 	// Get ClusterBinding
 	cb := &cloudv1beta1.ClusterBinding{}
