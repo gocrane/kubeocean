@@ -63,3 +63,4 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 # Include modular makefiles
 include hack/makelib/build.mk
 include hack/makelib/test.mk
+include hack/makelib/kind.mk

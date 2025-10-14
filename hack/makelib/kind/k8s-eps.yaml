@@ -1,0 +1,17 @@
+addressType: IPv4
+apiVersion: discovery.k8s.io/v1
+endpoints:
+- addresses:
+  - <api-server-ip>
+  conditions:
+    ready: true
+kind: EndpointSlice
+metadata:
+  labels:
+    kubernetes.io/service-name: kubernetes-intranet
+  name: kubernetes-intranet
+  namespace: default
+ports:
+- name: https
+  port: 6443
+  protocol: TCP

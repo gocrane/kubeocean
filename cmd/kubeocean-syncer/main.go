@@ -25,6 +25,7 @@ import (
 	clsv1 "github.com/TKEColocation/kubeocean/api/cls/v1"
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
 	"github.com/TKEColocation/kubeocean/pkg/syncer"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/metrics"
 )
 
 var (
@@ -165,6 +166,9 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+
+	// Register metrics collector with virtual client
+	metrics.RegisterMetricsCollector(clusterBindingName, mgr.GetClient(), nil, setupLog.WithName("metrics"))
 
 	// Initialize the Kubeocean Syncer
 	kubeoceanSyncer, err := syncer.NewKubeoceanSyncer(mgr, mgr.GetClient(), mgr.GetScheme(), clusterBindingName, physicalClientQPS, physicalClientBurst)

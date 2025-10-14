@@ -2,7 +2,6 @@ apiVersion: cloud.tencent.com/v1beta1
 kind: ResourceLeasingPolicy
 metadata:
   name: example-policy
-  namespace: kubeocean-system
 spec:
   cluster: example-cluster
   forceReclaim: true

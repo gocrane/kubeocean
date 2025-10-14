@@ -109,3 +109,81 @@ func TestIsSystemPod(t *testing.T) {
 		})
 	}
 }
+
+func TestIsDaemonSetPod(t *testing.T) {
+	tests := []struct {
+		name        string
+		pod         *corev1.Pod
+		isDaemonSet bool
+	}{
+		{
+			name: "pod managed by daemonset",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+			},
+			isDaemonSet: true,
+		},
+		{
+			name: "pod managed by deployment",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deployment-pod",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "ReplicaSet",
+							Name: "test-replicaset",
+						},
+					},
+				},
+			},
+			isDaemonSet: false,
+		},
+		{
+			name: "pod without owner references",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "standalone-pod",
+					Namespace: "default",
+				},
+			},
+			isDaemonSet: false,
+		},
+		{
+			name: "pod with multiple owners including daemonset",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "multi-owner-pod",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "Job",
+							Name: "test-job",
+						},
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+			},
+			isDaemonSet: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsDaemonSetPod(tt.pod)
+			assert.Equal(t, tt.isDaemonSet, result)
+		})
+	}
+}

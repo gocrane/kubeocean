@@ -1,0 +1,35 @@
+# KIND cluster configuration for kubeocean development
+# Kubernetes 1.28 three-node cluster (1 control-plane + 2 workers)
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kubeocean-test
+networking:
+  podSubnet: "<podSubnet>"
+nodes:
+# Control-plane node
+- role: control-plane
+  image: kindest/node:v1.28.0
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "kubeocean.io/node-type=control-plane"
+# Worker node 1
+- role: worker
+  image: kindest/node:v1.28.0
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "kubeocean.io/node-type=worker,kubeocean.io/worker-id=1"
+# Worker node 2
+- role: worker
+  image: kindest/node:v1.28.0
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "kubeocean.io/node-type=worker,kubeocean.io/worker-id=2"

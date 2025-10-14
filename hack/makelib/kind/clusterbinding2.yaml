@@ -1,17 +1,18 @@
 apiVersion: cloud.tencent.com/v1beta1
 kind: ClusterBinding
 metadata:
-  name: example-cluster
+  name: cb-worker2
+  namespace: kubeocean-system
 spec:
-  clusterID: cls-example
+  clusterID: cls-worker2
   mountNamespace: kubeocean-worker
   nodeSelector:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: role
+      - key: kubeocean.io/node-type
         operator: In
         values:
         - worker
   secretRef:
-    name: worker-cluster-kubeconfig
+    name: worker2-cluster-kubeconfig
     namespace: kubeocean-system

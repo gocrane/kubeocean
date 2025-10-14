@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	"github.com/TKEColocation/kubeocean/pkg/syncer/metrics"
 	"github.com/TKEColocation/kubeocean/pkg/utils"
 )
 
@@ -624,8 +625,10 @@ func (r *PhysicalNodeReconciler) isWithinTimeWindows(policy *cloudv1beta1.Resour
 }
 
 // calculateNodeResourceUsage calculates the total resource usage of all pods running on the node
-
-func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context, nodeName string) (corev1.ResourceList, error) {
+// Returns two ResourceLists: (physicalUsage, kubeoceanUsage)
+// physicalUsage: usage by pods NOT managed by kubeocean
+// kubeoceanUsage: usage by pods managed by kubeocean
+func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context, nodeName string) (corev1.ResourceList, corev1.ResourceList, error) {
 	// List all pods running on this node
 	podList := &corev1.PodList{}
 	listOptions := []client.ListOption{
@@ -633,10 +636,15 @@ func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context,
 	}
 
 	if err := r.PhysicalClient.List(ctx, podList, listOptions...); err != nil {
-		return nil, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+		return nil, nil, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
 	}
 
-	totalUsage := corev1.ResourceList{
+	physicalUsage := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("0"),
+		corev1.ResourceMemory: resource.MustParse("0"),
+	}
+
+	kubeoceanUsage := corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("0"),
 		corev1.ResourceMemory: resource.MustParse("0"),
 	}
@@ -647,28 +655,37 @@ func (r *PhysicalNodeReconciler) calculateNodeResourceUsage(ctx context.Context,
 		if pod.Status.Phase != corev1.PodRunning && pod.Status.Phase != corev1.PodPending {
 			continue
 		}
-		if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
-			r.Log.V(1).Info("Skipping pod that is managed by Kubeocean", "pod", pod.Namespace+"/"+pod.Name)
-			continue
-		}
 
 		// Calculate pod resource requests (not limits, as requests are what's actually reserved)
 		podUsage := r.calculatePodResourceRequests(pod)
 
-		// Add pod usage to total
-		for resourceName, quantity := range podUsage {
-			if existing, exists := totalUsage[resourceName]; exists {
-				existing.Add(quantity)
-				totalUsage[resourceName] = existing
-			} else {
-				totalUsage[resourceName] = quantity
+		// Separate usage based on whether pod is managed by kubeocean
+		if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+			r.Log.V(1).Info("Counting kubeocean-managed pod usage", "pod", pod.Namespace+"/"+pod.Name)
+			for resourceName, quantity := range podUsage {
+				if existing, exists := kubeoceanUsage[resourceName]; exists {
+					existing.Add(quantity)
+					kubeoceanUsage[resourceName] = existing
+				} else {
+					kubeoceanUsage[resourceName] = quantity
+				}
+			}
+		} else {
+			for resourceName, quantity := range podUsage {
+				if existing, exists := physicalUsage[resourceName]; exists {
+					existing.Add(quantity)
+					physicalUsage[resourceName] = existing
+				} else {
+					physicalUsage[resourceName] = quantity
+				}
 			}
 		}
 	}
 
-	r.Log.V(1).Info("Calculated node resource usage", "node", nodeName, "totalUsage", totalUsage)
+	r.Log.V(1).Info("Calculated node resource usage", "node", nodeName,
+		"physicalUsage", physicalUsage, "kubeoceanUsage", kubeoceanUsage)
 
-	return totalUsage, nil
+	return physicalUsage, kubeoceanUsage, nil
 }
 
 // calculatePodResourceRequests calculates the total resource requests for a pod
@@ -725,7 +742,8 @@ func (r *PhysicalNodeReconciler) calculateAvailableResources(ctx context.Context
 	allocatableResources := r.getBaseResources(node)
 
 	// Calculate current resource usage by pods on this node
-	currentUsage, err := r.calculateNodeResourceUsage(ctx, node.Name)
+	// Returns (physicalUsage, kubeoceanUsage)
+	currentUsage, kubeoceanUsage, err := r.calculateNodeResourceUsage(ctx, node.Name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate node resource usage for node %s: %w", node.Name, err)
 	}
@@ -760,6 +778,24 @@ func (r *PhysicalNodeReconciler) calculateAvailableResources(ctx context.Context
 	}
 
 	logger.V(1).Info("Calculated available resources", "availableResources", availableResources)
+
+	// Report metrics to MetricsCollector
+	virtualNodeName := r.generateVirtualNodeName(node.Name)
+	metrics.MetricsCollectorInst.SetVnodeMetrics(
+		virtualNodeName,
+		allocatableResources,
+		availableResources,
+		currentUsage,
+		kubeoceanUsage,
+	)
+
+	logger.V(1).Info("Reported VNode metrics",
+		"virtualNodeName", virtualNodeName,
+		"allocatable", allocatableResources,
+		"available", availableResources,
+		"physicalUsage", currentUsage,
+		"kubeoceanUsage", kubeoceanUsage)
+
 	return availableResources, nil
 }
 

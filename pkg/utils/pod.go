@@ -39,3 +39,14 @@ func IsSystemPod(pod *corev1.Pod) bool {
 
 	return false
 }
+
+// IsDaemonSetPod checks if a pod is managed by a DaemonSet
+func IsDaemonSetPod(pod *corev1.Pod) bool {
+	// Check if the pod has DaemonSet as an owner reference
+	for _, ownerRef := range pod.OwnerReferences {
+		if ownerRef.Kind == "DaemonSet" {
+			return true
+		}
+	}
+	return false
+}

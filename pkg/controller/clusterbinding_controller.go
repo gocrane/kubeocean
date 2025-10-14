@@ -120,8 +120,23 @@ func NewClusterBindingReconciler(client client.Client, scheme *runtime.Scheme, l
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, retErr error) {
+	// Record start time for latency measurement
+	startTime := time.Now()
+
 	log := r.Log.WithValues("clusterbinding", req.Name)
+
+	// Defer function to record metrics on return
+	defer func() {
+		// Record sync latency
+		metrics.SyncLatency.Observe(time.Since(startTime).Seconds())
+
+		cbName := req.Name
+		metrics.SyncTotal.WithLabelValues(cbName).Inc()
+		if retErr != nil {
+			metrics.SyncErrors.WithLabelValues(cbName).Inc()
+		}
+	}()
 
 	// Fetch the ClusterBinding instance
 	var originalClusterBinding cloudv1beta1.ClusterBinding
@@ -139,15 +154,12 @@ func (r *ClusterBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	log.Info("Reconciling ClusterBinding", "name", clusterBinding.Name, "phase", clusterBinding.Status.Phase)
 
-	// Update metrics
-	r.updateMetrics(clusterBinding)
-
 	// Record event for reconciliation start
 	r.Recorder.Event(clusterBinding, corev1.EventTypeNormal, "Reconciling", "Starting ClusterBinding reconciliation")
 
 	// Handle deletion
 	if clusterBinding.DeletionTimestamp != nil {
-		return r.handleDeletion(ctx, &originalClusterBinding)
+		return ctrl.Result{}, r.handleDeletion(ctx, &originalClusterBinding)
 	}
 
 	// Add finalizer if not present
@@ -456,15 +468,6 @@ func (r *ClusterBindingReconciler) updateCondition(clusterBinding *cloudv1beta1.
 	clusterBinding.Status.Conditions = append(clusterBinding.Status.Conditions, condition)
 }
 
-// updateMetrics updates Prometheus metrics for ClusterBinding
-func (r *ClusterBindingReconciler) updateMetrics(clusterBinding *cloudv1beta1.ClusterBinding) {
-	phase := string(clusterBinding.Status.Phase)
-	if phase == "" {
-		phase = "Unknown"
-	}
-	metrics.ClusterBindingTotal.WithLabelValues(phase).Inc()
-}
-
 // reconcileKubeoceanSyncer creates or updates the Kubeocean Syncer for the ClusterBinding
 func (r *ClusterBindingReconciler) reconcileKubeoceanSyncer(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding) error {
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding))
@@ -681,7 +684,7 @@ func (r *ClusterBindingReconciler) getSyncerLabels(clusterBinding *cloudv1beta1.
 }
 
 // handleDeletion handles the deletion of ClusterBinding resource
-func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalClusterBinding *cloudv1beta1.ClusterBinding) (ctrl.Result, error) {
+func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalClusterBinding *cloudv1beta1.ClusterBinding) error {
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(originalClusterBinding))
 	log.Info("Handling ClusterBinding deletion")
 
@@ -691,7 +694,7 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 		log.Info("Waiting for syncer to remove its finalizer", "finalizer", cloudv1beta1.ClusterBindingSyncerFinalizer)
 		r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "WaitingSyncerCleanup", "Waiting for syncer to complete cleanup and remove its finalizer")
 		// not requeue, wait for it updated
-		return ctrl.Result{}, nil
+		return nil
 	}
 
 	// Delete associated Kubeocean Syncer resources with comprehensive cleanup tracking
@@ -699,7 +702,7 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 	if err != nil {
 		log.Error(err, "Failed to delete syncer resources")
 		r.Recorder.Event(originalClusterBinding, corev1.EventTypeWarning, "CleanupFailed", fmt.Sprintf("Failed to cleanup syncer resources: %v", err))
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// Delete associated Kubeocean Proxier resources
@@ -707,7 +710,7 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 	if err != nil {
 		log.Error(err, "Failed to delete proxier resources")
 		r.Recorder.Event(originalClusterBinding, corev1.EventTypeWarning, "ProxierCleanupFailed", fmt.Sprintf("Failed to cleanup proxier resources: %v", err))
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// Cleanup auto-managed certificates
@@ -724,7 +727,7 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 			"syncerCleanupStatus", syncerCleanupStatus, "proxierCleanupStatus", proxierCleanupStatus)
 		r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "CleanupInProgress",
 			fmt.Sprintf("Resource cleanup still in progress: Syncer=%t, Proxier=%t", syncerCleanupStatus, proxierCleanupStatus))
-		return ctrl.Result{}, fmt.Errorf("resource cleanup still in progress: Syncer=%t, Proxier=%t", syncerCleanupStatus, proxierCleanupStatus)
+		return fmt.Errorf("resource cleanup still in progress: Syncer=%t, Proxier=%t", syncerCleanupStatus, proxierCleanupStatus)
 	}
 
 	log.Info("Syncer and Proxier cleaned up successfully, RBAC resources preserved",
@@ -741,12 +744,12 @@ func (r *ClusterBindingReconciler) handleDeletion(ctx context.Context, originalC
 	controllerutil.RemoveFinalizer(clusterBinding, cloudv1beta1.ClusterBindingManagerFinalizer)
 	if err := r.Update(ctx, clusterBinding); err != nil {
 		log.Error(err, "unable to remove finalizer")
-		return ctrl.Result{}, err
+		return err
 	}
 
 	log.Info("ClusterBinding deletion completed successfully")
 	r.Recorder.Event(originalClusterBinding, corev1.EventTypeNormal, "Deleted", "ClusterBinding deleted successfully")
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // deleteSyncerResources deletes only the Deployment created for the Kubeocean Syncer
