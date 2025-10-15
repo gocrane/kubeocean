@@ -16,8 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	toppod "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/pod"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	toppod "github.com/gocrane/kubeocean/pkg/syncer/topdown/pod"
 )
 
 // TestVirtualPodReconciler_Integration tests the VirtualPodReconciler integration

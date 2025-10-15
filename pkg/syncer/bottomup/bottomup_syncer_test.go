@@ -42,8 +42,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	bottomnode "github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/node"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	bottomnode "github.com/gocrane/kubeocean/pkg/syncer/bottomup/node"
 )
 
 // mockManager implements a minimal manager.Manager for testing

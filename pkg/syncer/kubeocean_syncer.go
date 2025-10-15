@@ -18,11 +18,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/clusterbinding"
-	syncermetrics "github.com/TKEColocation/kubeocean/pkg/syncer/metrics"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	"github.com/gocrane/kubeocean/pkg/syncer/bottomup"
+	"github.com/gocrane/kubeocean/pkg/syncer/clusterbinding"
+	syncermetrics "github.com/gocrane/kubeocean/pkg/syncer/metrics"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown"
 )
 
 const (

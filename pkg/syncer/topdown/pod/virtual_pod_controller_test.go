@@ -29,9 +29,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
-	"github.com/TKEColocation/kubeocean/pkg/utils"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	topcommon "github.com/gocrane/kubeocean/pkg/syncer/topdown/common"
+	"github.com/gocrane/kubeocean/pkg/utils"
 	authenticationv1 "k8s.io/api/authentication/v1"
 )
 

@@ -42,8 +42,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/proxier"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	"github.com/gocrane/kubeocean/pkg/proxier"
 )
 
 var (

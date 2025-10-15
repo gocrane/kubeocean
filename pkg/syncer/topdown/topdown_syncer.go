@@ -17,15 +17,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/configmap"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/logconfig"
-	toppod "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/pod"
-	topproxier "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/proxier"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/pv"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/pvc"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/secret"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/token"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown/configmap"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown/logconfig"
+	toppod "github.com/gocrane/kubeocean/pkg/syncer/topdown/pod"
+	topproxier "github.com/gocrane/kubeocean/pkg/syncer/topdown/proxier"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown/pv"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown/pvc"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown/secret"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown/token"
 )
 
 // TopDownSyncer handles synchronization from virtual cluster to physical cluster

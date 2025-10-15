@@ -21,7 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 )
 
 // CertificateManager handles automatic certificate request and approval

@@ -29,11 +29,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	syncermetrics "github.com/TKEColocation/kubeocean/pkg/syncer/metrics"
-	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/topdown/token"
-	"github.com/TKEColocation/kubeocean/pkg/utils"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	syncermetrics "github.com/gocrane/kubeocean/pkg/syncer/metrics"
+	topcommon "github.com/gocrane/kubeocean/pkg/syncer/topdown/common"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown/token"
+	"github.com/gocrane/kubeocean/pkg/utils"
 	authenticationv1 "k8s.io/api/authentication/v1"
 )
 

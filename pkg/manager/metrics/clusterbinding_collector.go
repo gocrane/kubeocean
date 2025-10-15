@@ -25,7 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 )
 
 const (

@@ -35,7 +35,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientremotecommand "k8s.io/client-go/tools/remotecommand"
 
-	localremotecommand "github.com/TKEColocation/kubeocean/pkg/proxier/remotecommand"
+	localremotecommand "github.com/gocrane/kubeocean/pkg/proxier/remotecommand"
 )
 
 // Note: trueStr and oneStr constants are defined in server.go and shared across the package

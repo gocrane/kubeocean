@@ -11,12 +11,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/hostport"
-	bottomnode "github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/node"
-	bottompod "github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/pod"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/bottomup/rlp"
-	"github.com/TKEColocation/kubeocean/pkg/utils"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	"github.com/gocrane/kubeocean/pkg/syncer/bottomup/hostport"
+	bottomnode "github.com/gocrane/kubeocean/pkg/syncer/bottomup/node"
+	bottompod "github.com/gocrane/kubeocean/pkg/syncer/bottomup/pod"
+	"github.com/gocrane/kubeocean/pkg/syncer/bottomup/rlp"
+	"github.com/gocrane/kubeocean/pkg/utils"
 )
 
 // BottomUpSyncer handles synchronization from physical cluster to virtual cluster

@@ -30,7 +30,7 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 )
 
 // proxy implements KubeletProxy interface

@@ -19,9 +19,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	clsv1 "github.com/TKEColocation/kubeocean/api/cls/v1"
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
+	clsv1 "github.com/gocrane/kubeocean/api/cls/v1"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	topcommon "github.com/gocrane/kubeocean/pkg/syncer/topdown/common"
 )
 
 const (

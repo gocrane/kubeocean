@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 )
 
 func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {

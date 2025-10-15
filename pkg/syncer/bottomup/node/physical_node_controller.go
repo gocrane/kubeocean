@@ -31,9 +31,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/metrics"
-	"github.com/TKEColocation/kubeocean/pkg/utils"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	"github.com/gocrane/kubeocean/pkg/syncer/metrics"
+	"github.com/gocrane/kubeocean/pkg/utils"
 )
 
 const (

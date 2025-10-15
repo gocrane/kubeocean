@@ -14,8 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	topcommon "github.com/TKEColocation/kubeocean/pkg/syncer/topdown/common"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	topcommon "github.com/gocrane/kubeocean/pkg/syncer/topdown/common"
 )
 
 // VirtualPVCReconciler reconciles PersistentVolumeClaim objects from virtual cluster

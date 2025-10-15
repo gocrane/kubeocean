@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 )
 
 // ResourceType represents the type of Kubernetes resource
