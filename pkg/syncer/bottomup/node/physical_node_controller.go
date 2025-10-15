@@ -1106,28 +1106,11 @@ func (r *PhysicalNodeReconciler) getBaseResources(node *corev1.Node) corev1.Reso
 
 // buildVirtualNodeAddresses builds addresses for virtual node
 func (r *PhysicalNodeReconciler) buildVirtualNodeAddresses(physicalNode *corev1.Node, internalIP, virtualNodeName string) []corev1.NodeAddress {
-	// Find InternalIP from physical node first
-	var finalInternalIP string
-	physicalNodeHasInternalIP := false
-	
-	for _, addr := range physicalNode.Status.Addresses {
-		if addr.Type == corev1.NodeInternalIP {
-			finalInternalIP = addr.Address
-			physicalNodeHasInternalIP = true
-			break
-		}
-	}
-	
-	// If physical node doesn't have InternalIP, use the provided internalIP parameter
-	if !physicalNodeHasInternalIP {
-		finalInternalIP = internalIP
-	}
-
 	// Return only two items: NodeInternalIP and NodeHostName
 	addresses := []corev1.NodeAddress{
 		{
 			Type:    corev1.NodeInternalIP,
-			Address: finalInternalIP,
+			Address: internalIP,
 		},
 		{
 			Type:    corev1.NodeHostName,
@@ -1135,10 +1118,9 @@ func (r *PhysicalNodeReconciler) buildVirtualNodeAddresses(physicalNode *corev1.
 		},
 	}
 
-	r.Log.V(1).Info("Built virtual node addresses", 
+	r.Log.V(1).Info("Built virtual node addresses",
 		"physicalNode", physicalNode.Name,
-		"finalInternalIP", finalInternalIP, 
-		"physicalNodeHasInternalIP", physicalNodeHasInternalIP,
+		"internalIP", internalIP,
 		"hostname", virtualNodeName)
 
 	return addresses
