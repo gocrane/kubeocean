@@ -554,13 +554,11 @@ func TestClusterBindingReconciler_Reconcile_FinalizerLogic(t *testing.T) {
 					}
 				}
 
-				if tt.expectFinalizerAdded || (originalClusterBinding != nil && len(originalClusterBinding.Finalizers) > 0) {
+				if tt.expectFinalizerAdded || len(originalClusterBinding.Finalizers) > 0 {
 					assert.True(t, hasFinalizer, "Expected finalizer to be present")
 				}
-			}
-
-			// For the case where ClusterBinding is not found, we expect no requeue
-			if originalClusterBinding == nil {
+			} else {
+				// For the case where ClusterBinding is not found, we expect no requeue
 				assert.Equal(t, ctrl.Result{}, result)
 			}
 		})
