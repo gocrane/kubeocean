@@ -2,12 +2,19 @@ TEST_REGISTRY ?= ccr.ccs.tencentyun.com/tke-eni-test
 
 GITVERSION := $(shell git describe --tags --always --dirty)
 VERSION ?= $(GITVERSION)
+GIT_COMMIT := $(shell git rev-parse HEAD)
+BUILD_DATE := $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 
 IMG_TAG ?= $(VERSION)
 # Image URL to use all building/pushing image targets
 IMG_MANAGER ?= ${TEST_REGISTRY}/kubeocean-manager:${IMG_TAG}
 IMG_SYNCER ?= ${TEST_REGISTRY}/kubeocean-syncer:${IMG_TAG}
 IMG_PROXIER ?= ${TEST_REGISTRY}/kubeocean-proxier:${IMG_TAG}
+
+VERSION_PACKAGE := github.com/gocrane/kubeocean/pkg/version
+
+LDFLAGS := '-extldflags -static -X $(VERSION_PACKAGE).gitVersion=$(VERSION) \
+-X $(VERSION_PACKAGE).gitCommit=$(GIT_COMMIT) -X $(VERSION_PACKAGE).buildDate=$(BUILD_DATE)'
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.28.3

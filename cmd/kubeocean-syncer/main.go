@@ -26,6 +26,7 @@ import (
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 	"github.com/gocrane/kubeocean/pkg/syncer"
 	"github.com/gocrane/kubeocean/pkg/syncer/metrics"
+	"github.com/gocrane/kubeocean/pkg/version"
 )
 
 var (
@@ -85,6 +86,7 @@ func main() {
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	setupLog.Info("Kubeocean Syncer", "version", version.Get())
 
 	// Get clusterBinding to determine clusterID for label filtering
 	config := ctrl.GetConfigOrDie()

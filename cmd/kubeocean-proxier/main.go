@@ -44,6 +44,7 @@ import (
 
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 	"github.com/gocrane/kubeocean/pkg/proxier"
+	"github.com/gocrane/kubeocean/pkg/version"
 )
 
 var (
@@ -66,6 +67,7 @@ func main() {
 
 	// Setup logging
 	setupLogging()
+	setupLog.Info("Kubeocean Proxier", "version", version.Get())
 
 	setupLog.Info("Starting Kubeocean Proxier",
 		"clusterBinding", config.ClusterBindingName,
