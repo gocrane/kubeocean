@@ -1,100 +1,100 @@
-# BottomUp Syncer 组件文档
+# BottomUp Syncer Component Documentation
 
-## 1. 模块概述
+## 1. Module Overview
 
-### 1.1 组件概述
+### 1.1 Component Overview
 
-BottomUp Syncer 是 Kubeocean 系统的核心同步组件之一，负责从物理集群到虚拟算力集群的资源同步。它实现了 Kubernetes Controller 模式，通过监听物理集群的资源变化，将相关信息同步到虚拟集群中，为虚拟算力集群提供实时的资源状态信息。
+BottomUp Syncer is one of the core synchronization components of the Kubeocean system, responsible for resource synchronization from physical clusters to virtual computing clusters. It implements the Kubernetes Controller pattern, monitoring resource changes in physical clusters and synchronizing relevant information to virtual clusters, providing real-time resource status information for the virtual computing cluster.
 
-### 1.2 主要职责和功能
+### 1.2 Main Responsibilities and Functions
 
-- **物理节点同步**: 监听物理集群节点变化，根据 ResourceLeasingPolicy 计算可抽取资源，创建和更新虚拟节点
-- **Pod 状态同步**: 监控物理集群中 Kubeocean 管理的 Pod 状态变化，同步状态到虚拟集群
-- **CSI 节点同步**: 同步物理集群的 CSI 节点信息到虚拟集群，确保存储功能的可用性
-- **资源策略管理**: 监听 ResourceLeasingPolicy 变化，触发节点重新评估和资源计算
-- **租约管理**: 为每个虚拟节点创建和管理租约，确保节点的活跃状态
-- **节点重新评估**: 支持根据策略变化触发特定节点的重新评估和资源计算
+- **Physical Node Synchronization**: Monitor physical cluster node changes, calculate extractable resources based on ResourceLeasingPolicy, create and update virtual nodes
+- **Pod Status Synchronization**: Monitor Pod status changes managed by Kubeocean in physical clusters, synchronize status to virtual clusters
+- **CSI Node Synchronization**: Synchronize physical cluster CSI node information to virtual clusters, ensure storage functionality availability
+- **Resource Policy Management**: Monitor ResourceLeasingPolicy changes, trigger node re-evaluation and resource calculation
+- **Lease Management**: Create and manage leases for each virtual node, ensure node active status
+- **Node Re-evaluation**: Support triggering re-evaluation and resource calculation of specific nodes based on policy changes
 
-## 2. 包含的子模块及相关介绍
+## 2. Included Submodules and Related Introduction
 
 ### 2.1 PhysicalNodeReconciler
 
-**职责**: 物理节点控制器，负责虚拟节点的创建和管理
+**Responsibility**: Physical node controller, responsible for virtual node creation and management
 
-**主要功能**:
-- 监听物理集群节点变化，根据 ClusterBinding 的节点选择器过滤节点
-- 根据 ResourceLeasingPolicy 计算可抽取的资源量
-- 创建和更新虚拟节点，包括资源容量、标签和注解
-- 管理时间窗口和节点污点，处理策略的时间限制
-- 启动和管理虚拟节点的租约控制器
+**Main Functions**:
+- Monitor physical cluster node changes, filter nodes based on ClusterBinding node selectors
+- Calculate extractable resource amounts based on ResourceLeasingPolicy
+- Create and update virtual nodes, including resource capacity, labels, and annotations
+- Manage time windows and node taints, handle policy time constraints
+- Start and manage virtual node lease controllers
 
-**关键特性**:
-- 支持多种资源策略的优先级处理
-- 智能的时间窗口管理和污点控制
-- 动态资源计算和虚拟节点生命周期管理
+**Key Features**:
+- Support priority handling of multiple resource policies
+- Intelligent time window management and taint control
+- Dynamic resource calculation and virtual node lifecycle management
 
 ### 2.2 PhysicalPodReconciler
 
-**职责**: 物理 Pod 控制器，负责 Pod 状态同步
+**Responsibility**: Physical Pod controller, responsible for Pod status synchronization
 
-**主要功能**:
-- 监听物理集群 Pod 状态变化，只处理 Kubeocean 管理的 Pod
-- 验证物理 Pod 的必需注解和标签
-- 同步 Pod 状态到对应的虚拟 Pod
-- 处理 Pod 删除和状态更新
-- 维护物理 Pod 和虚拟 Pod 的映射关系
+**Main Functions**:
+- Monitor physical cluster Pod status changes, only process Kubeocean-managed Pods
+- Validate required annotations and labels of physical Pods
+- Synchronize Pod status to corresponding virtual Pods
+- Handle Pod deletion and status updates
+- Maintain mapping relationships between physical and virtual Pods
 
-**关键特性**:
-- 只同步 Kubeocean 管理的 Pod，避免干扰其他工作负载
-- 双向映射验证，确保数据一致性
-- 优雅的状态同步和错误处理
+**Key Features**:
+- Only synchronize Kubeocean-managed Pods, avoid interfering with other workloads
+- Bidirectional mapping validation, ensure data consistency
+- Graceful status synchronization and error handling
 
 ### 2.3 PhysicalCSINodeReconciler
 
-**职责**: 物理 CSI 节点控制器，负责存储相关节点信息同步
+**Responsibility**: Physical CSI node controller, responsible for storage-related node information synchronization
 
-**主要功能**:
-- 监听物理集群 CSINode 变化
-- 同步 CSI 节点信息到虚拟集群
-- 管理虚拟 CSI 节点的生命周期
-- 处理存储驱动信息的同步
+**Main Functions**:
+- Monitor physical cluster CSINode changes
+- Synchronize CSI node information to virtual clusters
+- Manage virtual CSI node lifecycle
+- Handle storage driver information synchronization
 
-**关键特性**:
-- 支持存储驱动的动态发现
-- 确保存储功能的可用性
-- 处理 CSI 节点删除的清理
+**Key Features**:
+- Support dynamic discovery of storage drivers
+- Ensure storage functionality availability
+- Handle cleanup of CSI node deletion
 
 ### 2.4 ResourceLeasingPolicyReconciler
 
-**职责**: 资源租赁策略控制器，负责策略应用和资源计算
+**Responsibility**: Resource leasing policy controller, responsible for policy application and resource calculation
 
-**主要功能**:
-- 监听 ResourceLeasingPolicy 变化
-- 验证策略的时间窗口和资源限制配置
-- 触发节点重新评估和资源计算
-- 管理策略的生命周期和状态更新
+**Main Functions**:
+- Monitor ResourceLeasingPolicy changes
+- Validate policy time windows and resource limit configurations
+- Trigger node re-evaluation and resource calculation
+- Manage policy lifecycle and status updates
 
-**关键特性**:
-- 支持时间窗口和资源限制的验证
-- 自动触发节点重新评估
-- 处理策略删除的资源回收
+**Key Features**:
+- Support validation of time windows and resource limits
+- Automatically trigger node re-evaluation
+- Handle resource reclamation on policy deletion
 
 ### 2.5 LeaseController
 
-**职责**: 租约控制器，负责虚拟节点的租约管理
+**Responsibility**: Lease controller, responsible for virtual node lease management
 
-**主要功能**:
-- 为每个虚拟节点创建和管理租约
-- 定期续约确保节点活跃状态
-- 处理租约过期和节点清理
-- 支持租约的优雅停止
+**Main Functions**:
+- Create and manage leases for each virtual node
+- Periodically renew leases to ensure node active status
+- Handle lease expiration and node cleanup
+- Support graceful lease termination
 
-**关键特性**:
-- 自动租约续约机制
-- 支持租约过期处理
-- 优雅的停止和清理
+**Key Features**:
+- Automatic lease renewal mechanism
+- Support lease expiration handling
+- Graceful termination and cleanup
 
-## 3. 子模块调用关系图
+## 3. Submodule Call Relationship Diagram
 
 ```mermaid
 flowchart TD
@@ -138,236 +138,237 @@ flowchart TD
     LC --> VM
     
     %% Policy interactions
-    RLR -.->|触发重新评估| PNR
-    PNR -.->|获取策略| RLR
+    RLR -.->|Trigger re-evaluation| PNR
+    PNR -.->|Get policy| RLR
     
     %% Data flow
-    PM -->|物理资源状态| PNR
-    PNR -->|虚拟节点| VM
-    PM -->|Pod 状态| PPR
-    PPR -->|状态同步| VM
-    PM -->|CSI 信息| PCR
-    PCR -->|虚拟 CSI| VM
+    PM -->|Physical resource status| PNR
+    PNR -->|Virtual node| VM
+    PM -->|Pod status| PPR
+    PPR -->|Status sync| VM
+    PM -->|CSI info| PCR
+    PCR -->|Virtual CSI| VM
 ```
 
-## 4. PhysicalNodeReconciler 工作流程
+## 4. PhysicalNodeReconciler Workflow
 
-### 4.1 主要工作流程图
+### 4.1 Main Workflow Diagram
 
 ```mermaid
 flowchart TD
-    A[开始 Reconcile] --> B{物理节点存在?}
-    B -->|否| C[处理节点删除]
-    B -->|是| D{节点正在删除?}
-    D -->|是| C
-    D -->|否| E[获取 ClusterBinding]
-    E --> F{节点匹配选择器?}
-    F -->|否| C
-    F -->|是| G[获取适用策略]
-    G --> H{有匹配策略?}
-    H -->|是| I[选择最早策略]
-    H -->|否| J[使用所有剩余资源]
-    I --> K{在时间窗口内?}
-    K -->|否| L[处理时间窗口外]
-    K -->|是| M[移除时间窗口污点]
-    J --> N[计算可用资源]
+    A[Start Reconcile] --> B{Physical node exists?}
+    B -->|No| C[Handle node deletion]
+    B -->|Yes| D{Node being deleted?}
+    D -->|Yes| C
+    D -->|No| E[Get ClusterBinding]
+    E --> F{Node matches selector?}
+    F -->|No| C
+    F -->|Yes| G[Get applicable policies]
+    G --> H{Has matching policy?}
+    H -->|Yes| I[Select earliest policy]
+    H -->|No| J[Use all remaining resources]
+    I --> K{Within time window?}
+    K -->|No| L[Handle outside time window]
+    K -->|Yes| M[Remove time window taint]
+    J --> N[Calculate available resources]
     L --> N
     M --> N
-    N --> O{计算成功?}
-    O -->|否| P[返回错误]
-    O -->|是| Q[创建或更新虚拟节点]
-    Q --> R{操作成功?}
-    R -->|否| S[返回错误]
-    R -->|是| T[启动租约控制器]
-    T --> U[设置重新同步间隔]
-    U --> V[结束]
+    N --> O{Calculation successful?}
+    O -->|No| P[Return error]
+    O -->|Yes| Q[Create or update virtual node]
+    Q --> R{Operation successful?}
+    R -->|No| S[Return error]
+    R -->|Yes| T[Start lease controller]
+    T --> U[Set resync interval]
+    U --> V[End]
     C --> V
 ```
 
-### 4.2 处理节点删除流程
+### 4.2 Handle Node Deletion Workflow
 
 ```mermaid
 flowchart TD
-    A[开始处理节点删除] --> B[检查 ClusterID]
-    B --> C{ClusterID 存在?}
-    C -->|否| D[返回错误]
-    C -->|是| E[生成虚拟节点名称]
-    E --> F[获取虚拟节点]
-    F --> G{虚拟节点存在?}
-    G -->|否| H[记录日志并结束]
-    G -->|是| I{已有删除污点?}
-    I -->|否| J[添加删除污点]
-    I -->|是| K[立即强制驱逐所有 Pod]
-    J --> L[检查污点是否已存在]
-    L --> M{污点已存在?}
-    M -->|是| N[直接使用现有节点]
-    M -->|否| O[创建删除污点对象]
-    O --> P[设置污点键值对]
-    P --> Q[添加污点到节点污点列表]
-    Q --> R[设置删除时间注解]
-    R --> S[更新虚拟节点]
-    S --> T{更新成功?}
-    T -->|否| U[返回更新错误]
-    T -->|是| V[记录污点添加成功日志]
+    A[Start handling node deletion] --> B[Check ClusterID]
+    B --> C{ClusterID exists?}
+    C -->|No| D[Return error]
+    C -->|Yes| E[Generate virtual node name]
+    E --> F[Get virtual node]
+    F --> G{Virtual node exists?}
+    G -->|No| H[Log and end]
+    G -->|Yes| I{Already has deletion taint?}
+    I -->|No| J[Add deletion taint]
+    I -->|Yes| K[Immediately force evict all Pods]
+    J --> L[Check if taint already exists]
+    L --> M{Taint exists?}
+    M -->|Yes| N[Use existing node directly]
+    M -->|No| O[Create deletion taint object]
+    O --> P[Set taint key-value pair]
+    P --> Q[Add taint to node taint list]
+    Q --> R[Set deletion time annotation]
+    R --> S[Update virtual node]
+    S --> T{Update successful?}
+    T -->|No| U[Return update error]
+    T -->|Yes| V[Log taint addition success]
     V --> K
     N --> K
-    K --> W[强制驱逐所有 Pod]
-    W --> II[检查节点上的 Pod]
-    II --> LL{有活跃 Pod?}
-    LL -->|是| MM[设置10秒后重新检查]
-    LL -->|否| OO[停止租约控制器]
-    OO --> WW[删除虚拟节点]
-    WW --> ZZ{删除成功?}
-    ZZ -->|否| AAA[返回删除错误]
-    ZZ -->|是| BBB[记录删除成功日志]
-    BBB --> CCC[结束]
+    K --> W[Force evict all Pods]
+    W --> II[Check Pods on node]
+    II --> LL{Active Pods exist?}
+    LL -->|Yes| MM[Set recheck after 10 seconds]
+    LL -->|No| OO[Stop lease controller]
+    OO --> WW[Delete virtual node]
+    WW --> ZZ{Delete successful?}
+    ZZ -->|No| AAA[Return deletion error]
+    ZZ -->|Yes| BBB[Log deletion success]
+    BBB --> CCC[End]
     MM --> CCC
 ```
 
-### 4.3 创建或更新虚拟节点流程
+### 4.3 Create or Update Virtual Node Workflow
 
 ```mermaid
 flowchart TD
-    A[开始创建或更新虚拟节点] --> B[生成虚拟节点名称]
-    B --> C[构建虚拟节点标签和注解]
-    C --> D[转换物理节点污点]
-    D --> E[计算可用资源]
-    E --> F[创建虚拟节点对象]
-    F --> G[保存期望元数据到注解]
-    G --> H[检查虚拟节点是否存在]
-    H --> I{虚拟节点存在?}
-    I -->|否| J[创建虚拟节点]
-    I -->|是| K[获取现有虚拟节点]
-    K --> L[保留用户自定义]
-    L --> M[更新虚拟节点状态]
-    M --> N{污点是否变化?}
-    N -->|是| O[单独更新污点]
-    N -->|否| P[启动租约控制器]
+    A[Start creating or updating virtual node] --> B[Generate virtual node name]
+    B --> C[Build virtual node labels and annotations]
+    C --> D[Convert physical node taints]
+    D --> E[Calculate available resources]
+    E --> F[Create virtual node object]
+    F --> G[Save expected metadata to annotations]
+    G --> H[Check if virtual node exists]
+    H --> I{Virtual node exists?}
+    I -->|No| J[Create virtual node]
+    I -->|Yes| K[Get existing virtual node]
+    K --> L[Preserve user customizations]
+    L --> M[Update virtual node status]
+    M --> N{Taints changed?}
+    N -->|Yes| O[Update taints separately]
+    N -->|No| P[Start lease controller]
     O --> P
     J --> P
-    P --> Q[结束]
+    P --> Q[End]
 
-    subgraph "保留用户自定义"
-        L1[获取之前期望的元数据] --> L2[创建当前期望的元数据]
-        L2 --> L3[保存当前期望元数据]
-        L3 --> L4[合并用户自定义标签]
-        L4 --> L5[合并用户自定义注解]
-        L5 --> L6[合并用户自定义污点]
-        L6 --> L7[完成用户自定义保留]
+    subgraph "Preserve User Customizations"
+        L1[Get previously expected metadata] --> L2[Create current expected metadata]
+        L2 --> L3[Save current expected metadata]
+        L3 --> L4[Merge user-defined labels]
+        L4 --> L5[Merge user-defined annotations]
+        L5 --> L6[Merge user-defined taints]
+        L6 --> L7[Complete user customization preservation]
     end
 ```
 
-### 4.4 处理时间窗口外流程
+### 4.4 Handle Outside Time Window Workflow
 
 ```mermaid
 flowchart TD
-    A[开始处理时间窗口外] --> B[获取虚拟节点]
-    B --> C{虚拟节点存在?}
-    C -->|否| D[设置默认重新同步时间]
-    C -->|是| E[检查现有时间窗口外污点]
-    D --> Z[结束]
-    E --> F[获取策略优雅回收周期]
-    F --> G{强制回收标志?}
-    G -->|否| H[设置 NoSchedule 污点效果]
-    G -->|是| I{优雅回收周期为0?}
-    I -->|是| J[设置 NoExecute 污点效果]
-    I -->|否| K{现有污点存在?}
-    K -->|否| L[设置 NoSchedule 污点效果]
-    K -->|是| M{污点效果是 NoExecute?}
-    M -->|是| N[设置默认重新同步时间]
-    M -->|否| O{污点有时间戳?}
-    O -->|否| P[设置 NoExecute 污点效果]
-    O -->|是| Q[计算污点添加时间]
-    Q --> R{超过优雅回收周期?}
-    R -->|是| S[设置 NoExecute 污点效果]
-    R -->|否| T[计算剩余时间]
-    T --> U[设置剩余时间后重新同步]
-    H --> V[添加或更新污点]
+    A[Start handling outside time window] --> B[Get virtual node]
+    B --> C{Virtual node exists?}
+    C -->|No| D[Set default resync time]
+    C -->|Yes| E[Check existing outside time window taint]
+    D --> Z[End]
+    E --> F[Get policy graceful reclaim period]
+    F --> G{Force reclaim flag?}
+    G -->|No| H[Set NoSchedule taint effect]
+    G -->|Yes| I{Graceful reclaim period is 0?}
+    I -->|Yes| J[Set NoExecute taint effect]
+    I -->|No| K{Existing taint exists?}
+    K -->|No| L[Set NoSchedule taint effect]
+    K -->|Yes| M{Taint effect is NoExecute?}
+    M -->|Yes| N[Set default resync time]
+    M -->|No| O{Taint has timestamp?}
+    O -->|No| P[Set NoExecute taint effect]
+    O -->|Yes| Q[Calculate taint addition time]
+    Q --> R{Exceeded graceful reclaim period?}
+    R -->|Yes| S[Set NoExecute taint effect]
+    R -->|No| T[Calculate remaining time]
+    T --> U[Set resync after remaining time]
+    H --> V[Add or update taint]
     J --> V
     L --> V
     P --> V
     S --> V
-    V --> W[更新虚拟节点]
-    W --> X[设置重新同步时间]
-    X --> Z[结束]
+    V --> W[Update virtual node]
+    W --> X[Set resync time]
+    X --> Z[End]
     N --> Z
     U --> Z
 ```
 
-## 5. PhysicalPodReconciler 主要工作流程
+## 5. PhysicalPodReconciler Main Workflow
 
 ```mermaid
 flowchart TD
-    A[开始 Reconcile] --> B{物理 Pod 存在?}
-    B -->|否| C[结束]
-    B -->|是| D{是 Kubeocean 管理的 Pod?}
-    D -->|否| C
-    D -->|是| E{有必需注解?}
-    E -->|否| F[删除物理 Pod]
-    E -->|是| G[获取并验证虚拟 Pod]
-    G --> H{虚拟 Pod 存在且匹配?}
-    H -->|否| F
-    H -->|是| I{注解指向当前物理 Pod?}
-    I -->|否| F
-    I -->|是| J[同步物理 Pod 到虚拟 Pod]
-    J --> K{同步成功?}
-    K -->|否| L[返回错误]
-    K -->|是| M[结束]
-    F --> O{删除成功?}
-    O -->|否| P[返回错误]
-    O -->|是| M
+    A[Start Reconcile] --> B{Physical Pod exists?}
+    B -->|No| C[End]
+    B -->|Yes| D{Is Kubeocean-managed Pod?}
+    D -->|No| C
+    D -->|Yes| E{Has required annotations?}
+    E -->|No| F[Delete physical Pod]
+    E -->|Yes| G[Get and validate virtual Pod]
+    G --> H{Virtual Pod exists and matches?}
+    H -->|No| F
+    H -->|Yes| I{Annotation points to current physical Pod?}
+    I -->|No| F
+    I -->|Yes| J[Sync physical Pod to virtual Pod]
+    J --> K{Sync successful?}
+    K -->|No| L[Return error]
+    K -->|Yes| M[End]
+    F --> O{Delete successful?}
+    O -->|No| P[Return error]
+    O -->|Yes| M
 ```
 
-## 6. 关键逻辑实现细节说明
+## 6. Key Logic Implementation Details
 
-### 6.1 资源计算机制
+### 6.1 Resource Calculation Mechanism
 
-PhysicalNodeReconciler 实现了智能的资源计算机制，根据 ResourceLeasingPolicy 动态计算可抽取的资源：
+PhysicalNodeReconciler implements an intelligent resource calculation mechanism that dynamically calculates extractable resources based on ResourceLeasingPolicy:
 
-- **策略匹配**: 根据节点选择器匹配适用的 ResourceLeasingPolicy
-- **优先级处理**: 当多个策略匹配时，选择创建时间最早的策略
-- **时间窗口管理**: 检查策略的时间窗口，在窗口外时添加污点
-- **资源计算**: 根据策略的资源限制计算可抽取的 CPU、内存等资源
-- **动态调整**: 实时响应策略变化，重新计算资源分配
+- **Policy Matching**: Match applicable ResourceLeasingPolicy based on node selectors
+- **Priority Handling**: When multiple policies match, select the earliest created policy
+- **Time Window Management**: Check policy time windows, add taints when outside windows
+- **Resource Calculation**: Calculate extractable CPU, memory, and other resources based on policy resource limits
+- **Dynamic Adjustment**: Respond to policy changes in real-time, recalculate resource allocation
 
-### 6.2 节点生命周期管理
+### 6.2 Node Lifecycle Management
 
-实现了完整的虚拟节点生命周期管理机制：
+A complete virtual node lifecycle management mechanism is implemented:
 
-- **创建流程**: 根据物理节点和策略创建虚拟节点，设置正确的标签和注解
-- **更新机制**: 监听物理节点变化，实时更新虚拟节点的资源信息
-- **删除处理**: 当物理节点删除或不匹配选择器时，优雅删除虚拟节点
-- **污点管理**: 根据时间窗口状态动态管理节点污点
-- **租约维护**: 为每个虚拟节点维护活跃租约，确保节点可用性
+- **Creation Process**: Create virtual nodes based on physical nodes and policies, set correct labels and annotations
+- **Update Mechanism**: Monitor physical node changes, update virtual node resource information in real-time
+- **Deletion Handling**: Gracefully delete virtual nodes when physical nodes are deleted or don't match selectors
+- **Taint Management**: Dynamically manage node taints based on time window status
+- **Lease Maintenance**: Maintain active leases for each virtual node, ensure node availability
 
-### 6.3 Pod 状态同步机制
+### 6.3 Pod Status Synchronization Mechanism
 
-PhysicalPodReconciler 实现了精确的 Pod 状态同步：
+PhysicalPodReconciler implements precise Pod status synchronization:
 
-- **过滤机制**: 只处理带有 Kubeocean 管理标签的 Pod
-- **注解验证**: 验证物理 Pod 包含必需的虚拟 Pod 映射注解
-- **双向验证**: 确保虚拟 Pod 的注解正确指向当前物理 Pod
-- **状态同步**: 将物理 Pod 的状态信息同步到虚拟 Pod
-- **清理机制**: 当映射关系失效时，自动清理物理 Pod
+- **Filtering Mechanism**: Only process Pods with Kubeocean management labels
+- **Annotation Validation**: Validate that physical Pods contain required virtual Pod mapping annotations
+- **Bidirectional Validation**: Ensure virtual Pod annotations correctly point to current physical Pod
+- **Status Synchronization**: Synchronize physical Pod status information to virtual Pods
+- **Cleanup Mechanism**: Automatically clean up physical Pods when mapping relationships become invalid
 
-### 6.4 策略触发机制
+### 6.4 Policy Trigger Mechanism
 
-ResourceLeasingPolicyReconciler 实现了高效的策略触发机制：
+ResourceLeasingPolicyReconciler implements an efficient policy trigger mechanism:
 
-- **变化检测**: 监听策略的创建、更新和删除事件
-- **节点查找**: 根据策略的节点选择器查找匹配的节点
-- **重新评估**: 触发匹配节点的重新评估和资源计算
-- **状态更新**: 更新策略的状态信息，包括时间窗口状态
-- **生命周期管理**: 处理策略删除时的资源回收
+- **Change Detection**: Monitor policy create, update, and delete events
+- **Node Lookup**: Find matching nodes based on policy node selectors
+- **Re-evaluation**: Trigger re-evaluation and resource calculation of matching nodes
+- **Status Updates**: Update policy status information, including time window status
+- **Lifecycle Management**: Handle resource reclamation when policies are deleted
 
-### 6.5 租约管理机制
+### 6.5 Lease Management Mechanism
 
-LeaseController 实现了可靠的租约管理：
+LeaseController implements reliable lease management:
 
-- **自动续约**: 定期续约确保虚拟节点的活跃状态
-- **过期处理**: 处理租约过期的情况，确保节点状态正确
-- **优雅停止**: 支持租约控制器的优雅停止和清理
-- **并发控制**: 处理多个租约控制器的并发操作
-- **错误恢复**: 在租约操作失败时进行重试和恢复
+- **Automatic Renewal**: Periodically renew leases to ensure virtual node active status
+- **Expiration Handling**: Handle lease expiration situations, ensure correct node status
+- **Graceful Termination**: Support graceful termination and cleanup of lease controllers
+- **Concurrency Control**: Handle concurrent operations of multiple lease controllers
+- **Error Recovery**: Retry and recover when lease operations fail
+
 
 

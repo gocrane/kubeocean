@@ -1,28 +1,31 @@
-# Kubeocean 文档索引
+# Kubeocean Documentation Index
 
-本目录包含 Kubeocean 项目的详细技术文档。
+> English | [中文](README_zh.md)
 
-## 架构文档
+This directory contains detailed technical documentation for the Kubeocean project.
 
-- [architecture.md](architecture.md) - 系统整体架构设计
-- [design.md](design.md) - 详细设计文档
+## Quick Start
 
-## 组件文档
+- [Quick Start Guide](quick-start.md) - Get started with Kubeocean quickly
 
-- [kubeocean-manager.md](kubeocean-manager.md) - Kubeocean Manager 组件详细说明
-- [manager.md](manager.md) - 管理器实现细节
-- [syncer-template-architecture.md](syncer-template-architecture.md) - Syncer 组件架构设计
+## Architecture Documentation
 
-## 同步机制
+- [Architecture Overview](architecture.md) - Overall system architecture design and component introduction
 
-- [topdown-syncer.md](topdown-syncer.md) - 自上而下同步：从虚拟集群到物理集群
-- [bottomup-syncer.md](bottomup-syncer.md) - 自下而上同步：从物理集群到虚拟集群
+## Design Documentation
 
-## 控制器文档
+The `design/` directory contains detailed design documents for each component:
 
-- [clusterbinding-controller.md](clusterbinding-controller.md) - ClusterBinding 控制器实现
-- [csinode-sync.md](csinode-sync.md) - CSI 节点同步机制
+### Core Components
 
-## 监控与运维
+- [Manager Component](design/manager.md) - Kubeocean Manager component: cluster binding management and lifecycle control
+- [BottomUp Syncer](design/bottomup-syncer.md) - Bottom-up synchronization: from physical clusters to virtual clusters
+- [TopDown Syncer](design/topdown-syncer.md) - Top-down synchronization: from virtual clusters to physical clusters
+- [CSINode Sync](design/csinode-sync.md) - CSI node synchronization mechanism
 
-- [vnode-cadvisor-metrics.md](vnode-cadvisor-metrics.md) - Vnode cAdvisor 指标采集方案
+## Metrics and Monitoring
+
+The `metrics/` directory contains monitoring and metrics related documentation:
+
+- [Metrics Overview](metrics/metrics.md) - Monitoring metrics overview
+- [Vnode cAdvisor Metrics](metrics/vnode-cadvisor-metrics.md) - Virtual node cAdvisor metrics collection solution

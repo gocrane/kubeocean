@@ -83,4 +83,4 @@ Kubeocean 在业务集群中映射创建的 Pod 集中在一个 namespace 当中
 
 ## 文档
 
-待完善
+请参见：[文档索引](docs/README_zh.md)

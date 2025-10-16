@@ -1,40 +1,40 @@
-# Vnode cAdvisor 指标采集方案
+# Vnode cAdvisor Metrics Collection Solution
 
-## 概述
+## Overview
 
-对于调度到Vnode（虚拟节点）上的容器，其cAdvisor指标需要通过"新建自定义监控"的方式进行采集。由于Vnode是虚拟节点，不能直接通过传统的cAdvisor端点获取指标，因此需要通过Proxier组件来代理和暴露这些指标。
+For containers scheduled on Vnodes (virtual nodes), their cAdvisor metrics need to be collected through "custom monitoring" approach. Since Vnodes are virtual nodes and cannot directly obtain metrics through traditional cAdvisor endpoints, the Proxier component is required to proxy and expose these metrics.
 
-本文档描述了两种可行的指标采集方案，每种方案都有其特定的使用场景和配置方式。
+This document describes two viable metrics collection solutions, each with specific use cases and configuration methods.
 
-## 方案对比
+## Solution Comparison
 
-| 特性 | 方案1 (单端口多路径) | 方案2 (多端口单路径) |
-|------|-------------------|-------------------|
-| 端口使用 | 单一端口(9006) | 每个Vnode独立端口 |
-| 路径规则 | `/VnodeName/metrics` | `/metrics` |
-| 协议 | HTTP | HTTPS |
-| 配置复杂度 | 中等 | 简单 |
-| 端口管理 | 简单 | 需要端口分配管理 |
+| Feature | Solution 1 (Single Port Multi Path) | Solution 2 (Multi Port Single Path) |
+|---------|-------------------------------------|--------------------------------------|
+| Port Usage | Single port (9006) | Independent port for each Vnode |
+| Path Rule | `/VnodeName/metrics` | `/metrics` |
+| Protocol | HTTP | HTTPS |
+| Configuration Complexity | Medium | Simple |
+| Port Management | Simple | Requires port allocation management |
 
 
-## 方案1：单端口多路径方案
+## Solution 1: Single Port Multi Path Solution
 
-### 工作原理
+### Working Principle
 
-1. **统一端口暴露**：所有Vnode的cAdvisor指标都通过Proxier Pod的同一个端口（默认9006）暴露
-2. **路径区分**：每个Vnode通过不同的URL路径来区分，格式为 `{ProxierPodIP}:9006/{VnodeName}/metrics`
-3. **注解标记**：每个Vnode都会被添加特定的annotation来标识其prometheus采集URL
+1. **Unified Port Exposure**: All Vnode cAdvisor metrics are exposed through the same port of Proxier Pod (default 9006)
+2. **Path Differentiation**: Each Vnode is distinguished by different URL paths, formatted as `{ProxierPodIP}:9006/{VnodeName}/metrics`
+3. **Annotation Marking**: Each Vnode will be added with a specific annotation to identify its Prometheus collection URL
 
-### Vnode配置
+### Vnode Configuration
 
-每个Vnode节点会自动添加以下annotation：
+Each Vnode will automatically add the following annotation:
 
 ```yaml
 annotations:
   kubeocean.io/prometheus-url: "{ProxierPodIP}:9006/{VnodeName}"
 ```
 
-### Prometheus配置
+### Prometheus Configuration
 
 ```yaml
 scrape_configs:
@@ -44,58 +44,58 @@ scrape_configs:
   kubernetes_sd_configs:
   - role: node
   relabel_configs:
-  # 只采集vnode类型的节点
+  # Only collect vnode type nodes
   - source_labels:
     - __meta_kubernetes_node_label_node_kubernetes_io_instance_type
     regex: vnode
     action: keep
-  # 排除eklet节点
+  # Exclude eklet nodes
   - source_labels:
     - __meta_kubernetes_node_label_node_kubernetes_io_instance_type
     regex: eklet
     action: drop
-  # 保留节点标签
+  # Preserve node labels
   - action: labelmap
     regex: __meta_kubernetes_node_label_(.+)
-  # 从annotation中提取地址
+  # Extract address from annotation
   - source_labels:
     - __meta_kubernetes_node_annotation_kubeocean_io_prometheus_url
     regex: (.+)/(.+)
     target_label: __address__
     replacement: $1
     action: replace
-  # 从annotation中提取metrics路径
+  # Extract metrics path from annotation
   - source_labels:
     - __meta_kubernetes_node_annotation_kubeocean_io_prometheus_url
     regex: (.+)/(.+)
     target_label: __metrics_path__
     replacement: $2/metrics
     action: replace
-  # 清理kubernetes相关标签
+  # Clean up kubernetes-related labels
   metric_relabel_configs:
   - regex: .*kubernetes_io.*
     action: labeldrop
 ```
 
-## 方案2：多端口单路径方案
+## Solution 2: Multi Port Single Path Solution
 
-### 工作原理
+### Working Principle
 
-1. **独立端口分配**：为每个Vnode分配一个唯一的端口号
-2. **统一路径**：所有指标都通过 `/metrics` 路径暴露
-3. **HTTPS协议**：使用HTTPS提供更好的安全性
-4. **标签标记**：通过节点标签标识分配的端口
+1. **Independent Port Allocation**: Assign a unique port number for each Vnode
+2. **Unified Path**: All metrics are exposed through `/metrics` path
+3. **HTTPS Protocol**: Use HTTPS for better security
+4. **Label Marking**: Identify assigned port through node labels
 
-### Vnode配置
+### Vnode Configuration
 
-每个Vnode节点会自动添加以下label：
+Each Vnode will automatically add the following label:
 
 ```yaml
 labels:
-  kubeocean.io/proxier_port: "{分配的端口号}"
+  kubeocean.io/proxier_port: "{Assigned Port Number}"
 ```
 
-### Prometheus配置
+### Prometheus Configuration
 
 ```yaml
 scrape_configs:
@@ -107,20 +107,20 @@ scrape_configs:
   kubernetes_sd_configs:
   - role: node
   relabel_configs:
-  # 只采集vnode类型的节点
+  # Only collect vnode type nodes
   - source_labels:
     - __meta_kubernetes_node_label_node_kubernetes_io_instance_type
     regex: vnode
     action: keep
-  # 排除eklet节点
+  # Exclude eklet nodes
   - source_labels:
     - __meta_kubernetes_node_label_node_kubernetes_io_instance_type
     regex: eklet
     action: drop
-  # 保留节点标签
+  # Preserve node labels
   - action: labelmap
     regex: __meta_kubernetes_node_label_(.+)
-  # 组合IP和端口形成地址
+  # Combine IP and port to form address
   - source_labels:
     - __meta_kubernetes_node_address_InternalIP
     - __meta_kubernetes_node_label_kubeocean_io_proxier_port
@@ -130,45 +130,46 @@ scrape_configs:
     action: replace
 ```
 
-### 部署步骤
+### Deployment Steps
 
-1. **确定方案**：根据实际需求选择合适的方案
-2. **配置Proxier**：确保Proxier组件支持选定的方案
-3. **配置Prometheus**：应用相应的scrape配置
-4. **验证采集**：确认指标能够正常采集
-5. **监控告警**：设置相关的监控告警规则
+1. **Determine Solution**: Choose appropriate solution based on actual requirements
+2. **Configure Proxier**: Ensure Proxier component supports the selected solution
+3. **Configure Prometheus**: Apply corresponding scrape configuration
+4. **Verify Collection**: Confirm metrics can be collected normally
+5. **Monitoring Alerts**: Set up related monitoring alert rules
 
-### 故障排查
+### Troubleshooting
 
-#### 常见问题
+#### Common Issues
 
-1. **指标无法采集**
-   - 检查Vnode的annotation/label是否正确配置
-   - 验证Proxier Pod是否正常运行
-   - 确认网络连通性
+1. **Metrics Cannot Be Collected**
+   - Check if Vnode annotations/labels are correctly configured
+   - Verify if Proxier Pod is running normally
+   - Confirm network connectivity
 
-2. **部分指标缺失**
-   - 检查relabel配置是否正确
-   - 验证指标路径是否可访问
-   - 检查Prometheus日志
+2. **Missing Partial Metrics**
+   - Check if relabel configuration is correct
+   - Verify if metrics path is accessible
+   - Check Prometheus logs
 
-3. **性能问题**
-   - 监控Proxier Pod的资源使用情况
-   - 调整采集频率
-   - 考虑增加Proxier Pod副本数
+3. **Performance Issues**
+   - Monitor Proxier Pod resource usage
+   - Adjust collection frequency
+   - Consider increasing Proxier Pod replicas
 
-#### 调试命令
+#### Debug Commands
 
 ```bash
-# 检查Vnode配置
+# Check Vnode configuration
 kubectl get nodes -l node.kubernetes.io/instance-type=vnode -o yaml
 
-# 测试指标端点（方案1）
+# Test metrics endpoint (Solution 1)
 curl http://{ProxierPodIP}:9006/{VnodeName}/metrics
 
-# 测试指标端点（方案2）
+# Test metrics endpoint (Solution 2)
 curl -k https://{ProxierPodIP}:{Port}/metrics
 
-# 检查Prometheus targets
-# 在Prometheus UI中查看 Status -> Targets
+# Check Prometheus targets
+# View in Prometheus UI: Status -> Targets
 ```
+

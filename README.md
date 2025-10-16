@@ -83,4 +83,4 @@ Refer to the documentation: [Quick Start](docs/quick-start.md)
 
 ## Documentation
 
-To be completed
+Refer to: [Documentation Index](docs/README.md)

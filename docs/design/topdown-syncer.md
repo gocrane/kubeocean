@@ -1,167 +1,167 @@
-# TopDown Syncer 模块文档
+# TopDown Syncer Module Documentation
 
-## 1. 模块概述
+## 1. Module Overview
 
-TopDown Syncer 是 Kubeocean 系统的核心组件之一，负责将虚拟集群中的资源同步到物理集群。它实现了从虚拟集群到物理集群的向下同步（Top-down synchronization），确保虚拟集群中创建的资源能够正确地映射和部署到物理集群中。
+TopDown Syncer is one of the core components of the Kubeocean system, responsible for synchronizing resources from the virtual cluster to physical clusters. It implements top-down synchronization from virtual clusters to physical clusters, ensuring that resources created in the virtual cluster are correctly mapped and deployed to physical clusters.
 
-### 主要职责和功能
+### Main Responsibilities and Functions
 
-- **资源同步**: 监听虚拟集群中的资源变化，将虚拟资源同步到物理集群
-- **状态管理**: 维护虚拟资源与物理资源之间的映射关系
-- **生命周期管理**: 处理虚拟资源的创建、更新和删除操作
-- **跨集群协调**: 在虚拟集群和物理集群之间建立资源映射关系
-- **注解管理**: 通过注解机制维护资源间的关联关系
+- **Resource Synchronization**: Monitor resource changes in virtual clusters, synchronize virtual resources to physical clusters
+- **State Management**: Maintain mapping relationships between virtual and physical resources
+- **Lifecycle Management**: Handle creation, update, and deletion operations of virtual resources
+- **Cross-cluster Coordination**: Establish resource mapping relationships between virtual and physical clusters
+- **Annotation Management**: Maintain association relationships between resources through annotation mechanisms
 
-## 2. 包含的子模块及相关介绍
+## 2. Included Submodules and Related Introduction
 
 ### 2.1 VirtualPodReconciler
 
-**职责**: 负责虚拟 Pod 的同步管理，将虚拟集群中的 Pod 映射到物理集群。
+**Responsibility**: Responsible for synchronization management of virtual Pods, mapping Pods from virtual clusters to physical clusters.
 
-**主要功能**:
-- 监听虚拟集群中的 Pod 变化
-- 验证 Pod 是否应该由当前集群绑定管理
-- 创建、更新和删除物理 Pod
-- 维护虚拟 Pod 与物理 Pod 之间的映射关系
-- 处理 Pod 状态同步和生命周期管理
+**Main Functions**:
+- Monitor Pod changes in virtual clusters
+- Validate if Pods should be managed by the current cluster binding
+- Create, update, and delete physical Pods
+- Maintain mapping relationships between virtual and physical Pods
+- Handle Pod status synchronization and lifecycle management
 
 ### 2.2 VirtualConfigMapReconciler
 
-**职责**: 负责虚拟 ConfigMap 的同步管理，将虚拟集群中的 ConfigMap 映射到物理集群。
+**Responsibility**: Responsible for synchronization management of virtual ConfigMaps, mapping ConfigMaps from virtual clusters to physical clusters.
 
-**主要功能**:
-- 监听虚拟集群中的 ConfigMap 变化
-- 验证 ConfigMap 是否应该由当前集群绑定管理
-- 创建、更新和删除物理 ConfigMap
-- 维护虚拟 ConfigMap 与物理 ConfigMap 之间的映射关系
+**Main Functions**:
+- Monitor ConfigMap changes in virtual clusters
+- Validate if ConfigMaps should be managed by the current cluster binding
+- Create, update, and delete physical ConfigMaps
+- Maintain mapping relationships between virtual and physical ConfigMaps
 
 ### 2.3 VirtualSecretReconciler
 
-**职责**: 负责虚拟 Secret 的同步管理，将虚拟集群中的 Secret 映射到物理集群。
+**Responsibility**: Responsible for synchronization management of virtual Secrets, mapping Secrets from virtual clusters to physical clusters.
 
-**主要功能**:
-- 监听虚拟集群中的 Secret 变化
-- 验证 Secret 是否应该由当前集群绑定管理
-- 创建、更新和删除物理 Secret
-- 维护虚拟 Secret 与物理 Secret 之间的映射关系
-- 处理 Secret 数据的同步和验证
+**Main Functions**:
+- Monitor Secret changes in virtual clusters
+- Validate if Secrets should be managed by the current cluster binding
+- Create, update, and delete physical Secrets
+- Maintain mapping relationships between virtual and physical Secrets
+- Handle Secret data synchronization and validation
 
 ### 2.4 VirtualPVCReconciler
 
-**职责**: 负责虚拟 PVC（PersistentVolumeClaim）的同步管理，将虚拟集群中的 PVC 映射到物理集群。
+**Responsibility**: Responsible for synchronization management of virtual PVCs (PersistentVolumeClaims), mapping PVCs from virtual clusters to physical clusters.
 
-**主要功能**:
-- 监听虚拟集群中的 PVC 变化
-- 验证 PVC 是否应该由当前集群绑定管理
-- 创建、更新和删除物理 PVC
-- 维护虚拟 PVC 与物理 PVC 之间的映射关系
+**Main Functions**:
+- Monitor PVC changes in virtual clusters
+- Validate if PVCs should be managed by the current cluster binding
+- Create, update, and delete physical PVCs
+- Maintain mapping relationships between virtual and physical PVCs
 
 ### 2.5 VirtualPVReconciler
 
-**职责**: 负责虚拟 PV（PersistentVolume）的同步管理，将虚拟集群中的 PV 映射到物理集群。
+**Responsibility**: Responsible for synchronization management of virtual PVs (PersistentVolumes), mapping PVs from virtual clusters to physical clusters.
 
-**主要功能**:
-- 监听虚拟集群中的 PV 变化
-- 验证 PV 是否应该由当前集群绑定管理
-- 创建、更新和删除物理 PV
-- 维护虚拟 PV 与物理 PV 之间的映射关系
+**Main Functions**:
+- Monitor PV changes in virtual clusters
+- Validate if PVs should be managed by the current cluster binding
+- Create, update, and delete physical PVs
+- Maintain mapping relationships between virtual and physical PVs
 
 
 
-## 3. VirtualPodReconciler 工作流程
+## 3. VirtualPodReconciler Workflow
 
-### 3.1 主要工作流程
+### 3.1 Main Workflow
 
 ```mermaid
 flowchart TD
-    A[开始 Reconcile] --> B[获取虚拟 Pod]
-    B --> C{虚拟 Pod 存在?}
-    C -->|否| D[结束]
-    C -->|是| E{Pod 已调度?}
-    E -->|否| D
-    E -->|是| F[检查是否由当前集群管理]
-    F --> G{应该管理?}
-    G -->|否| D
-    G -->|是| H{虚拟 Pod 正在删除?}
-    H -->|是| I[处理虚拟 Pod 删除]
-    H -->|否| J[检查物理 Pod 是否存在]
-    J --> K{物理 Pod 存在?}
-    K -->|否| L[处理物理 Pod 创建]
-    K -->|是| M[检查 UID 注解是否需要更新]
-    M --> N{UID 需要更新?}
-    N -->|是| O[更新 UID 注解]
-    N -->|否| P[无需操作]
-    O --> S[结束]
+    A[Start Reconcile] --> B[Get virtual Pod]
+    B --> C{Virtual Pod exists?}
+    C -->|No| D[End]
+    C -->|Yes| E{Pod scheduled?}
+    E -->|No| D
+    E -->|Yes| F[Check if managed by current cluster]
+    F --> G{Should manage?}
+    G -->|No| D
+    G -->|Yes| H{Virtual Pod being deleted?}
+    H -->|Yes| I[Handle virtual Pod deletion]
+    H -->|No| J[Check if physical Pod exists]
+    J --> K{Physical Pod exists?}
+    K -->|No| L[Handle physical Pod creation]
+    K -->|Yes| M[Check if UID annotation needs update]
+    M --> N{UID needs update?}
+    N -->|Yes| O[Update UID annotation]
+    N -->|No| P[No operation needed]
+    O --> S[End]
     P --> S
-    L --> L1{所有映射注解都存在?}
-    L1 -->|是| L2[设置虚拟 Pod 状态为 Failed]
-    L1 -->|否| L3{物理 Pod UID 为空且名称为空?}
-    L3 -->|是| L4[生成物理 Pod 名称映射]
-    L3 -->|否| L5{物理 Pod UID 为空但其他注解存在?}
-    L5 -->|是| L6[创建物理 Pod]
-    L5 -->|否| L7[结束]
-    L2 --> L8[结束]
-    L4 --> L9{映射生成成功?}
-    L9 -->|否| U[返回错误]
-    L9 -->|是| L10[等待下次同步]
+    L --> L1{All mapping annotations exist?}
+    L1 -->|Yes| L2[Set virtual Pod status to Failed]
+    L1 -->|No| L3{Physical Pod UID empty and name empty?}
+    L3 -->|Yes| L4[Generate physical Pod name mapping]
+    L3 -->|No| L5{Physical Pod UID empty but other annotations exist?}
+    L5 -->|Yes| L6[Create physical Pod]
+    L5 -->|No| L7[End]
+    L2 --> L8[End]
+    L4 --> L9{Mapping generation successful?}
+    L9 -->|No| U[Return error]
+    L9 -->|Yes| L10[Wait for next sync]
     L10 --> S
-    L6 --> L11[同步依赖资源]
-    L11 --> L12[构建物理 Pod 规格]
-    L12 --> L13[创建物理 Pod]
+    L6 --> L11[Sync dependent resources]
+    L11 --> L12[Build physical Pod spec]
+    L12 --> L13[Create physical Pod]
     L13 --> T
     L7 --> S
-    T -->|否| U[返回错误]
-    T -->|是| V[等待 BottomUp Syncer 更新 UID]
-    V --> W[结束]
-    R --> X{更新成功?}
-    X -->|否| Y[返回错误]
-    X -->|是| Z[结束]
-    I --> AA[删除物理 Pod]
-    AA --> BB{删除成功?}
-    BB -->|否| CC[返回错误]
-    BB -->|是| DD[结束]
+    T -->|No| U[Return error]
+    T -->|Yes| V[Wait for BottomUp Syncer to update UID]
+    V --> W[End]
+    R --> X{Update successful?}
+    X -->|No| Y[Return error]
+    X -->|Yes| Z[End]
+    I --> AA[Delete physical Pod]
+    AA --> BB{Delete successful?}
+    BB -->|No| CC[Return error]
+    BB -->|Yes| DD[End]
 ```
 
-### 3.2 同步依赖资源流程
+### 3.2 Sync Dependent Resources Workflow
 
 ```mermaid
 flowchart TD
-    A[开始同步依赖资源] --> B[同步 ConfigMaps]
-    B --> C[同步 Secrets]
-    C --> D[同步 PVCs]
-    D --> E[构建资源映射]
-    E --> F[结束]
+    A[Start syncing dependent resources] --> B[Sync ConfigMaps]
+    B --> C[Sync Secrets]
+    C --> D[Sync PVCs]
+    D --> E[Build resource mapping]
+    E --> F[End]
 
-    subgraph "同步 ConfigMaps"
-        B1[收集 Pod 中的 ConfigMap 引用] --> B2[遍历所有 ConfigMap 引用]
-        B2 --> B3[从 volumes 收集]
-        B3 --> B4[从环境变量收集]
-        B4 --> B5[从 init containers 收集]
-        B5 --> B6[同步每个 ConfigMap]
-        B6 --> B7[收集 ConfigMap 映射]
+    subgraph "Sync ConfigMaps"
+        B1[Collect ConfigMap references in Pod] --> B2[Iterate all ConfigMap references]
+        B2 --> B3[Collect from volumes]
+        B3 --> B4[Collect from environment variables]
+        B4 --> B5[Collect from init containers]
+        B5 --> B6[Sync each ConfigMap]
+        B6 --> B7[Collect ConfigMap mappings]
     end
 
-    subgraph "同步 Secrets"
-        C1[收集 Pod 中的 Secret 引用] --> C2[遍历所有 Secret 引用]
-        C2 --> C3[从 volumes 收集]
-        C3 --> C4[从环境变量收集]
-        C4 --> C5[从 init containers 收集]
-        C5 --> C6[从 image pull secrets 收集]
-        C6 --> C7[同步每个 Secret]
-        C7 --> C8[收集 Secret 映射]
+    subgraph "Sync Secrets"
+        C1[Collect Secret references in Pod] --> C2[Iterate all Secret references]
+        C2 --> C3[Collect from volumes]
+        C3 --> C4[Collect from environment variables]
+        C4 --> C5[Collect from init containers]
+        C5 --> C6[Collect from image pull secrets]
+        C6 --> C7[Sync each Secret]
+        C7 --> C8[Collect Secret mappings]
     end
 
-    subgraph "同步 PVCs"
-        D1[收集 Pod 中的 PVC 引用] --> D2[遍历所有 PVC 引用]
-        D2 --> D3[从 volumes 收集]
-        D3 --> D4[同步每个 PVC]
-        D4 --> D5[收集 PVC 映射]
+    subgraph "Sync PVCs"
+        D1[Collect PVC references in Pod] --> D2[Iterate all PVC references]
+        D2 --> D3[Collect from volumes]
+        D3 --> D4[Sync each PVC]
+        D4 --> D5[Collect PVC mappings]
     end
 
-    subgraph "资源映射构建"
-        E1[创建 ConfigMap 映射] --> E2[创建 Secret 映射]
-        E2 --> E3[创建 PVC 映射]
-        E3 --> E4[构建完整资源映射]
+    subgraph "Build Resource Mapping"
+        E1[Create ConfigMap mapping] --> E2[Create Secret mapping]
+        E2 --> E3[Create PVC mapping]
+        E3 --> E4[Build complete resource mapping]
     end
 
     B --> B1
@@ -170,207 +170,208 @@ flowchart TD
     E --> E1
 ```
 
-### 3.3 同步 PVC 流程
+### 3.3 Sync PVC Workflow
 
 ```mermaid
 flowchart TD
-    A[开始同步 PVC] --> B[获取虚拟 PVC]
-    B --> C{虚拟 PVC 存在?}
-    C -->|否| D[返回错误]
-    C -->|是| E{检查 PVC 状态}
-    E --> F{PVC 已绑定?}
-    F -->|否| G[返回错误：PVC 未绑定]
-    F -->|是| H{PVC 有 volumeName?}
-    H -->|否| I[返回错误：PVC 无 volumeName]
-    H -->|是| J[同步关联的 PV]
-    J --> K{PV 同步成功?}
-    K -->|否| L[返回错误：PV 同步失败]
-    K -->|是| M[生成物理 PVC 名称]
-    M --> N[检查物理 PVC 是否存在]
-    N --> O{物理 PVC 存在?}
-    O -->|是| P{验证物理 PVC 所有权}
-    O -->|否| Q[更新虚拟 PVC 注解]
-    P --> R{所有权验证通过?}
-    R -->|否| S[返回错误：所有权冲突]
-    R -->|是| T[返回物理 PVC 名称]
-    Q --> U[创建物理 PVC]
-    U --> V{创建成功?}
-    V -->|否| W[返回错误：创建失败]
-    V -->|是| X[返回物理 PVC 名称]
+    A[Start syncing PVC] --> B[Get virtual PVC]
+    B --> C{Virtual PVC exists?}
+    C -->|No| D[Return error]
+    C -->|Yes| E{Check PVC status}
+    E --> F{PVC bound?}
+    F -->|No| G[Return error: PVC not bound]
+    F -->|Yes| H{PVC has volumeName?}
+    H -->|No| I[Return error: PVC has no volumeName]
+    H -->|Yes| J[Sync associated PV]
+    J --> K{PV sync successful?}
+    K -->|No| L[Return error: PV sync failed]
+    K -->|Yes| M[Generate physical PVC name]
+    M --> N[Check if physical PVC exists]
+    N --> O{Physical PVC exists?}
+    O -->|Yes| P{Validate physical PVC ownership}
+    O -->|No| Q[Update virtual PVC annotation]
+    P --> R{Ownership validation passed?}
+    R -->|No| S[Return error: Ownership conflict]
+    R -->|Yes| T[Return physical PVC name]
+    Q --> U[Create physical PVC]
+    U --> V{Creation successful?}
+    V -->|No| W[Return error: Creation failed]
+    V -->|Yes| X[Return physical PVC name]
 
-    subgraph "同步关联 PV"
-        J1[获取虚拟 PV] --> J2{PV 有 CSI nodePublishSecretRef?}
-        J2 -->|是| J3[同步 CSI Secret]
-        J2 -->|否| J4[生成物理 PV 名称]
-        J3 --> J5{Secret 同步成功?}
-        J5 -->|否| J6[返回错误]
-        J5 -->|是| J7[更新 PV 的 Secret 引用]
-        J7 --> J8[创建物理 PV]
+    subgraph "Sync Associated PV"
+        J1[Get virtual PV] --> J2{PV has CSI nodePublishSecretRef?}
+        J2 -->|Yes| J3[Sync CSI Secret]
+        J2 -->|No| J4[Generate physical PV name]
+        J3 --> J5{Secret sync successful?}
+        J5 -->|No| J6[Return error]
+        J5 -->|Yes| J7[Update PV Secret reference]
+        J7 --> J8[Create physical PV]
         J4 --> J8
-        J8 --> J9{PV 创建成功?}
-        J9 -->|否| J10[返回错误]
-        J9 -->|是| J11[返回物理 PV 名称]
+        J8 --> J9{PV creation successful?}
+        J9 -->|No| J10[Return error]
+        J9 -->|Yes| J11[Return physical PV name]
     end
 
     J --> J1
 ```
 
-## 4. VirtualSecretReconciler 主要工作流程
+## 4. VirtualSecretReconciler Main Workflow
 
 ```mermaid
 flowchart TD
-    A[开始 Reconcile] --> B[获取虚拟 Secret]
-    B --> C{虚拟 Secret 存在?}
-    C -->|否| D[结束]
-    C -->|是| E{由 Kubeocean 管理?}
-    E -->|否| D
-    E -->|是| F{属于当前集群?}
-    F -->|否| D
-    F -->|是| G[获取物理名称和命名空间]
-    G --> H{有物理名称注解?}
-    H -->|否| D
-    H -->|是| I[检查物理 Secret 是否存在]
-    I --> J{物理 Secret 存在?}
-    J -->|是| K[验证物理 Secret]
-    J -->|否| L{虚拟 Secret 正在删除?}
+    A[Start Reconcile] --> B[Get virtual Secret]
+    B --> C{Virtual Secret exists?}
+    C -->|No| D[End]
+    C -->|Yes| E{Managed by Kubeocean?}
+    E -->|No| D
+    E -->|Yes| F{Belongs to current cluster?}
+    F -->|No| D
+    F -->|Yes| G[Get physical name and namespace]
+    G --> H{Has physical name annotation?}
+    H -->|No| D
+    H -->|Yes| I[Check if physical Secret exists]
+    I --> J{Physical Secret exists?}
+    J -->|Yes| K[Validate physical Secret]
+    J -->|No| L{Virtual Secret being deleted?}
     K --> L
-    L -->|是| M[处理虚拟 Secret 删除]
-    L -->|否| N{是 PV 使用的 Secret?}
-    N -->|是| O[跳过创建]
-    N -->|否| P[创建物理 Secret]
-    O --> Q[结束]
-    P --> R{创建成功?}
-    R -->|否| S[返回错误]
-    R -->|是| T[结束]
-    M --> U[删除物理 Secret]
-    U --> V{删除成功?}
-    V -->|否| W[返回错误]
-    V -->|是| X[结束]
-    J -->|否| Y{虚拟 Secret 正在删除?}
-    Y -->|是| Z[处理虚拟 Secret 删除]
-    Y -->|否| AA[检查物理 Secret 是否需要更新]
-    Z --> BB[删除物理 Secret]
-    BB --> CC{删除成功?}
-    CC -->|否| DD[返回错误]
-    CC -->|是| EE[结束]
-    AA --> FF{需要更新?}
-    FF -->|是| GG[更新物理 Secret]
-    FF -->|否| HH[结束]
-    GG --> II{更新成功?}
-    II -->|否| JJ[返回错误]
-    II -->|是| KK[结束]
+    L -->|Yes| M[Handle virtual Secret deletion]
+    L -->|No| N{Secret used by PV?}
+    N -->|Yes| O[Skip creation]
+    N -->|No| P[Create physical Secret]
+    O --> Q[End]
+    P --> R{Creation successful?}
+    R -->|No| S[Return error]
+    R -->|Yes| T[End]
+    M --> U[Delete physical Secret]
+    U --> V{Deletion successful?}
+    V -->|No| W[Return error]
+    V -->|Yes| X[End]
+    J -->|No| Y{Virtual Secret being deleted?}
+    Y -->|Yes| Z[Handle virtual Secret deletion]
+    Y -->|No| AA[Check if physical Secret needs update]
+    Z --> BB[Delete physical Secret]
+    BB --> CC{Deletion successful?}
+    CC -->|No| DD[Return error]
+    CC -->|Yes| EE[End]
+    AA --> FF{Needs update?}
+    FF -->|Yes| GG[Update physical Secret]
+    FF -->|No| HH[End]
+    GG --> II{Update successful?}
+    II -->|No| JJ[Return error]
+    II -->|Yes| KK[End]
 ```
 
-## 5. 关键逻辑实现细节说明
+## 5. Key Logic Implementation Details
 
-### 5.1 资源映射机制
+### 5.1 Resource Mapping Mechanism
 
-TopDown Syncer 实现了精确的资源映射机制，通过注解、标签、finalizer 和名称映射规则来维护虚拟资源与物理资源之间的映射关系。
+TopDown Syncer implements a precise resource mapping mechanism, maintaining mapping relationships between virtual and physical resources through annotations, labels, finalizers, and name mapping rules.
 
-#### 5.1.1 Pod 映射机制
+#### 5.1.1 Pod Mapping Mechanism
 
-**虚拟 Pod 注解**:
-- `kubeocean.io/physical-pod-namespace`: 物理 Pod 的命名空间
-- `kubeocean.io/physical-pod-name`: 物理 Pod 的名称
-- `kubeocean.io/physical-pod-uid`: 物理 Pod 的 UID
-- `kubeocean.io/last-sync-time`: 最后同步时间
+**Virtual Pod Annotations**:
+- `kubeocean.io/physical-pod-namespace`: Physical Pod namespace
+- `kubeocean.io/physical-pod-name`: Physical Pod name
+- `kubeocean.io/physical-pod-uid`: Physical Pod UID
+- `kubeocean.io/last-sync-time`: Last sync time
 
-**物理 Pod 注解**:
-- `kubeocean.io/virtual-pod-namespace`: 虚拟 Pod 的命名空间
-- `kubeocean.io/virtual-pod-name`: 虚拟 Pod 的名称
-- `kubeocean.io/virtual-pod-uid`: 虚拟 Pod 的 UID
+**Physical Pod Annotations**:
+- `kubeocean.io/virtual-pod-namespace`: Virtual Pod namespace
+- `kubeocean.io/virtual-pod-name`: Virtual Pod name
+- `kubeocean.io/virtual-pod-uid`: Virtual Pod UID
 
-**物理 Pod 标签**:
-- `kubeocean.io/managed-by`: 设置为 "kubeocean"，标识由 Kubeocean 管理
-- 复制虚拟 Pod 的所有标签
+**Physical Pod Labels**:
+- `kubeocean.io/managed-by`: Set to "kubeocean", identifies managed by Kubeocean
+- Copy all labels from virtual Pod
 
-#### 5.1.2 依赖资源映射机制
+#### 5.1.2 Dependent Resource Mapping Mechanism
 
-**虚拟资源注解**:
-- `kubeocean.io/physical-name`: 物理资源的名称
-- `kubeocean.io/physical-namespace`: 物理资源的命名空间
+**Virtual Resource Annotations**:
+- `kubeocean.io/physical-name`: Physical resource name
+- `kubeocean.io/physical-namespace`: Physical resource namespace
 
-**虚拟资源标签**:
-- `kubeocean.io/managed-by`: 设置为 "kubeocean"
-- `kubeocean.io/synced-by-{clusterID}`: 标识由特定集群同步
-- `kubeocean.io/used-by-pv`: 如果 secret 资源被 PV 使用，设置为 "true"
+**Virtual Resource Labels**:
+- `kubeocean.io/managed-by`: Set to "kubeocean"
+- `kubeocean.io/synced-by-{clusterID}`: Identifies synced by specific cluster
+- `kubeocean.io/used-by-pv`: If secret resource is used by PV, set to "true"
 
-**物理资源注解**:
-- `kubeocean.io/virtual-name`: 虚拟资源的名称
-- `kubeocean.io/virtual-namespace`: 虚拟资源的命名空间
+**Physical Resource Annotations**:
+- `kubeocean.io/virtual-name`: Virtual resource name
+- `kubeocean.io/virtual-namespace`: Virtual resource namespace
 
-**物理资源标签**:
-- `kubeocean.io/managed-by`: 设置为 "kubeocean"
-- 复制虚拟资源的所有标签
+**Physical Resource Labels**:
+- `kubeocean.io/managed-by`: Set to "kubeocean"
+- Copy all labels from virtual resource
 
-**Finalizer 机制**:
-- 虚拟资源: `kubeocean.io/finalizer-{clusterID}` - 确保资源删除时清理物理资源
-- 物理资源: 不添加 finalizer，由 Kubernetes 原生机制管理
+**Finalizer Mechanism**:
+- Virtual resource: `kubeocean.io/finalizer-{clusterID}` - Ensure cleanup of physical resources when resource is deleted
+- Physical resource: No finalizer added, managed by Kubernetes native mechanisms
 
-#### 5.1.3 名称映射规则
+#### 5.1.3 Name Mapping Rules
 
-**Pod 名称映射**:
-- 格式: `podName(前30字符)-md5(podNamespace+"/"+podName)`
-- 示例: 虚拟 Pod `my-app` 在 `default` 命名空间 → 物理 Pod `my-app-abc123def456`
+**Pod Name Mapping**:
+- Format: `podName(first 30 chars)-md5(podNamespace+"/"+podName)`
+- Example: Virtual Pod `my-app` in `default` namespace → Physical Pod `my-app-abc123def456`
 
-**依赖资源名称映射**:
-- 格式: `resourceName(前30字符)-md5(resourceNamespace+"/"+resourceName)`
-- 适用于 ConfigMap、Secret、PVC、PV 等资源
-- 确保名称唯一性和可预测性
+**Dependent Resource Name Mapping**:
+- Format: `resourceName(first 30 chars)-md5(resourceNamespace+"/"+resourceName)`
+- Applies to ConfigMap, Secret, PVC, PV, and other resources
+- Ensures name uniqueness and predictability
 
-**映射规则特点**:
-- **唯一性**: 通过 MD5 哈希确保不同命名空间的同名资源映射到不同名称
-- **可预测性**: 相同输入总是产生相同输出
-- **长度限制**: 符合 Kubernetes 资源名称长度限制（63字符）
-- **冲突避免**: 通过命名空间信息避免名称冲突
+**Mapping Rule Characteristics**:
+- **Uniqueness**: Ensure resources with the same name in different namespaces map to different names through MD5 hash
+- **Predictability**: Same input always produces same output
+- **Length Constraint**: Complies with Kubernetes resource name length limit (63 characters)
+- **Conflict Avoidance**: Avoid name conflicts through namespace information
 
-#### 5.1.4 命名空间映射
+#### 5.1.4 Namespace Mapping
 
-**Pod 命名空间映射**:
-- 虚拟集群命名空间 → ClusterBinding.Spec.MountNamespace
-- 所有 Pod 都映射到物理集群的指定命名空间
+**Pod Namespace Mapping**:
+- Virtual cluster namespace → ClusterBinding.Spec.MountNamespace
+- All Pods map to the specified namespace in physical cluster
 
-**依赖资源命名空间映射**:
-- ConfigMap/Secret: 虚拟命名空间 → ClusterBinding.Spec.MountNamespace
-- PVC: 虚拟命名空间 → ClusterBinding.Spec.MountNamespace
-- PV: 集群级别资源，无命名空间映射
-- CSI Secret: 保持原始命名空间（用于 PV 引用）
+**Dependent Resource Namespace Mapping**:
+- ConfigMap/Secret: Virtual namespace → ClusterBinding.Spec.MountNamespace
+- PVC: Virtual namespace → ClusterBinding.Spec.MountNamespace
+- PV: Cluster-level resource, no namespace mapping
+- CSI Secret: Maintain original namespace (for PV reference)
 
-#### 5.1.5 映射关系维护
+#### 5.1.5 Mapping Relationship Maintenance
 
-**创建时映射**:
-1. 生成物理资源名称
-2. 更新虚拟资源注解和标签
-3. 添加 finalizer
-4. 创建物理资源
+**Mapping on Creation**:
+1. Generate physical resource name
+2. Update virtual resource annotations and labels
+3. Add finalizer
+4. Create physical resource
 
-**更新时映射**:
-1. 检查映射关系是否一致
-2. 同步资源内容
-3. 维护映射注解
+**Mapping on Update**:
+1. Check if mapping relationship is consistent
+2. Synchronize resource content
+3. Maintain mapping annotations
 
-**删除时映射**:
-1. 通过 finalizer 确保清理物理资源
-2. 移除映射注解
-3. 删除虚拟资源
+**Mapping on Deletion**:
+1. Ensure cleanup of physical resources through finalizer
+2. Remove mapping annotations
+3. Delete virtual resource
 
-### 5.2 状态同步机制
+### 5.2 Status Synchronization Mechanism
 
-实现了实时的状态同步：
+Implements real-time status synchronization:
 
-- **监听机制**: 监听虚拟集群中资源的变化事件
-- **验证机制**: 验证资源是否应该由当前集群绑定管理
-- **同步策略**: 根据资源类型采用不同的同步策略
-- **冲突处理**: 处理虚拟资源与物理资源之间的状态冲突
+- **Monitoring Mechanism**: Monitor change events of resources in virtual clusters
+- **Validation Mechanism**: Validate if resources should be managed by current cluster binding
+- **Synchronization Strategy**: Adopt different synchronization strategies based on resource types
+- **Conflict Handling**: Handle status conflicts between virtual and physical resources
 
-### 5.3 生命周期管理
+### 5.3 Lifecycle Management
 
-实现了完整的资源生命周期管理：
+Implements complete resource lifecycle management:
 
-- **创建流程**: 根据虚拟资源创建对应的物理资源
-- **更新流程**: 监听虚拟资源变化，同步更新物理资源
-- **删除流程**: 处理虚拟资源删除，清理对应的物理资源
-- **状态维护**: 维护资源的状态信息和映射关系
+- **Creation Process**: Create corresponding physical resources based on virtual resources
+- **Update Process**: Monitor virtual resource changes, synchronously update physical resources
+- **Deletion Process**: Handle virtual resource deletion, clean up corresponding physical resources
+- **Status Maintenance**: Maintain resource status information and mapping relationships
+
 
 
 
