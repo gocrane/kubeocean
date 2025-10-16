@@ -29,6 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
@@ -97,7 +98,7 @@ func (r *ProxierWatchController) Reconcile(ctx context.Context, req ctrl.Request
 			// Pod was deleted - this is the key trigger for updating VNode IPs
 			// When a Proxier pod is deleted, we need to update all VNodes to point to a remaining running Proxier
 			log.Info("Proxier pod deleted, triggering VNode IP update")
-			return r.handleProxierPodDeletion(ctx, log)
+			return r.SyncProxierPod(ctx, log)
 		}
 		log.Error(err, "unable to fetch Proxier pod")
 		return ctrl.Result{}, err
@@ -109,14 +110,7 @@ func (r *ProxierWatchController) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	// For pod creation/update events, we only log but don't trigger updates
-	// The actual update happens when old pods are deleted
-	log.V(1).Info("Proxier pod event received",
-		"phase", pod.Status.Phase,
-		"podIP", pod.Status.PodIP,
-		"note", "VNode updates will be triggered on pod deletion")
-
-	return ctrl.Result{}, nil
+	return r.SyncProxierPod(ctx, log)
 }
 
 // SetupWithManager sets up the controller with the Manager
@@ -124,14 +118,49 @@ func (r *ProxierWatchController) SetupWithManager(mgr ctrl.Manager) error {
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("proxierwatch-%s", r.ClusterBinding.Name)
 
-	// Create a predicate to filter Proxier pods
-	proxierPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		pod, ok := obj.(*corev1.Pod)
-		if !ok {
+	// Create a predicate to filter Proxier pods with specific event handling
+	proxierPredicate := predicate.Funcs{
+		// Create event: only enqueue if pod has PodIP
+		CreateFunc: func(e event.CreateEvent) bool {
+			pod, ok := e.Object.(*corev1.Pod)
+			if !ok {
+				return false
+			}
+			if !r.isProxierPodForClusterBinding(pod) {
+				return false
+			}
+			// Only enqueue if pod has an IP
+			return pod.Status.PodIP != ""
+		},
+		// Update event: only enqueue if old pod has no IP and new pod has IP
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPod, ok := e.ObjectOld.(*corev1.Pod)
+			if !ok {
+				return false
+			}
+			newPod, ok := e.ObjectNew.(*corev1.Pod)
+			if !ok {
+				return false
+			}
+			if !r.isProxierPodForClusterBinding(newPod) {
+				return false
+			}
+			// Only enqueue if old pod has no IP and new pod has IP
+			return oldPod.Status.PodIP == "" && newPod.Status.PodIP != ""
+		},
+		// Delete event: always enqueue
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			pod, ok := e.Object.(*corev1.Pod)
+			if !ok {
+				return false
+			}
+			return r.isProxierPodForClusterBinding(pod)
+		},
+		// Generic events: no special handling needed
+		GenericFunc: func(_ event.GenericEvent) bool {
 			return false
-		}
-		return r.isProxierPodForClusterBinding(pod)
-	})
+		},
+	}
 
 	// Create a controller that watches Pods with Proxier labels
 	return ctrl.NewControllerManagedBy(mgr).
@@ -172,10 +201,10 @@ func (r *ProxierWatchController) isProxierPodForClusterBinding(pod *corev1.Pod) 
 	return true
 }
 
-// handleProxierPodDeletion handles Proxier pod deletion events
+// SyncProxierPod syncs Proxier pod to VNode IPs
 // This is the main trigger for VNode IP updates during rolling updates
-func (r *ProxierWatchController) handleProxierPodDeletion(ctx context.Context, log logr.Logger) (ctrl.Result, error) {
-	log.Info("Proxier pod deleted, updating VNode IPs to point to remaining running Proxiers")
+func (r *ProxierWatchController) SyncProxierPod(ctx context.Context, log logr.Logger) (ctrl.Result, error) {
+	log.Info("Syncing Proxier pod to VNode IPs")
 
 	// Get all VNodes for this cluster binding
 	vNodes, err := r.getVNodesForClusterBinding(ctx)
@@ -404,65 +433,6 @@ func (r *ProxierWatchController) createVNodeIPPatch(vNode *corev1.Node, newIP st
 	return jsonData
 }
 
-// verifyVNodeIPUpdateWithRetry verifies VNode IP update with retry mechanism
-func (r *ProxierWatchController) verifyVNodeIPUpdateWithRetry(ctx context.Context, log logr.Logger, vNodeName, expectedIP, oldIP string) bool {
-	const maxRetries = 5
-	const baseDelay = 200 * time.Millisecond
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Calculate delay with exponential backoff
-		delay := baseDelay * time.Duration(1<<attempt) // 200ms, 400ms, 800ms, 1.6s, 3.2s
-		if attempt > 0 {
-			log.V(1).Info("Retrying VNode IP verification",
-				"vNodeName", vNodeName,
-				"attempt", attempt+1,
-				"maxRetries", maxRetries,
-				"delay", delay)
-			time.Sleep(delay)
-		}
-
-		// Fetch the updated node
-		updatedNode := &corev1.Node{}
-		err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: vNodeName}, updatedNode)
-		if err != nil {
-			log.Error(err, "Failed to fetch VNode for verification",
-				"vNodeName", vNodeName,
-				"attempt", attempt+1)
-			continue
-		}
-
-		// Check the current IP
-		actualIP := r.getVNodeInternalIP(updatedNode)
-		log.V(1).Info("VNode IP verification attempt",
-			"vNodeName", vNodeName,
-			"attempt", attempt+1,
-			"expectedIP", expectedIP,
-			"actualIP", actualIP,
-			"allAddresses", r.getAllAddresses(updatedNode))
-
-		if actualIP == expectedIP {
-			log.Info("VNode IP update verified successfully",
-				"vNodeName", vNodeName,
-				"oldIP", oldIP,
-				"newIP", expectedIP,
-				"attempts", attempt+1)
-			return true
-		}
-
-		// If this is the last attempt, log the final failure
-		if attempt == maxRetries-1 {
-			log.Info("VNode IP update verification failed after all retries",
-				"vNodeName", vNodeName,
-				"expectedIP", expectedIP,
-				"actualIP", actualIP,
-				"attempts", maxRetries,
-				"note", "This may be due to API server cache delay or update failure")
-		}
-	}
-
-	return false
-}
-
 // updateVNodeIPWithRetry updates VNode IP using Status().Patch() mechanism with retry
 // Uses JSON Patch for higher success rate and better conflict handling
 func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log logr.Logger, vNodeName, newIP, _ string) error {
@@ -594,50 +564,6 @@ func (r *ProxierWatchController) updateVNodeIPWithRetry(ctx context.Context, log
 	}
 
 	return fmt.Errorf("failed to patch VNode after %d attempts", maxRetries)
-}
-
-// updateVNodePrometheusURL updates the prometheus URL annotation in the VNode object
-func (r *ProxierWatchController) updateVNodePrometheusURL(vNode *corev1.Node, newIP string) {
-	if vNode.Annotations == nil {
-		vNode.Annotations = make(map[string]string)
-	}
-
-	// Get proxier port from existing label (each VNode has its own dedicated port)
-	proxierPort, exists := vNode.Labels[cloudv1beta1.LabelProxierPort]
-	if !exists {
-		r.Log.V(1).Info("No proxier port label found on VNode, cannot update prometheus URL",
-			"vNodeName", vNode.Name)
-		return
-	}
-
-	// Format: {InternalIP}:{proxierPort}/{VNodeName}
-	// Note: proxierPort comes from VNode label, not PrometheusVNodeBasePort
-	prometheusURL := fmt.Sprintf("%s:%s/%s", newIP, proxierPort, vNode.Name)
-	vNode.Annotations[cloudv1beta1.AnnotationPrometheusURL] = prometheusURL
-
-	r.Log.V(1).Info("Updated prometheus URL annotation",
-		"vNodeName", vNode.Name,
-		"newIP", newIP,
-		"proxierPort", proxierPort,
-		"prometheusURL", prometheusURL)
-}
-
-// updateVNodeInternalIP updates the InternalIP in the VNode object
-func (r *ProxierWatchController) updateVNodeInternalIP(vNode *corev1.Node, newIP string) bool {
-	// Find and update existing InternalIP
-	for i, addr := range vNode.Status.Addresses {
-		if addr.Type == corev1.NodeInternalIP {
-			vNode.Status.Addresses[i].Address = newIP
-			return true
-		}
-	}
-
-	// If no InternalIP found, add it
-	vNode.Status.Addresses = append(vNode.Status.Addresses, corev1.NodeAddress{
-		Type:    corev1.NodeInternalIP,
-		Address: newIP,
-	})
-	return false
 }
 
 // isConflictError checks if the error is a conflict error
