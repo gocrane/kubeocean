@@ -1,378 +1,373 @@
-# Kubeocean 架构文档
+# Kubeocean Architecture Documentation
 
 ## 1. Overview
 
-Kubeocean 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kubernetes 集群的闲置计算资源，形成统一的虚拟算力集群。系统采用控制器模式，实现资源的动态抽取、虚拟节点管理和工作负载调度。
+Kubeocean is an open-source add-ons that supports converging cross-cluster computing resources in the form of virtual nodes within a Kubernetes cluster, much like an ocean. This cluster is also referred to as the computing cluster. All Pods deployed on virtual nodes managed by Kubeocean are automatically mapped and synchronized to the corresponding worker clusters for deployment, thereby enabling cross-cluster reuse of computing resources. The system adopts a controller pattern to implement dynamic resource extraction, virtual node management, and workload scheduling.
 
-### 核心特性
+### Core Features
 
-- **多集群资源整合**: 将多个物理集群的闲置资源整合为统一的虚拟算力池
-- **双向资源同步**: 支持从物理集群到虚拟集群的 Bottom-up 同步和从虚拟集群到物理集群的 Top-down 同步
-- **智能资源调度**: 基于 ResourceLeasingPolicy 实现时间窗口和资源限制的智能调度
-- **高可用设计**: 所有组件支持多副本部署和 Leader Election 机制
-- **故障隔离**: 每个物理集群独立的 Syncer 实例，确保单点故障不影响整体系统
+**Lightweight and Non-intrusive Worker Cluster Registration**
 
-### 技术栈
+Worker clusters only need to deploy RBAC resources and provide the corresponding kubeconfig to complete registration, without deploying additional components. Kubeocean leverages the granted permissions to automatically complete cluster connection, virtual node registration, and other functions.
 
-- **语言**: Go 1.24+
-- **框架**: Kubernetes Controller Runtime
-- **API**: Custom Resource Definitions (CRD)
-- **存储**: Kubernetes etcd
-- **监控**: Prometheus Metrics + 结构化日志
+**Flexible and Dynamic Resource Extraction and Constraints**
 
-## 2. 架构图
+Each worker cluster can flexibly configure the node scope from which computing resources can be extracted, the size and scope of extracted resources, and the time window during which resources can be extracted through `resourceLeasingPolicy`. For example: limit extraction to a maximum of 50% of CPU resources (to avoid affecting online services); only allow resource extraction during weekday nights, available all day on weekends (tidal reuse); only extract node resources with "GPU model A10" (to match model training requirements).
 
-```mermaid
-flowchart TD
-    subgraph VC["虚拟算力集群 (Virtual Compute Cluster)"]
-        VCS[Virtual Cluster API Server]
-        subgraph TM["Kubeocean Manager"]
-            CBC[ClusterBinding Controller]
-        end
-        
-        subgraph SL["同步层 (Syncer Layer)"]
-            subgraph TS1["Kubeocean Syncer 1"]
-                BUS1[BottomUp Syncer]
-                TDS1[TopDown Syncer]
-            end
-            
-            subgraph TS2["Kubeocean Syncer 2"]
-                BUS2[BottomUp Syncer]
-                TDS2[TopDown Syncer]
-            end
-        end
-    end
-    
-    subgraph PL["物理层 (Physical Layer)"]
-        PC1[Physical Cluster 1]
-        PC2[Physical Cluster 2]
-    end
-    
-    %% 管理连接
-    CBC -.->|创建/管理| TS1
-    CBC -.->|创建/管理| TS2
-    
-    %% Bottom-up 同步
-    PC1 -->|资源状态| BUS1
-    PC2 -->|资源状态| BUS2
-    BUS1 -->|同步状态| VCS
-    BUS2 -->|同步状态| VCS
-    
-    %% Top-down 同步
-    VCS -->|部署资源请求| TDS1
-    VCS -->|部署资源请求| TDS2
-    TDS1 -->|资源映射部署| PC1
-    TDS2 -->|资源映射部署| PC2
-```
+**Global Unified Optimal Scheduling**
 
-## 3. 组件介绍
+Each node with cross-cluster resource extraction is registered as a virtual node on a one-to-one basis, enabling the computing cluster to have a globally unified scheduling view, achieving globally optimal scheduling strategies, minimizing resource fragmentation, and improving resource utilization.
+
+**Native and Seamless Workload Deployment**
+
+Deploying workload in the computing cluster managed by Kubeocean requires no modifications. The component automatically implements native Kubernetes capabilities, deploying, running, and recycling Pods on virtual nodes and their dependent resources (such as configmaps, secrets, etc.) across clusters.
+
+**Minimal Permission Security Control**
+
+Pods mapped and created by Kubeocean in worker clusters are centralized in a single namespace, and all operations on worker clusters are based on the minimal permission kubeconfig granted during registration, minimizing the impact on worker clusters.
+
+**High Availability Design and Fault Isolation**
+
+All components support multi-replica deployment and Leader Election mechanism, while each physical cluster is managed by an independent Syncer instance, ensuring that single point failures do not affect the overall system.
+
+## 2. Architecture Diagram
+
+Data Flow Architecture:
+
+![Data Flow](images/kubeocean-data-flow.png)
+
+Control Flow Architecture:
+
+![Control Flow](images/kubeocean-control-flow.png)
+
+## 3. Component Introduction
 
 ### 3.1 Kubeocean Manager
 
-**主要职责**: 中央控制平面组件，负责管理集群绑定
+**Primary Responsibility**: Central control plane component responsible for managing cluster bindings
 
-**核心功能**:
-- 监听 ClusterBinding 资源变化
-- 自动创建和管理 Kubeocean Syncer 组件
-- 负责集群绑定的生命周期管理
+**Core Functions**:
+- Monitor ClusterBinding resource changes
+- Automatically create and manage Kubeocean Syncer components
+- Manage cluster binding lifecycle
 
-**部署方式**: 支持多副本部署
+**Deployment Method**: Supports multi-replica deployment
 
 ### 3.2 Kubeocean Syncer
 
-**主要职责**: 负责特定物理集群与虚拟集群之间的双向同步
+**Primary Responsibility**: Responsible for bidirectional synchronization between specific physical clusters and virtual clusters
 
-**核心功能**:
-- 每个实例专门负责一个物理集群的同步工作
-- 通过 Leader Election 机制支持多副本部署
-- 包含 Bottom-up Syncer 和 Top-down Syncer 两个子模块
-- 独立的故障恢复和扩缩容能力
+**Core Functions**:
+- Each instance is dedicated to synchronizing work for one physical cluster
+- Supports multi-replica deployment through Leader Election mechanism
+- Contains Bottom-up Syncer and Top-down Syncer submodules
+- Independent fault recovery and scaling capabilities
 
-**部署方式**: 每个物理集群对应一个 Syncer 实例，支持多副本部署
+**Deployment Method**: One Syncer instance per physical cluster, supports multi-replica deployment
 
-## 4. 子模块详细说明
+### 3.3 Kubeocean Proxier
 
-### 4.1 Kubeocean Manager 子模块
+**Primary Responsibility**: Request proxy component responsible for forwarding Kubelet API requests from virtual nodes to physical nodes
+
+**Core Functions**:
+- Listen to requests on port 10250 (Kubelet port) on virtual nodes
+- Proxy requests to the actual physical nodes in worker clusters
+- Implement native Kubernetes capabilities such as `kubectl logs`, `kubectl exec`, etc.
+- Handle authentication and authorization for cross-cluster requests
+- Support TLS-encrypted connections
+
+**Key Features**:
+- Transparent proxy without modifying client behavior
+- Support multiple concurrent connections
+- Automatic routing to the correct physical node based on virtual node mapping
+- Maintain connection stability and handle network failures gracefully
+
+**Deployment Method**: One Proxier instance per physical cluster, supports multi-replica deployment
+
+## 4. Submodule Detailed Description
+
+### 4.1 Kubeocean Manager Submodules
 
 #### 4.1.1 ClusterBinding Controller
 
-**职责**: 管理物理集群注册和验证
+**Responsibility**: Manage physical cluster registration and validation
 
-**主要功能**:
-- 处理 ClusterBinding 资源的 CRUD 操作
-- 验证集群连接性和权限
-- 为每个 ClusterBinding 创建对应的 Kubeocean Syncer 实例
-- 管理 Syncer 的配置和状态
-- 处理集群绑定的生命周期管理
+**Main Functions**:
+- Handle CRUD operations for ClusterBinding resources
+- Validate cluster connectivity and permissions
+- Create corresponding Kubeocean Syncer instances for each ClusterBinding
+- Manage Syncer configuration and status
+- Handle cluster binding lifecycle management
 
-**关键特性**:
-- 自动创建 Syncer 的 Deployment、ServiceAccount、ClusterRole 等资源
-- 支持集群连接失败的重试机制
-- 提供详细的状态管理和事件记录
+**Key Features**:
+- Automatically create Syncer's Deployment, ServiceAccount, ClusterRole, and other resources
+- Support retry mechanism for cluster connection failures
+- Provide detailed status management and event recording
 
 
 
-### 4.2 Kubeocean Syncer 子模块
+### 4.2 Kubeocean Syncer Submodules
 
 #### 4.2.1 BottomUp Syncer
 
-**职责**: 从物理集群到虚拟集群的资源同步
+**Responsibility**: Resource synchronization from physical clusters to virtual clusters
 
-**主要功能**:
-- 监听物理集群节点和 Pod 状态变化
-- 根据 ResourceLeasingPolicy 计算可抽取资源
-- 创建和更新虚拟节点
-- 同步 Pod 状态到虚拟集群
+**Main Functions**:
+- Monitor physical cluster node and Pod status changes
+- Calculate extractable resources based on ResourceLeasingPolicy
+- Create and update virtual nodes
+- Synchronize Pod status to virtual clusters
 
-**包含的子模块**:
+**Included Submodules**:
 
 ##### 4.2.1.1 PhysicalNodeReconciler
 
-**职责**: 物理节点控制器，负责虚拟节点的创建和管理
+**Responsibility**: Physical node controller, responsible for virtual node creation and management
 
-**主要功能**:
-- 监听物理集群节点变化
-- 根据 ResourceLeasingPolicy 计算可抽取资源
-- 创建和更新虚拟节点
-- 管理虚拟节点的生命周期
-- 处理节点删除和资源回收
+**Main Functions**:
+- Monitor physical cluster node changes
+- Calculate extractable resources based on ResourceLeasingPolicy
+- Create and update virtual nodes
+- Manage virtual node lifecycle
+- Handle node deletion and resource reclamation
 
-**关键特性**:
-- 支持节点选择器和资源策略
-- 自动计算虚拟节点的资源容量
-- 处理节点删除的优雅回收
+**Key Features**:
+- Support node selectors and resource policies
+- Automatically calculate virtual node resource capacity
+- Handle graceful reclamation of node deletion
 
 ##### 4.2.1.2 PhysicalPodReconciler
 
-**职责**: 物理 Pod 控制器，负责 Pod 状态同步
+**Responsibility**: Physical Pod controller, responsible for Pod status synchronization
 
-**主要功能**:
-- 监听物理集群 Pod 状态变化
-- 同步 Pod 状态到虚拟集群
-- 验证 Pod 的 Kubeocean 管理标签
-- 处理 Pod 删除和状态更新
+**Main Functions**:
+- Monitor physical cluster Pod status changes
+- Synchronize Pod status to virtual clusters
+- Validate Pod Kubeocean management labels
+- Handle Pod deletion and status updates
 
-**关键特性**:
-- 只同步 Kubeocean 管理的 Pod
-- 确保状态同步的幂等性
-- 处理 Pod 删除的优雅处理
+**Key Features**:
+- Only synchronize Kubeocean-managed Pods
+- Ensure idempotency of status synchronization
+- Handle graceful processing of Pod deletion
 
 ##### 4.2.1.3 PhysicalCSINodeReconciler
 
-**职责**: 物理 CSI 节点控制器，负责存储相关节点信息同步
+**Responsibility**: Physical CSI node controller, responsible for storage-related node information synchronization
 
-**主要功能**:
-- 监听物理集群 CSINode 变化
-- 同步 CSI 节点信息到虚拟集群
-- 管理虚拟 CSI 节点的生命周期
-- 处理存储驱动信息的同步
+**Main Functions**:
+- Monitor physical cluster CSINode changes
+- Synchronize CSI node information to virtual clusters
+- Manage virtual CSI node lifecycle
+- Handle storage driver information synchronization
 
-**关键特性**:
-- 支持存储驱动的动态发现
-- 确保存储功能的可用性
-- 处理 CSI 节点删除的清理
+**Key Features**:
+- Support dynamic discovery of storage drivers
+- Ensure storage functionality availability
+- Handle cleanup of CSI node deletion
 
 ##### 4.2.1.4 ResourceLeasingPolicyReconciler
 
-**职责**: 资源租赁策略控制器，负责策略应用和资源计算
+**Responsibility**: Resource leasing policy controller, responsible for policy application and resource calculation
 
-**主要功能**:
-- 监听 ResourceLeasingPolicy 变化
-- 触发节点重新评估
-- 应用资源策略到物理节点
-- 管理策略的生命周期
+**Main Functions**:
+- Monitor ResourceLeasingPolicy changes
+- Trigger node re-evaluation
+- Apply resource policies to physical nodes
+- Manage policy lifecycle
 
-**关键特性**:
-- 支持时间窗口和资源限制
-- 自动触发节点重新评估
-- 处理策略删除的资源回收
+**Key Features**:
+- Support time windows and resource limits
+- Automatically trigger node re-evaluation
+- Handle resource reclamation on policy deletion
 
 ##### 4.2.1.5 LeaseController
 
-**职责**: 租约控制器，负责虚拟节点的租约管理
+**Responsibility**: Lease controller, responsible for virtual node lease management
 
-**主要功能**:
-- 为每个虚拟节点创建和管理租约
-- 定期续约确保节点活跃状态
-- 处理租约过期和节点清理
-- 支持租约的优雅停止
+**Main Functions**:
+- Create and manage leases for each virtual node
+- Periodically renew leases to ensure node active status
+- Handle lease expiration and node cleanup
+- Support graceful lease termination
 
-**关键特性**:
-- 自动租约续约机制
-- 支持租约过期处理
-- 优雅的停止和清理
+**Key Features**:
+- Automatic lease renewal mechanism
+- Support lease expiration handling
+- Graceful termination and cleanup
 
 #### 4.2.2 TopDown Syncer
 
-**职责**: 从虚拟集群到物理集群的资源同步
+**Responsibility**: Resource synchronization from virtual clusters to physical clusters
 
-**主要功能**:
-- 监听虚拟集群中的资源创建
-- 将资源映射到目标物理集群
-- 处理资源名称冲突和命名空间映射
-- 维护资源映射关系
+**Main Functions**:
+- Monitor resource creation in virtual clusters
+- Map resources to target physical clusters
+- Handle resource name conflicts and namespace mapping
+- Maintain resource mapping relationships
 
-**包含的子模块**:
+**Included Submodules**:
 
 ##### 4.2.2.1 VirtualPodReconciler
 
-**职责**: 虚拟 Pod 控制器，负责 Pod 的创建和同步
+**Responsibility**: Virtual Pod controller, responsible for Pod creation and synchronization
 
-**主要功能**:
-- 监听虚拟集群 Pod 创建
-- 在物理集群创建对应的 Pod
-- 处理 Pod 删除和生命周期管理
-- 维护虚拟 Pod 和物理 Pod 的映射关系
+**Main Functions**:
+- Monitor virtual cluster Pod creation
+- Create corresponding Pods in physical clusters
+- Handle Pod deletion and lifecycle management
+- Maintain mapping relationships between virtual and physical Pods
 
-**关键特性**:
-- 支持 Pod 的双向映射
-- 处理 Pod 删除的优雅清理
-- 确保 Pod 创建的幂等性
-- 支持 Pod 状态同步
+**Key Features**:
+- Support bidirectional Pod mapping
+- Handle graceful cleanup of Pod deletion
+- Ensure idempotency of Pod creation
+- Support Pod status synchronization
 
 ##### 4.2.2.2 VirtualConfigMapReconciler
 
-**职责**: 虚拟 ConfigMap 控制器，负责 ConfigMap 同步
+**Responsibility**: Virtual ConfigMap controller, responsible for ConfigMap synchronization
 
-**主要功能**:
-- 监听虚拟集群 ConfigMap 创建
-- 在物理集群创建对应的 ConfigMap
-- 处理 ConfigMap 更新和删除
-- 维护 ConfigMap 的映射关系
+**Main Functions**:
+- Monitor virtual cluster ConfigMap creation
+- Create corresponding ConfigMaps in physical clusters
+- Handle ConfigMap updates and deletion
+- Maintain ConfigMap mapping relationships
 
-**关键特性**:
-- 支持 ConfigMap 的双向同步
-- 处理 ConfigMap 更新的冲突解决
-- 确保数据一致性
+**Key Features**:
+- Support bidirectional ConfigMap synchronization
+- Handle conflict resolution for ConfigMap updates
+- Ensure data consistency
 
 ##### 4.2.2.3 VirtualSecretReconciler
 
-**职责**: 虚拟 Secret 控制器，负责 Secret 同步
+**Responsibility**: Virtual Secret controller, responsible for Secret synchronization
 
-**主要功能**:
-- 监听虚拟集群 Secret 创建
-- 在物理集群创建对应的 Secret
-- 处理 Secret 更新和删除
-- 维护 Secret 的映射关系
+**Main Functions**:
+- Monitor virtual cluster Secret creation
+- Create corresponding Secrets in physical clusters
+- Handle Secret updates and deletion
+- Maintain Secret mapping relationships
 
-**关键特性**:
-- 支持 Secret 的双向同步
-- 处理敏感数据的安全传输
-- 确保 Secret 数据的一致性
+**Key Features**:
+- Support bidirectional Secret synchronization
+- Handle secure transmission of sensitive data
+- Ensure Secret data consistency
 
 ##### 4.2.2.4 VirtualPVCReconciler
 
-**职责**: 虚拟 PVC 控制器，负责 PersistentVolumeClaim 同步
+**Responsibility**: Virtual PVC controller, responsible for PersistentVolumeClaim synchronization
 
-**主要功能**:
-- 监听虚拟集群 PVC 创建
-- 验证物理集群 PVC 存在性
-- 处理 PVC 状态同步
-- 维护 PVC 的映射关系
+**Main Functions**:
+- Monitor virtual cluster PVC creation
+- Validate physical cluster PVC existence
+- Handle PVC status synchronization
+- Maintain PVC mapping relationships
 
-**关键特性**:
-- 只同步 vPod 关联的 PVC
-- 验证 PVC 绑定状态
-- 确保存储资源的一致性
+**Key Features**:
+- Only synchronize vPod-associated PVCs
+- Validate PVC binding status
+- Ensure storage resource consistency
 
 ##### 4.2.2.5 VirtualPVReconciler
 
-**职责**: 虚拟 PV 控制器，负责 PersistentVolume 同步
+**Responsibility**: Virtual PV controller, responsible for PersistentVolume synchronization
 
-**主要功能**:
-- 监听虚拟集群 PV 创建
-- 验证物理集群 PV 存在性
-- 处理 PV 状态同步
-- 维护 PV 的映射关系
+**Main Functions**:
+- Monitor virtual cluster PV creation
+- Validate physical cluster PV existence
+- Handle PV status synchronization
+- Maintain PV mapping relationships
 
-**关键特性**:
-- 只同步 vPod 关联的 PV
-- 验证 PV 的可用性
-- 确保存储资源的一致性
+**Key Features**:
+- Only synchronize vPod-associated PVs
+- Validate PV availability
+- Ensure storage resource consistency
 
-### 4.3 核心 API 资源
+### 4.3 Core API Resources
 
 #### 4.3.1 ClusterBinding
 
-**作用**: 定义物理集群与虚拟集群的绑定关系
+**Purpose**: Define binding relationships between physical clusters and virtual clusters
 
-**主要字段**:
-- `clusterID`: 集群唯一标识符
-- `secretRef`: 包含 kubeconfig 的 Secret 引用
-- `nodeSelector`: 节点选择器
-- `mountNamespace`: 资源挂载命名空间
-- `serviceNamespaces`: 服务同步命名空间列表
+**Main Fields**:
+- `clusterID`: Unique cluster identifier
+- `secretRef`: Secret reference containing kubeconfig
+- `nodeSelector`: Node selector
+- `mountNamespace`: Resource mount namespace
+- `serviceNamespaces`: List of service synchronization namespaces
 
 
 
-### 4.4 关键标签和注解
+### 4.4 Key Labels and Annotations
 
-#### 4.4.1 管理标签
-- `kubeocean.io/managed-by`: 标识 Kubeocean 管理的资源
-- `kubeocean.io/cluster-binding`: 关联的集群绑定
-- `kubeocean.io/physical-cluster-id`: 物理集群 ID
-- `kubeocean.io/physical-node-name`: 物理节点名称
+#### 4.4.1 Management Labels
+- `kubeocean.io/managed-by`: Identifies resources managed by Kubeocean
+- `kubeocean.io/cluster-binding`: Associated cluster binding
+- `kubeocean.io/physical-cluster-id`: Physical cluster ID
+- `kubeocean.io/physical-node-name`: Physical node name
 
-#### 4.4.2 映射注解
-- `kubeocean.io/physical-pod-namespace`: 物理 Pod 命名空间
-- `kubeocean.io/physical-pod-name`: 物理 Pod 名称
-- `kubeocean.io/physical-pod-uid`: 物理 Pod UID
-- `kubeocean.io/virtual-pod-namespace`: 虚拟 Pod 命名空间
-- `kubeocean.io/virtual-pod-name`: 虚拟 Pod 名称
-- `kubeocean.io/virtual-pod-uid`: 虚拟 Pod UID
+#### 4.4.2 Mapping Annotations
+- `kubeocean.io/physical-pod-namespace`: Physical Pod namespace
+- `kubeocean.io/physical-pod-name`: Physical Pod name
+- `kubeocean.io/physical-pod-uid`: Physical Pod UID
+- `kubeocean.io/virtual-pod-namespace`: Virtual Pod namespace
+- `kubeocean.io/virtual-pod-name`: Virtual Pod name
+- `kubeocean.io/virtual-pod-uid`: Virtual Pod UID
 
-#### 4.4.3 同步注解
-- `kubeocean.io/last-sync-time`: 最后同步时间
-- `kubeocean.io/policies-applied`: 应用的策略列表
-- `kubeocean.io/expected-metadata`: 期望的元数据
+#### 4.4.3 Synchronization Annotations
+- `kubeocean.io/last-sync-time`: Last synchronization time
+- `kubeocean.io/policies-applied`: List of applied policies
+- `kubeocean.io/expected-metadata`: Expected metadata
 
-### 4.5 高可用性设计
+### 4.5 High Availability Design
 
-#### 4.5.1 故障隔离
-- 每个物理集群独立的 Syncer 实例
-- 单个 Syncer 故障不影响其他集群
-- 支持 Syncer 的自动重启和恢复
+#### 4.5.1 Fault Isolation
+- Independent Syncer instances for each physical cluster
+- Single Syncer failure does not affect other clusters
+- Support automatic Syncer restart and recovery
 
-#### 4.5.2 状态管理
-- 使用 Kubernetes 原生的状态管理机制
-- 支持资源的优雅删除和清理
-- 提供详细的错误信息和重试机制
+#### 4.5.2 State Management
+- Use Kubernetes native state management mechanisms
+- Support graceful deletion and cleanup of resources
+- Provide detailed error information and retry mechanisms
 
-#### 4.5.3 高可用部署
-- Kubeocean Manager 支持多副本部署
-- 每个 Syncer 支持多副本部署
-- 支持组件的自动扩缩容
+#### 4.5.3 High Availability Deployment
+- Kubeocean Manager supports multi-replica deployment
+- Each Syncer supports multi-replica deployment
+- Support automatic component scaling
 
-### 4.6 监控和可观测性
+### 4.6 Monitoring and Observability
 
-#### 4.6.1 指标监控
-- Prometheus 指标暴露在 `:8080/metrics`
-- 包含集群绑定、同步延迟、错误计数等指标
-- 支持自定义指标和告警规则
+#### 4.6.1 Metrics Monitoring
+- Prometheus metrics exposed at `:8080/metrics`
+- Includes cluster binding, synchronization latency, error counts, and other metrics
+- Support custom metrics and alerting rules
 
-#### 4.6.2 健康检查
-- 存活探针: `:8081/healthz`
-- 就绪探针: `:8081/readyz`
-- 支持优雅启动和关闭
+#### 4.6.2 Health Checks
+- Liveness probe: `:8081/healthz`
+- Readiness probe: `:8081/readyz`
+- Support graceful startup and shutdown
 
-#### 4.6.3 日志记录
-- 结构化日志格式
-- 支持不同日志级别
-- 包含组件、操作等上下文信息
+#### 4.6.3 Logging
+- Structured log format
+- Support different log levels
+- Include component, operation, and other contextual information
 
-### 4.7 安全设计
+### 4.7 Security Design
 
-#### 4.7.1 RBAC 权限
-- 最小权限原则
-- 为每个组件配置专用 ServiceAccount
-- 支持权限分离和细粒度控制
+#### 4.7.1 RBAC Permissions
+- Principle of least privilege
+- Configure dedicated ServiceAccount for each component
+- Support permission separation and fine-grained control
 
-#### 4.7.2 网络安全
-- 支持 TLS 加密的集群间通信
-- 使用 Secret 存储敏感的 kubeconfig 信息
-- 支持网络策略和访问控制
+#### 4.7.2 Network Security
+- Support TLS-encrypted inter-cluster communication
+- Use Secrets to store sensitive kubeconfig information
+- Support network policies and access control
 
-#### 4.7.3 资源隔离
-- 使用专用命名空间运行组件
-- 支持资源配额和限制
-- 确保组件间的安全隔离
+#### 4.7.3 Resource Isolation
+- Run components in dedicated namespaces
+- Support resource quotas and limits
+- Ensure secure isolation between components
+

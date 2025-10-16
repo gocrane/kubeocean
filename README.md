@@ -6,9 +6,9 @@
 
 > English | [中文](README_zh.md)
 
-Kubeocean is an open-source add-ons that dynamically converge cross-cluster computing resources in the form of virtual nodes within a Kubernetes cluster, much like an ocean. This cluster is also referred to as the computing cluster. All Pods deployed on virtual nodes managed by Kubeocean are automatically mapped and synchronized to the corresponding worker clusters for deployment, thereby enabling cross-cluster reuse of computing resources.
+Kubeocean is an open-source add-ons that dynamically converge cross-cluster computing resources in the form of virtual nodes within a Kubernetes cluster, much like an ocean. This cluster is also referred to as the computing cluster. All Pods deployed on virtual nodes managed by Kubeocean are automatically mapped and synchronized to the corresponding worker clusters for deployment, thereby enabling cross-cluster reuse of computing resources. Computing cluster mainly provides services for various offline workloads, such as Spark, Argo and so on.
 
-![alt text](docs/images/image.png)
+![intro](docs/images/kubeocean.png)
 
 ---
 
@@ -38,9 +38,13 @@ Pods mapped and created by Kubeocean in worker clusters are centralized in a sin
 
 ## Architecture
 
-The overall architecture of Kubeocean is as follows:
+Data flow architecture：
 
-![alt text](docs/images/kubeocean-arch.png)
+![data flow](docs/images/kubeocean-data-flow.png)
+
+Control flow architecture：
+
+![control flow](docs/images/kubeocean-control-flow.png)
 
 **Manager: Worker Cluster Registration and Lifecycle Management**
 
@@ -78,17 +82,5 @@ Refer to the documentation: [Quick Start](docs/quick-start.md)
 ---
 
 ## Documentation
-
-To be completed
-
-## RoadMap
-
-To be completed
-
-## How to Contribute
-
-To be completed
-
-## Code of Conduct
 
 To be completed

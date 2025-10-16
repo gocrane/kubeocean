@@ -6,9 +6,9 @@
 
 > [English](README.md) | 中文
 
-Kubeocean 是一套开源的插件，可以动态的在一个 kubernetes 集群当中以虚拟节点的形式汇聚跨集群的算力资源，就像一个大海一样，这个集群我们也称为算力集群。所有部署在 Kubeocean 管理的虚拟节点上的 Pod 都会自动映射同步到对应的业务集群上进行部署，从而实现算力资源的跨集群复用。
+Kubeocean 是一套开源的插件，支持在一个 kubernetes 集群当中以虚拟节点的形式汇聚跨集群的算力资源，就像一个大海一样，这个集群我们也称为算力集群。所有部署在 Kubeocean 管理的虚拟节点上的 Pod 都会自动映射同步到对应的业务集群上进行部署，从而实现算力资源的跨集群复用。目前算力集群主要给各种离线作业提供服务，如 Spark、argo 等。
 
-![alt text](docs/images/image.png)
+![简介](docs/images/kubeocean-zh.png)
 
 ---
 
@@ -38,9 +38,13 @@ Kubeocean 在业务集群中映射创建的 Pod 集中在一个 namespace 当中
 
 ## 架构
 
-Kubeocean 整体架构如下：
+数据流架构：
 
-![alt text](docs/images/kubeocean-arch.png)
+![数据流](docs/images/kubeocean-data-flow-zh.png)
+
+控制流架构：
+
+![控制流](docs/images/kubeocean-control-flow-zh.png)
 
 **Manager：业务集群注册和生命周期管理**
 
@@ -80,15 +84,3 @@ Kubeocean 整体架构如下：
 ## 文档
 
 待完善
-
-## RoadMap
-
-待补充
-
-## 如何贡献
-
-待补充
-
-## 行为准则
-
-待补充
