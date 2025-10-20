@@ -8,8 +8,8 @@ import (
 
 	"errors"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	syncerpkg "github.com/TKEColocation/kubeocean/pkg/syncer"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	syncerpkg "github.com/gocrane/kubeocean/pkg/syncer"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	coordinationv1 "k8s.io/api/coordination/v1"

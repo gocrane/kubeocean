@@ -1,89 +1,86 @@
-# Kubeocean
+# Kubeocean: Converging Computing Resources Like an Ocean
 
-Kubeocean 是一个 Kubernetes 算力集群项目，通过整合多个物理 Kubernetes 集群的闲置计算资源，形成统一的虚拟算力集群。
+---
 
-![alt text](docs/images/image.png)
+## What is Kubeocean
 
-## 架构概述
+> English | [中文](README_zh.md)
 
-Kubeocean 包含两个主要组件：
+Kubeocean is an open-source add-ons that dynamically converge cross-cluster computing resources in the form of virtual nodes within a Kubernetes cluster, much like an ocean. This cluster is also referred to as the computing cluster. All Pods deployed on virtual nodes managed by Kubeocean are automatically mapped and synchronized to the corresponding worker clusters for deployment, thereby enabling cross-cluster reuse of computing resources. Computing cluster mainly provides services for various offline workloads, such as Spark, Argo and so on.
 
-- **Kubeocean Manager**: 管理 ClusterBinding 资源，负责创建和管理 Kubeocean Syncer 实例
-- **Kubeocean Syncer**: 负责特定物理集群与虚拟集群之间的双向同步
+![intro](docs/images/kubeocean.png)
 
-## 环境要求
+---
 
-- Go 1.24.3 或更高版本
-- Kubernetes 1.28+ 集群
+## Core Features
 
-## 快速开始
+**Lightweight and Non-intrusive Worker Cluster Registration**
 
-### 环境准备
+Worker clusters only need to deploy RBAC resources and provide the corresponding kubeconfig to complete registration, without deploying additional components. Kubeocean leverages the granted permissions to automatically complete cluster connection, virtual node registration, and other functions.
 
-需要至少两个集群：一个算力集群、多个业务集群，可以直接使用TKE集群。
+**Flexible and Dynamic Resource Extraction and Constraints**
 
-### 部署使用样例
+Each worker cluster can flexibly configure the node scope from which computing resources can be extracted, the size and scope of extracted resources, and the time window during which resources can be extracted through `resourceLeasingPolicy`. For example: limit extraction to a maximum of 50% of CPU resources (to avoid affecting online services); only allow resource extraction during weekday nights, available all day on weekends (tidal reuse); only extract node resources with "GPU model A10" (to match model training requirements).
 
-**在业务集群中：**
+**Global Unified Optimal Scheduling**
 
-1. 创建权限 `helm install kubeocean-worker charts/kubeocean-worker`
-2. 获取凭证 `bash hack/kubeconfig.sh kubeocean-syncer kubeocean-worker /tmp/kubeconfig.buz.1`
-3. 创建 ResourceLeasingPolicy `kubectl create -f examples/resourceleasingpolicy_sample.yaml`
+Each node with cross-cluster resource extraction is registered as a virtual node on a one-to-one basis, enabling the computing cluster to have a globally unified scheduling view, achieving globally optimal scheduling strategies, minimizing resource fragmentation, and improving resource utilization.
 
-**在算力集群中：**
+**Native and Seamless Workload Deployment**
 
-1. 安装kubeocean组件 `helm install kubeocean charts/kubeocean`
-2. 设置凭证 `kubectl create secret generic -n kubeocean-system worker-cluster-kubeconfig --from-file=kubeconfig=/tmp/kubeconfig.buz.1`
-3. 创建 ClusterBinding `kubectl create -f examples/clusterbinding_sample.yaml`
+Deploying workload in the computing cluster managed by Kubeocean requires no modifications. The component automatically implements native Kubernetes capabilities, deploying, running, and recycling Pods on virtual nodes and their dependent resources (such as configmaps, secrets, etc.) across clusters.
 
-### 构建项目
+**Minimal Permission Security Control**
 
-```bash
-# 构建二进制文件
-make build
+Pods mapped and created by Kubeocean in worker clusters are centralized in a single namespace, and all operations on worker clusters are based on the minimal permission kubeconfig granted during registration, minimizing the impact on worker clusters.
 
-# 或者直接使用 go build
-go build -o bin/kubeocean-manager cmd/kubeocean-manager/main.go
-go build -o bin/kubeocean-syncer cmd/kubeocean-syncer/main.go
+---
 
-# 构建 Docker 镜像
-make docker-build
-```
+## Architecture
 
-## 文档
+Data flow architecture：
 
-- [架构设计](docs/architecture.md) - 系统整体架构介绍
-- [管理器组件](docs/kubeocean-manager.md) - Kubeocean Manager 详细说明
-- [同步器架构](docs/syncer-template-architecture.md) - Syncer 组件架构
-- [自上而下同步](docs/topdown-syncer.md) - 从虚拟集群到物理集群的同步机制
-- [自下而上同步](docs/bottomup-syncer.md) - 从物理集群到虚拟集群的同步机制
-- [ClusterBinding控制器](docs/clusterbinding-controller.md) - 集群绑定控制器说明
-- [CSI节点同步](docs/csinode-sync.md) - CSI节点同步机制
-- [Vnode cAdvisor指标采集](docs/vnode-cadvisor-metrics.md) - 虚拟节点监控指标采集方案
+![data flow](docs/images/kubeocean-data-flow.png)
 
-## 开发
+Control flow architecture：
 
-### 生成代码
+![control flow](docs/images/kubeocean-control-flow.png)
 
-```bash
-# 生成 CRD manifests 和 deepcopy 代码
-make manifests generate
-```
+**Manager: Worker Cluster Registration and Lifecycle Management**
 
-### 运行测试
+- Monitors ClusterBinding resource changes
+- Automatically creates and manages Syncer components
+- Responsible for cluster binding lifecycle management
 
-```bash
-# 运行单元测试
-make test
-```
+**Syncer: Resource Extraction and Mapping Synchronization**
 
-### 代码格式化
+Divided into two submodules: Bottomup Syncer and Topdown Syncer:
 
-```bash
-# 格式化代码
-make fmt vet
-```
+*Bottomup Syncer: Resource Calculation and Extraction*
 
-## 许可证
+- Monitors worker cluster node and Pod status changes
+- Calculates extractable resources based on ResourceLeasingPolicy, creates and updates virtual nodes
+- Synchronizes Pod status to the computing cluster
 
-本项目采用 Apache License 2.0 许可证。
+*Topdown Syncer: Worker Mapping Deployment*
+
+- Monitors Pod creation in the computing cluster and dispatches to worker clusters for creation
+- Maps Pod-dependent resources such as ConfigMap, Secret, PV/PVC to the target worker cluster and updates in real-time
+- Manages Pod lifecycle in the computing cluster
+
+**Proxier: Request Proxy**
+
+- Responsible for listening to requests on port 10250 on Vnodes and proxying them to actual physical nodes
+- Implements capabilities such as kubectl logs, exec, etc.
+
+---
+
+## Getting Started
+
+Refer to the documentation: [Quick Start](docs/quick-start.md)
+
+---
+
+## Documentation
+
+Refer to: [Documentation Index](docs/README.md)

@@ -22,10 +22,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	clsv1 "github.com/TKEColocation/kubeocean/api/cls/v1"
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/syncer"
-	"github.com/TKEColocation/kubeocean/pkg/syncer/metrics"
+	clsv1 "github.com/gocrane/kubeocean/api/cls/v1"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	"github.com/gocrane/kubeocean/pkg/syncer"
+	"github.com/gocrane/kubeocean/pkg/syncer/metrics"
+	"github.com/gocrane/kubeocean/pkg/version"
 )
 
 var (
@@ -85,6 +86,7 @@ func main() {
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	setupLog.Info("Kubeocean Syncer", "version", version.Get())
 
 	// Get clusterBinding to determine clusterID for label filtering
 	config := ctrl.GetConfigOrDie()

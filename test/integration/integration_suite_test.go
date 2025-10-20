@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	clsv1 "github.com/TKEColocation/kubeocean/api/cls/v1"
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
+	clsv1 "github.com/gocrane/kubeocean/api/cls/v1"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"

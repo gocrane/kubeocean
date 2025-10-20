@@ -5,7 +5,7 @@
 # Global configuration
 global:
   # Image registry and repository
-  imageRegistry: "ccr.ccs.tencentyun.com/tke-eni-test"
+  imageRegistry: "ccr.ccs.tencentyun.com/tkeimages"
   # Image pull policy
   imagePullPolicy: IfNotPresent
   # Image pull secrets
@@ -24,7 +24,7 @@ manager:
   # Image configuration
   image:
     repository: kubeocean-manager
-    tag: latest
+    tag: v0.1.0
     pullPolicy: IfNotPresent
   # Replica count
   replicas: 2
@@ -111,7 +111,7 @@ syncer:
   # Image configuration
   image:
     repository: kubeocean-syncer
-    tag: latest
+    tag: v0.1.0
     pullPolicy: IfNotPresent
   # Default replica count for syncer instances
   replicas: 2
@@ -188,7 +188,7 @@ proxier:
   # Image configuration
   image:
     repository: kubeocean-proxier
-    tag: latest
+    tag: v0.1.0
     pullPolicy: IfNotPresent
   # Default replica count for proxier instances
   replicas: 2

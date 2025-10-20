@@ -16,9 +16,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/controller"
-	"github.com/TKEColocation/kubeocean/pkg/metrics"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	"github.com/gocrane/kubeocean/pkg/manager/controller"
+	"github.com/gocrane/kubeocean/pkg/manager/metrics"
+	"github.com/gocrane/kubeocean/pkg/version"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -72,6 +73,7 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	setupLog.Info("Kubeocean Manager", "version", version.Get())
 
 	// Get the kubernetes config and modify it with QPS and Burst settings
 	cfg := ctrl.GetConfigOrDie()

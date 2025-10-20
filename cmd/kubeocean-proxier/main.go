@@ -42,8 +42,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	cloudv1beta1 "github.com/TKEColocation/kubeocean/api/v1beta1"
-	"github.com/TKEColocation/kubeocean/pkg/proxier"
+	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
+	"github.com/gocrane/kubeocean/pkg/proxier"
+	"github.com/gocrane/kubeocean/pkg/version"
 )
 
 var (
@@ -66,6 +67,7 @@ func main() {
 
 	// Setup logging
 	setupLogging()
+	setupLog.Info("Kubeocean Proxier", "version", version.Get())
 
 	setupLog.Info("Starting Kubeocean Proxier",
 		"clusterBinding", config.ClusterBindingName,
@@ -137,22 +139,22 @@ func main() {
 
 // ProxierConfig holds configuration for the proxier
 type ProxierConfig struct {
-	ClusterBindingName      string
-	ListenPort              int
-	TLSSecretName           string
-	TLSSecretNamespace      string
-	MetricsEnabled          bool
-	MetricsCollectInterval  int
-	MetricsTargetNamespace  string
-	VnodeBasePort           int
+	ClusterBindingName     string
+	ListenPort             int
+	TLSSecretName          string
+	TLSSecretNamespace     string
+	MetricsEnabled         bool
+	MetricsCollectInterval int
+	MetricsTargetNamespace string
+	VnodeBasePort          int
 }
 
 // TLSConfiguration holds TLS setup results
 type TLSConfiguration struct {
-	Enabled           bool
-	SecretName        string
-	SecretNamespace   string
-	CertManager       *proxier.CertificateManager
+	Enabled         bool
+	SecretName      string
+	SecretNamespace string
+	CertManager     *proxier.CertificateManager
 }
 
 // parseFlags parses command line flags and returns configuration
@@ -473,7 +475,7 @@ func setupTLSConfiguration(ctx context.Context, config *ProxierConfig, clusterBi
 		tlsConfig.Enabled = true
 		tlsConfig.SecretName = config.TLSSecretName
 		tlsConfig.SecretNamespace = config.TLSSecretNamespace
-		
+
 		setupLog.Info("Using TLS secret from command line parameters",
 			"secretName", tlsConfig.SecretName,
 			"secretNamespace", tlsConfig.SecretNamespace,
@@ -504,7 +506,7 @@ func setupTLSConfiguration(ctx context.Context, config *ProxierConfig, clusterBi
 		tlsConfig.Enabled = true
 		tlsConfig.SecretName = annotationSecretName
 		tlsConfig.SecretNamespace = annotationSecretNamespace
-		
+
 		setupLog.Info("Using TLS secret from ClusterBinding annotation",
 			"secretName", tlsConfig.SecretName,
 			"secretNamespace", tlsConfig.SecretNamespace,
@@ -528,7 +530,7 @@ func setupTLSConfiguration(ctx context.Context, config *ProxierConfig, clusterBi
 	tlsConfig.Enabled = true
 	tlsConfig.SecretName = tlsSecret.Name
 	tlsConfig.SecretNamespace = tlsSecret.Namespace
-	
+
 	setupLog.Info("Using automatically managed TLS certificate",
 		"secretName", tlsConfig.SecretName,
 		"secretNamespace", tlsConfig.SecretNamespace,
@@ -582,7 +584,7 @@ func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig 
 	var vnodeProxierAgent *proxier.VNodeProxierAgent
 	if config.MetricsEnabled {
 		setupLog.Info("Setting up VNode proxier agent with kubelet proxy support")
-		
+
 		metricsConfig := &proxier.MetricsConfig{
 			CollectInterval:    time.Duration(config.MetricsCollectInterval) * time.Second,
 			MaxConcurrentNodes: 100,
