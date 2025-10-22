@@ -822,6 +822,11 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	spec.DeprecatedServiceAccount = ""
 	spec.NodeName = ""
 
+	// set hostname to virtual pod name if not set
+	if spec.Hostname == "" {
+		spec.Hostname = virtualPod.Name
+	}
+
 	// Replace resource names in volumes
 	if err := r.replaceVolumeResourceNames(&spec, virtualPod, resourceMapping); err != nil {
 		return spec, err
