@@ -29,6 +29,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/gorilla/mux"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -339,25 +340,24 @@ func (s *server) getExecOptions(req *http.Request) (*remoteCommandOptions, error
 		"queryParams", req.URL.Query(),
 	)
 
-	// Support two parameter formats, consistent with tke_vnode:
+	// Support two parameter formats, following Kubernetes standard:
 	// 1. Standard format: stdin=true, stdout=true, stderr=true, tty=true
 	// 2. Numeric format: stdin=1, stdout=1, stderr=1, tty=1
-	query := req.URL.Query()
 
 	// TTY parameter
-	ttyStr := query.Get("tty")
+	ttyStr := req.FormValue(corev1.ExecTTYParam)
 	tty := ttyStr == trueStr || ttyStr == oneStr
 
-	// Stdin parameter - use "input" consistent with tke_vnode
-	stdinStr := query.Get("input")
+	// Stdin parameter - use Kubernetes standard parameter name
+	stdinStr := req.FormValue(corev1.ExecStdinParam)
 	stdin := stdinStr == trueStr || stdinStr == oneStr
 
-	// Stdout parameter - use "output" consistent with tke_vnode
-	stdoutStr := query.Get("output")
+	// Stdout parameter - use Kubernetes standard parameter name
+	stdoutStr := req.FormValue(corev1.ExecStdoutParam)
 	stdout := stdoutStr == trueStr || stdoutStr == oneStr
 
-	// Stderr parameter - use "stderr" consistent with tke_vnode
-	stderrStr := query.Get("stderr")
+	// Stderr parameter - use Kubernetes standard parameter name
+	stderrStr := req.FormValue(corev1.ExecStderrParam)
 	stderr := stderrStr == trueStr || stderrStr == oneStr
 
 	s.log.Info("Parsed exec params",
@@ -459,11 +459,11 @@ func (e *execIO) Stdin() io.Reader {
 	return e.stdin
 }
 
-func (e *execIO) Stdout() io.Writer {
+func (e *execIO) Stdout() io.WriteCloser {
 	return e.stdout
 }
 
-func (e *execIO) Stderr() io.Writer {
+func (e *execIO) Stderr() io.WriteCloser {
 	return e.stderr
 }
 

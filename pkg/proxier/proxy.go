@@ -293,6 +293,15 @@ func (p *proxy) RunInContainer(ctx context.Context, namespace, podName, containe
 
 // executeInPhysicalPod executes command in the physical pod
 func (p *proxy) executeInPhysicalPod(ctx context.Context, mappingInfo *PodMappingInfo, containerName string, cmd []string, attach AttachIO) error {
+	defer func() {
+		if attach.Stdout() != nil {
+			attach.Stdout().Close()
+		}
+		if attach.Stderr() != nil {
+			attach.Stderr().Close()
+		}
+	}()
+
 	logger := p.log.WithValues(
 		"physicalNamespace", mappingInfo.PhysicalNamespace,
 		"physicalPod", mappingInfo.PhysicalName,
@@ -335,19 +344,23 @@ func (p *proxy) executeInPhysicalPod(ctx context.Context, mappingInfo *PodMappin
 
 	logger.Info("Created SPDY executor successfully")
 
-	// Create terminal size handler following tke_vnode pattern exactly
-	ts := &termSize{attach: attach}
+	// Create terminal size handler only for TTY mode (Kubernetes standard practice)
+	var tsQueue remotecommand.TerminalSizeQueue
+	if attach.TTY() {
+		tsQueue = &termSize{attach: attach}
+		logger.V(1).Info("Created terminal size queue for TTY mode")
+	}
 
 	// Log before streaming
-	logger.Info("Starting command stream")
+	logger.Info("Starting command stream", "tty", attach.TTY())
 
-	// Stream the exec using StreamWithContext like tke_vnode (critical fix!)
+	// Stream the exec using StreamWithContext
 	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdin:             attach.Stdin(),
 		Stdout:            attach.Stdout(),
 		Stderr:            attach.Stderr(),
 		Tty:               attach.TTY(),
-		TerminalSizeQueue: ts,
+		TerminalSizeQueue: tsQueue, // Only set for TTY mode
 	})
 	if err != nil {
 		logger.Error(err, "Failed to stream exec",
