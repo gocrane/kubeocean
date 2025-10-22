@@ -51,6 +51,10 @@ docker-push.manager: docker-build.manager ## Push docker image for manager only.
 docker-push.syncer: docker-build.syncer ## Push docker image for syncer only.
 	docker push ${IMG_SYNCER}
 
+.PHONY: docker-push.proxier
+docker-push.proxier: docker-build.proxier ## Push docker image for proxier only.
+	docker push ${IMG_PROXIER}
+
 # PLATFORMS defines the target platforms for the manager image be build to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - able to use docker buildx . More info: https://docs.docker.com/build/buildx/
