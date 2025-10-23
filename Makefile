@@ -1,3 +1,4 @@
+GOPROXY ?= https://goproxy.cn,direct
 TEST_REGISTRY ?= ccr.ccs.tencentyun.com/tke-eni-test
 
 GITVERSION := $(shell git describe --tags --always --dirty)

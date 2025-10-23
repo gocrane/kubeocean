@@ -21,21 +21,21 @@ run-syncer: manifests generate fmt vet ## Run kubeocean-syncer from your host.
 # More info: https://docs.docker.com/develop/dev-best-practices/
 .PHONY: docker-build
 docker-build: ## Build docker images for manager, syncer and proxier.
-	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager --build-arg LDFLAGS=${LDFLAGS} .
-	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer --build-arg LDFLAGS=${LDFLAGS} .
-	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier --build-arg LDFLAGS=${LDFLAGS} .
+	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} .
+	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} .
+	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} .
 
 .PHONY: docker-build.manager
 docker-build.manager: ## Build docker image for manager only.
-	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager --build-arg LDFLAGS=${LDFLAGS} .
+	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} .
 
 .PHONY: docker-build.syncer
 docker-build.syncer: ## Build docker image for syncer only.
-	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer --build-arg LDFLAGS=${LDFLAGS} .
+	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} .
 
 .PHONY: docker-build.proxier
 docker-build.proxier: ## Build docker image for proxier only.
-	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier --build-arg LDFLAGS=${LDFLAGS} .
+	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} .
 
 .PHONY: docker-push
 docker-push: docker-build ## Push docker images for manager, syncer and proxier.
