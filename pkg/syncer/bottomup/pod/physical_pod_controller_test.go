@@ -602,8 +602,7 @@ func TestPhysicalPodReconciler_BuildSyncPod(t *testing.T) {
 	assert.Equal(t, "Pod is running", syncPod.Status.Message)
 	assert.Equal(t, "Started", syncPod.Status.Reason)
 	assert.Equal(t, "10.0.0.1", syncPod.Status.PodIP)
-	// HostIP should be set to PodIP according to the new logic
-	assert.Equal(t, "10.0.0.1", syncPod.Status.HostIP)
+	assert.Equal(t, "192.168.1.100", syncPod.Status.HostIP)
 	assert.Len(t, syncPod.Status.ContainerStatuses, 1)
 	assert.Equal(t, "container1", syncPod.Status.ContainerStatuses[0].Name)
 	assert.True(t, syncPod.Status.ContainerStatuses[0].Ready)
