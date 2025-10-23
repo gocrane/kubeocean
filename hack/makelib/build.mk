@@ -149,6 +149,10 @@ lint: golangci-lint ## Run golangci-lint linter.
 install-manager: helm ## Install kubeocean manager to the current cluster using helm.
 	@echo "🚀 Installing kubeocean manager to current cluster..."
 	$(HELM) upgrade --install kubeocean charts/kubeocean \
+		--set global.imageRegistry=${TEST_REGISTRY} \
+		--set manager.image.tag=${IMG_TAG} \
+		--set syncer.image.tag=${IMG_TAG} \
+		--set proxier.image.tag=${IMG_TAG} \
 		--wait \
 		--timeout 300s
 	@echo "✅ Kubeocean manager installed successfully!"

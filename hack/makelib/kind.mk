@@ -234,13 +234,12 @@ kind-clean: ## Clean up KIND related files and clusters.
 
 ##@ KIND Deployment
 
-.PHONY: kind-deploy
-kind-deploy: kind-create-all ## Deploy kubeocean to all KIND clusters with full setup.
+.PHONY: kind-deploy-pre
+kind-deploy-pre: kind-create-all ## Pre-deploy kubeocean to all KIND clusters.
 	@echo ""
-	@echo "🚀 Starting kubeocean deployment to all KIND clusters..."
+	@echo "🚀 Starting kubeocean pre-deployment to all KIND clusters..."
 	@echo ""
-	@# Step 1: Create kubernetes-intranet service in manager cluster
-	@echo "🔧 Step 1/8: Creating kubernetes-intranet service in manager cluster..."
+	@echo "🔧 Step 1/2: Creating kubernetes-intranet service in manager cluster..."
 	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER)
 	@# Get apiserver pod IP
 	@APISERVER_IP=$$(kubectl get pod -n kube-system -l component=kube-apiserver -o jsonpath='{.items[0].status.podIP}'); \
@@ -253,7 +252,7 @@ kind-deploy: kind-create-all ## Deploy kubeocean to all KIND clusters with full 
 	echo "   ✅ Created kubernetes-intranet service in $(KIND_MANAGER_CLUSTER)"
 	@echo ""
 	@# Step 2: Create kube-dns-intranet service in manager cluster
-	@echo "🔧 Step 2/8: Creating kube-dns-intranet service in manager cluster..."
+	@echo "🔧 Step 2/2: Creating kube-dns-intranet service in manager cluster..."
 	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER)
 	@# Patch coredns deployment to add hostPort
 	@kubectl patch deployment coredns -n kube-system --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/ports/0/hostPort","value":53}]' || echo "   ⚠️  hostPort may already exist"; \
@@ -265,16 +264,22 @@ kind-deploy: kind-create-all ## Deploy kubeocean to all KIND clusters with full 
 	kubectl patch svc kube-dns-intranet -n kube-system --type=merge --subresource status --patch "{\"status\":{\"loadBalancer\":{\"ingress\":[{\"ip\":\"$$COREDNS_NODE_IP\"}]}}}"; \
 	echo "   ✅ Created kube-dns-intranet service in $(KIND_MANAGER_CLUSTER)"
 	@echo ""
-	@# Step 3: Deploy worker resources to worker clusters
-	@echo "📦 Step 3/8: Deploying kubeocean-worker to worker clusters..."
+
+.PHONY: kind-deploy
+kind-deploy: kind-deploy-pre  ## Deploy kubeocean to all KIND clusters with full setup.
+	@echo ""
+	@echo "🚀 Starting kubeocean deployment to all KIND clusters..."
+	@echo ""
+	@# Step 1: Deploy worker resources to worker clusters
+	@echo "📦 Step 1/6: Deploying kubeocean-worker to worker clusters..."
 	@kubectl config use-context kind-$(KIND_WORKER1_CLUSTER)
 	@make install-worker
 	@echo ""
 	@kubectl config use-context kind-$(KIND_WORKER2_CLUSTER)  
 	@make install-worker
 	@echo ""
-	@# Step 4: Deploy ResourceLeasingPolicies to worker clusters
-	@echo "📋 Step 4/8: Deploying ResourceLeasingPolicies to worker clusters..."
+	@# Step 2: Deploy ResourceLeasingPolicies to worker clusters
+	@echo "📋 Step 2/6: Deploying ResourceLeasingPolicies to worker clusters..."
 	@kubectl config use-context kind-$(KIND_WORKER1_CLUSTER)
 	@kubectl apply -f hack/makelib/kind/rlp1.yaml
 	@echo "   ✅ Applied rlp1.yaml to $(KIND_WORKER1_CLUSTER)"
@@ -282,14 +287,14 @@ kind-deploy: kind-create-all ## Deploy kubeocean to all KIND clusters with full 
 	@kubectl apply -f hack/makelib/kind/rlp2.yaml
 	@echo "   ✅ Applied rlp2.yaml to $(KIND_WORKER2_CLUSTER)"
 	@echo ""
-	@# Step 5: Deploy manager to manager cluster
-	@echo "🎛️  Step 5/8: Deploying kubeocean manager to manager cluster..."
+	@# Step 3: Deploy manager to manager cluster
+	@echo "🎛️  Step 3/6: Deploying kubeocean manager to manager cluster..."
 	@KIND_CLUSTER_NAME=$(KIND_MANAGER_CLUSTER) make kind-load-images
 	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER)
 	@make install-manager
 	@echo ""
-	@# Step 6: Extract kubeconfigs from worker clusters with container IPs
-	@echo "🔐 Step 6/8: Extracting kubeconfigs from worker clusters..."
+	@# Step 4: Extract kubeconfigs from worker clusters with container IPs
+	@echo "🔐 Step 4/6: Extracting kubeconfigs from worker clusters..."
 	@kubectl config use-context kind-$(KIND_WORKER1_CLUSTER)
 	@bash hack/kubeconfig.sh kubeocean-syncer kubeocean-worker /tmp/kubeconfig-worker1
 	@# Fix server address to use container IP instead of localhost
@@ -302,8 +307,8 @@ kind-deploy: kind-create-all ## Deploy kubeocean to all KIND clusters with full 
 	sed -i "s|server:.*|server: \"https://$$WORKER2_IP:6443\"|" /tmp/kubeconfig-worker2
 	@echo "   ✅ Extracted kubeconfigs with container IPs"
 	@echo ""
-	@# Step 7: Create secrets in manager cluster
-	@echo "🔑 Step 7/8: Creating kubeconfig secrets in manager cluster..."
+	@# Step 5: Create secrets in manager cluster
+	@echo "🔑 Step 5/6: Creating kubeconfig secrets in manager cluster..."
 	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER)
 	@kubectl create secret generic worker1-cluster-kubeconfig \
 		--from-file=kubeconfig=/tmp/kubeconfig-worker1 \
@@ -313,8 +318,8 @@ kind-deploy: kind-create-all ## Deploy kubeocean to all KIND clusters with full 
 		-n kubeocean-system --dry-run=client -o yaml | kubectl apply -f -
 	@echo "   ✅ Created kubeconfig secrets in manager cluster"
 	@echo ""
-	@# Step 8: Create ClusterBindings in manager cluster
-	@echo "🔗 Step 8/8: Creating ClusterBindings in manager cluster..."
+	@# Step 6: Create ClusterBindings in manager cluster
+	@echo "🔗 Step 6/6: Creating ClusterBindings in manager cluster..."
 	@kubectl apply -f hack/makelib/kind/clusterbinding1.yaml
 	@kubectl apply -f hack/makelib/kind/clusterbinding2.yaml
 	@echo "   ✅ Created ClusterBindings in manager cluster"

@@ -8,6 +8,15 @@ This directory contains detailed technical documentation for the Kubeocean proje
 
 - [Quick Start Guide](quick-start.md) - Get started with Kubeocean quickly
 
+## Requirements
+
+- [Requirements](requirements.md) - Environment requirements for deploying Kubeocean
+
+## Tutorial Documentation
+
+- [Installation Guide](tutorials/installation.md) - Kubeocean component installation and environment configuration
+- [Binding Worker Clusters](tutorials/bindCluster.md) - Binding worker clusters to virtual computing clusters
+
 ## Architecture Documentation
 
 - [Architecture Overview](architecture.md) - Overall system architecture design and component introduction
