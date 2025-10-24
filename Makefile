@@ -1,3 +1,4 @@
+BASEIMAGE ?= gcr.io/distroless/static:nonroot
 GOPROXY ?= https://goproxy.cn,direct
 TEST_REGISTRY ?= ccr.ccs.tencentyun.com/tke-eni-test
 
