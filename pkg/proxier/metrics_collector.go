@@ -30,6 +30,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/common"
 	"github.com/go-logr/logr"
 	"github.com/gorilla/mux"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -1239,19 +1240,19 @@ func getExecOptions(req *http.Request, log logr.Logger) (*remoteCommandOptions, 
 	query := req.URL.Query()
 
 	// TTY parameter
-	ttyStr := query.Get("tty")
+	ttyStr := query.Get(corev1.ExecTTYParam)
 	tty := ttyStr == trueStr || ttyStr == oneStr
 
 	// Stdin parameter - use "input" consistent with tke_vnode
-	stdinStr := query.Get("input")
+	stdinStr := query.Get(corev1.ExecStdinParam)
 	stdin := stdinStr == trueStr || stdinStr == oneStr
 
 	// Stdout parameter - use "output" consistent with tke_vnode
-	stdoutStr := query.Get("output")
+	stdoutStr := query.Get(corev1.ExecStdoutParam)
 	stdout := stdoutStr == trueStr || stdoutStr == oneStr
 
 	// Stderr parameter - use "stderr" consistent with tke_vnode
-	stderrStr := query.Get("stderr")
+	stderrStr := query.Get(corev1.ExecStderrParam)
 	stderr := stderrStr == trueStr || stderrStr == oneStr
 
 	log.Info("Parsed exec params",
@@ -1353,11 +1354,11 @@ func (e *metricsCollectorExecIO) Stdin() io.Reader {
 	return e.stdin
 }
 
-func (e *metricsCollectorExecIO) Stdout() io.Writer {
+func (e *metricsCollectorExecIO) Stdout() io.WriteCloser {
 	return e.stdout
 }
 
-func (e *metricsCollectorExecIO) Stderr() io.Writer {
+func (e *metricsCollectorExecIO) Stderr() io.WriteCloser {
 	return e.stderr
 }
 

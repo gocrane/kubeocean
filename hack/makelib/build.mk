@@ -19,23 +19,20 @@ run-syncer: manifests generate fmt vet ## Run kubeocean-syncer from your host.
 # If you wish built the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64 ). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/dev-best-practices/
-.PHONY: docker-build
-docker-build: ## Build docker images for manager, syncer and proxier.
-	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager --build-arg LDFLAGS=${LDFLAGS} .
-	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer --build-arg LDFLAGS=${LDFLAGS} .
-	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier --build-arg LDFLAGS=${LDFLAGS} .
-
 .PHONY: docker-build.manager
 docker-build.manager: ## Build docker image for manager only.
-	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager --build-arg LDFLAGS=${LDFLAGS} .
+	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} --build-arg BASEIMAGE=${BASEIMAGE} .
 
 .PHONY: docker-build.syncer
 docker-build.syncer: ## Build docker image for syncer only.
-	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer --build-arg LDFLAGS=${LDFLAGS} .
+	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} --build-arg BASEIMAGE=${BASEIMAGE} .
 
 .PHONY: docker-build.proxier
 docker-build.proxier: ## Build docker image for proxier only.
-	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier --build-arg LDFLAGS=${LDFLAGS} .
+	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} --build-arg BASEIMAGE=${BASEIMAGE} .
+
+.PHONY: docker-build
+docker-build: docker-build.manager docker-build.syncer docker-build.proxier ## Build docker images for manager, syncer and proxier.
 
 .PHONY: docker-push
 docker-push: docker-build ## Push docker images for manager, syncer and proxier.
@@ -50,6 +47,10 @@ docker-push.manager: docker-build.manager ## Push docker image for manager only.
 .PHONY: docker-push.syncer
 docker-push.syncer: docker-build.syncer ## Push docker image for syncer only.
 	docker push ${IMG_SYNCER}
+
+.PHONY: docker-push.proxier
+docker-push.proxier: docker-build.proxier ## Push docker image for proxier only.
+	docker push ${IMG_PROXIER}
 
 # PLATFORMS defines the target platforms for the manager image be build to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -148,6 +149,10 @@ lint: golangci-lint ## Run golangci-lint linter.
 install-manager: helm ## Install kubeocean manager to the current cluster using helm.
 	@echo "🚀 Installing kubeocean manager to current cluster..."
 	$(HELM) upgrade --install kubeocean charts/kubeocean \
+		--set global.imageRegistry=${TEST_REGISTRY} \
+		--set manager.image.tag=${IMG_TAG} \
+		--set syncer.image.tag=${IMG_TAG} \
+		--set proxier.image.tag=${IMG_TAG} \
 		--wait \
 		--timeout 300s
 	@echo "✅ Kubeocean manager installed successfully!"

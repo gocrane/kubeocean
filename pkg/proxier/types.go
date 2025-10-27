@@ -49,8 +49,8 @@ type TermSize struct {
 // AttachIO defines the interface for attach input/output
 type AttachIO interface {
 	Stdin() io.Reader
-	Stdout() io.Writer
-	Stderr() io.Writer
+	Stdout() io.WriteCloser
+	Stderr() io.WriteCloser
 	TTY() bool
 	// HasStdin returns true if stdin is requested
 	HasStdin() bool

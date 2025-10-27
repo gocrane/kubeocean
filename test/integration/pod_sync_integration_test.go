@@ -348,7 +348,7 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 				}
 
 				return updatedVirtualPod.Status.Phase == corev1.PodRunning &&
-					updatedVirtualPod.Status.HostIP == "10.0.0.100" && // HostIP set to PodIP
+					updatedVirtualPod.Status.HostIP == "192.168.1.10" &&
 					len(updatedVirtualPod.Status.Conditions) > 0 &&
 					updatedVirtualPod.Status.Conditions[0].Type == corev1.PodReady
 			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())

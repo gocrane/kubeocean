@@ -336,7 +336,7 @@ func (r *PhysicalPodReconciler) buildSyncPod(physicalPod, virtualPod *corev1.Pod
 	syncPod.Status.Conditions = physicalPod.Status.Conditions
 	syncPod.Status.Message = physicalPod.Status.Message
 	syncPod.Status.Reason = physicalPod.Status.Reason
-	syncPod.Status.HostIP = physicalPod.Status.PodIP
+	syncPod.Status.HostIP = physicalPod.Status.HostIP
 	syncPod.Status.PodIP = physicalPod.Status.PodIP
 	syncPod.Status.PodIPs = physicalPod.Status.PodIPs
 	syncPod.Status.StartTime = physicalPod.Status.StartTime

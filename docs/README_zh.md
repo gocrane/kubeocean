@@ -8,6 +8,15 @@
 
 - [快速开始指南](quick-start_zh.md) - 快速上手 Kubeocean
 
+## 环境要求
+
+- [环境要求](requirements_zh.md) - 部署 Kubeocean 的环境要求
+
+## 教程文档
+
+- [安装指南](tutorials/installation_zh.md) - Kubeocean 组件安装和环境配置
+- [绑定工作集群](tutorials/bindCluster_zh.md) - 绑定工作集群到虚拟算力集群
+
 ## 架构文档
 
 - [架构概览](architecture_zh.md) - 系统整体架构设计和组件介绍

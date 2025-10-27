@@ -77,7 +77,11 @@ Divided into two submodules: Bottomup Syncer and Topdown Syncer:
 
 ## Getting Started
 
-Refer to the documentation: [Quick Start](docs/quick-start.md)
+- [Quick Start](docs/quick-start.md)
+- [Requirements](requirements.md)
+- Tutorials：
+    - [Installation Guide](tutorials/installation.md) - Kubeocean component installation and environment configuration
+    - [Binding Worker Clusters](tutorials/bindCluster.md) - Binding worker clusters to virtual computing clusters
 
 ---
 
