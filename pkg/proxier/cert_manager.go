@@ -303,20 +303,22 @@ func (cm *CertificateManager) getPodIP() (string, error) {
 	return pod.Status.PodIP, nil
 }
 
-// createCSR creates a certificate signing request
+// createCSR creates a certificate signing request for kubernetes.io/kubelet-serving signer
 func (cm *CertificateManager) createCSR(privateKey *rsa.PrivateKey, podIP string) ([]byte, error) {
 	// Build Subject Alternative Names
 	var dnsNames []string
 	var ipAddresses []net.IP
 
-	// Add DNS names
+	// For kubelet-serving, we need specific DNS names that match kubelet service
+	nodeName := cm.clusterBinding.Name
 	dnsNames = append(dnsNames,
 		"localhost",
 		"logs-proxy",
 		"kubeocean-logs-proxy",
 		"kubelet",
 		"kubelet-api",
-		cm.clusterBinding.Name, // Use cluster binding name as virtual node name
+		nodeName, // Node name is essential for kubelet-serving
+		fmt.Sprintf("%s.%s.svc.cluster.local", nodeName, cm.namespace), // Service FQDN
 	)
 
 	// Add IP addresses
@@ -327,11 +329,14 @@ func (cm *CertificateManager) createCSR(privateKey *rsa.PrivateKey, podIP string
 		ipAddresses = append(ipAddresses, ip)
 	}
 
-	// Create certificate request template
+	// Create certificate request template with kubelet-serving compatible subject
+	// kubernetes.io/kubelet-serving requires:
+	// - CommonName: system:node:<node-name>
+	// - Organization: system:nodes
 	template := x509.CertificateRequest{
 		Subject: pkix.Name{
-			CommonName:   cm.clusterBinding.Name,
-			Organization: []string{"kubeocean"},
+			CommonName:   fmt.Sprintf("system:node:%s", nodeName),
+			Organization: []string{"system:nodes"},
 		},
 		DNSNames:    dnsNames,
 		IPAddresses: ipAddresses,
@@ -346,7 +351,7 @@ func (cm *CertificateManager) createCSR(privateKey *rsa.PrivateKey, podIP string
 	return csrDER, nil
 }
 
-// submitCSR submits CSR to Kubernetes
+// submitCSR submits CSR to Kubernetes using kubernetes.io/kubelet-serving signer
 func (cm *CertificateManager) submitCSR(ctx context.Context, csrName string, csrDER []byte) (*certificatesv1.CertificateSigningRequest, error) {
 	// Convert DER to PEM format
 	csrPEM := pem.EncodeToMemory(&pem.Block{
@@ -354,14 +359,29 @@ func (cm *CertificateManager) submitCSR(ctx context.Context, csrName string, csr
 		Bytes: csrDER,
 	})
 
+	nodeName := cm.clusterBinding.Name
+	
 	csr := &certificatesv1.CertificateSigningRequest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: csrName,
+			// Add labels to help identify and manage the CSR
+			Labels: map[string]string{
+				"kubeocean.io/component":     "logs-proxy",
+				"kubeocean.io/cluster-id":    cm.clusterBinding.Spec.ClusterID,
+				"kubeocean.io/node-name":     nodeName,
+			},
 		},
 		Spec: certificatesv1.CertificateSigningRequestSpec{
 			Request:    csrPEM,
-			SignerName: "kubernetes.io/legacy-unknown",
+			SignerName: certificatesv1.KubeletServingSignerName, // kubernetes.io/kubelet-serving
+			// For kubelet-serving, specify the requesting user identity
+			Username: fmt.Sprintf("system:node:%s", nodeName),
+			Groups: []string{
+				"system:nodes",
+				"system:authenticated",
+			},
 			Usages: []certificatesv1.KeyUsage{
+				// Standard usages for kubelet serving certificates
 				certificatesv1.UsageDigitalSignature,
 				certificatesv1.UsageKeyEncipherment,
 				certificatesv1.UsageServerAuth,
