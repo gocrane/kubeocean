@@ -30,6 +30,6 @@ rules:
   verbs: ["update"]
 - apiGroups: ["certificates.k8s.io"]
   resources: ["signers"]
-  resourceNames: ["kubernetes.io/legacy-unknown"]
+  resourceNames: ["kubernetes.io/kubelet-serving"]
   verbs: ["approve"]
 {{- end }}
