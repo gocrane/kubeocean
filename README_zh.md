@@ -78,7 +78,7 @@ Kubeocean 在业务集群中映射创建的 Pod 集中在一个 namespace 当中
 ## 开始使用
 
 - [快速开始](docs/quick-start_zh.md)
-- [环境要求](requirements_zh.md)
+- [环境要求](docs/requirements_zh.md)
 - 教程：
     - [安装指南](docs/tutorials/installation_zh.md) - Kubeocean 组件安装和环境配置
     - [绑定工作集群](docs/tutorials/bindCluster_zh.md) - 绑定工作集群到虚拟算力集群
