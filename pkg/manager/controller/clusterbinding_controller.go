@@ -569,30 +569,30 @@ func (r *ClusterBindingReconciler) prepareSyncerTemplateData(clusterBinding *clo
 	}
 }
 
-// createSyncerResourceFromTemplate creates a Kubernetes resource from a template
-func (r *ClusterBindingReconciler) createSyncerResourceFromTemplate(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding, templateFiles map[string]string, templateData *SyncerTemplateData, templateKey string) error {
+// createResourceFromTemplate creates a Kubernetes resource from a template with any data type
+func (r *ClusterBindingReconciler) createResourceFromTemplate(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding, templateFiles map[string]string, templateData interface{}, templateName string) error {
 	// Get the template from template files
-	templateStr, exists := templateFiles[templateKey]
+	templateStr, exists := templateFiles[templateName]
 	if !exists {
-		return fmt.Errorf("template %s not found in template files", templateKey)
+		return fmt.Errorf("template %s not found in template files", templateName)
 	}
 
 	// Parse and execute the template
-	tmpl, err := template.New(templateKey).Parse(templateStr)
+	tmpl, err := template.New(templateName).Parse(templateStr)
 	if err != nil {
-		return fmt.Errorf("failed to parse template %s: %w", templateKey, err)
+		return fmt.Errorf("failed to parse template %s: %w", templateName, err)
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, templateData); err != nil {
-		return fmt.Errorf("failed to execute template %s: %w", templateKey, err)
+		return fmt.Errorf("failed to execute template %s: %w", templateName, err)
 	}
 
 	// Decode the YAML into a Kubernetes object
 	decoder := serializer.NewCodecFactory(r.Scheme).UniversalDeserializer()
 	obj, _, err := decoder.Decode(buf.Bytes(), nil, nil)
 	if err != nil {
-		return fmt.Errorf("failed to decode YAML from template %s: %w", templateKey, err)
+		return fmt.Errorf("failed to decode YAML from template %s: %w", templateName, err)
 	}
 
 	// Set owner reference
@@ -602,6 +602,12 @@ func (r *ClusterBindingReconciler) createSyncerResourceFromTemplate(ctx context.
 
 	// Create or update the resource
 	return r.createOrUpdateResource(ctx, obj)
+}
+
+// createSyncerResourceFromTemplate creates a Kubernetes resource from a template
+// Deprecated: Use createResourceFromTemplate instead
+func (r *ClusterBindingReconciler) createSyncerResourceFromTemplate(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding, templateFiles map[string]string, templateData *SyncerTemplateData, templateKey string) error {
+	return r.createResourceFromTemplate(ctx, clusterBinding, templateFiles, templateData, templateKey)
 }
 
 // setOwnerReference sets the owner reference for a Kubernetes object
@@ -1029,39 +1035,9 @@ func (r *ClusterBindingReconciler) prepareProxierTemplateData(clusterBinding *cl
 }
 
 // createProxierResourceFromTemplate creates or updates a Kubernetes resource from a template
+// Deprecated: Use createResourceFromTemplate instead
 func (r *ClusterBindingReconciler) createProxierResourceFromTemplate(ctx context.Context, clusterBinding *cloudv1beta1.ClusterBinding, templateFiles map[string]string, templateData *ProxierTemplateData, templateName string) error {
-
-	// Get template content
-	templateContent, exists := templateFiles[templateName]
-	if !exists {
-		return fmt.Errorf("template %s not found", templateName)
-	}
-
-	// Parse and execute template
-	tmpl, err := template.New(templateName).Parse(templateContent)
-	if err != nil {
-		return fmt.Errorf("failed to parse template %s: %w", templateName, err)
-	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, templateData); err != nil {
-		return fmt.Errorf("failed to execute template %s: %w", templateName, err)
-	}
-
-	// Decode the YAML into a Kubernetes object
-	decoder := serializer.NewCodecFactory(r.Scheme).UniversalDeserializer()
-	obj, _, err := decoder.Decode(buf.Bytes(), nil, nil)
-	if err != nil {
-		return fmt.Errorf("failed to decode YAML from template %s: %w", templateName, err)
-	}
-
-	// Set owner reference
-	if err := r.setOwnerReference(clusterBinding, obj); err != nil {
-		return fmt.Errorf("failed to set owner reference: %w", err)
-	}
-
-	// Create or update the resource
-	return r.createOrUpdateResource(ctx, obj)
+	return r.createResourceFromTemplate(ctx, clusterBinding, templateFiles, templateData, templateName)
 }
 
 // SetupWithManager sets up the controller with the Manager.

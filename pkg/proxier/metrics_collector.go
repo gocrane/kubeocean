@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1178,79 +1177,9 @@ func (va *VNodeProxierAgent) updateNodeMemoryStats(summary *Summary, hasAnyMemor
 	}
 }
 
-// parseLogOptions parses log options from query parameters (same as server.go)
+// parseLogOptions parses log options from query parameters (delegates to shared function)
 func (va *VNodeProxierAgent) parseLogOptions(query map[string][]string) (ContainerLogOpts, error) {
-	opts := ContainerLogOpts{}
-
-	if tailLines := getFirstValue(query, "tailLines"); tailLines != "" {
-		tail, err := strconv.Atoi(tailLines)
-		if err != nil {
-			return opts, fmt.Errorf("invalid tailLines: %w", err)
-		}
-		if tail < 0 {
-			return opts, fmt.Errorf("tailLines must be non-negative")
-		}
-		opts.Tail = tail
-	}
-
-	if follow := getFirstValue(query, "follow"); follow != "" {
-		followBool, err := strconv.ParseBool(follow)
-		if err != nil {
-			return opts, fmt.Errorf("invalid follow: %w", err)
-		}
-		opts.Follow = followBool
-	}
-
-	if limitBytes := getFirstValue(query, "limitBytes"); limitBytes != "" {
-		limit, err := strconv.Atoi(limitBytes)
-		if err != nil {
-			return opts, fmt.Errorf("invalid limitBytes: %w", err)
-		}
-		if limit < 1 {
-			return opts, fmt.Errorf("limitBytes must be positive")
-		}
-		opts.LimitBytes = limit
-	}
-
-	if previous := getFirstValue(query, "previous"); previous != "" {
-		prev, err := strconv.ParseBool(previous)
-		if err != nil {
-			return opts, fmt.Errorf("invalid previous: %w", err)
-		}
-		opts.Previous = prev
-	}
-
-	if sinceSeconds := getFirstValue(query, "sinceSeconds"); sinceSeconds != "" {
-		since, err := strconv.Atoi(sinceSeconds)
-		if err != nil {
-			return opts, fmt.Errorf("invalid sinceSeconds: %w", err)
-		}
-		if since < 1 {
-			return opts, fmt.Errorf("sinceSeconds must be positive")
-		}
-		opts.SinceSeconds = since
-	}
-
-	if sinceTime := getFirstValue(query, "sinceTime"); sinceTime != "" {
-		since, err := time.Parse(time.RFC3339, sinceTime)
-		if err != nil {
-			return opts, fmt.Errorf("invalid sinceTime: %w", err)
-		}
-		if opts.SinceSeconds > 0 {
-			return opts, fmt.Errorf("both sinceSeconds and sinceTime cannot be set")
-		}
-		opts.SinceTime = since
-	}
-
-	if timestamps := getFirstValue(query, "timestamps"); timestamps != "" {
-		ts, err := strconv.ParseBool(timestamps)
-		if err != nil {
-			return opts, fmt.Errorf("invalid timestamps: %w", err)
-		}
-		opts.Timestamps = ts
-	}
-
-	return opts, nil
+	return parseContainerLogOptions(query)
 }
 
 // getExecOptions parses exec options from the request - same as server.go
@@ -1338,27 +1267,7 @@ func (c *metricsCollectorExecContext) ExecInContainer(name string, uid types.UID
 	defer cancel()
 
 	if tty {
-		go func() {
-			send := func(s clientremotecommand.TerminalSize) bool {
-				select {
-				case eio.chResize <- TermSize{Width: s.Width, Height: s.Height}:
-					return false
-				case <-ctx.Done():
-					return true
-				}
-			}
-
-			for {
-				select {
-				case s := <-resize:
-					if send(s) {
-						return
-					}
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
+		go handleTerminalResize(ctx, resize, eio.chResize)
 	}
 
 	// Call our Kubelet proxy with the execIO

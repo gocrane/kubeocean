@@ -190,12 +190,9 @@ type protocolHandler interface {
 	supportsTerminalResizing() bool
 }
 
-// v4ProtocolHandler implements the V4 protocol version for streaming command execution. It only differs
-// in from v3 in the error stream format using an json-marshaled metav1.Status which carries
-// the process' exit code.
-type v4ProtocolHandler struct{}
-
-func (*v4ProtocolHandler) waitForStreams(streams <-chan streamAndReply, expectedStreams int, expired <-chan time.Time) (*context, error) {
+// waitForStreamsWithWriteStatusFunc is a shared helper function for waiting for streams
+// with a custom write status function for error streams
+func waitForStreamsWithWriteStatusFunc(streams <-chan streamAndReply, expectedStreams int, expired <-chan time.Time, writeStatusFunc func(io.Writer) func(status *apierrors.StatusError) error) (*context, error) {
 	ctx := &context{}
 	receivedStreams := 0
 	replyChan := make(chan struct{})
@@ -208,7 +205,7 @@ WaitForStreams:
 			streamType := stream.Headers().Get(api.StreamType)
 			switch streamType {
 			case api.StreamTypeError:
-				ctx.writeStatus = v4WriteStatusFunc(stream) // write json errors
+				ctx.writeStatus = writeStatusFunc(stream)
 				go waitStreamReply(stream.replySent, replyChan, stop)
 			case api.StreamTypeStdin:
 				ctx.stdinStream = stream
@@ -240,6 +237,15 @@ WaitForStreams:
 	return ctx, nil
 }
 
+// v4ProtocolHandler implements the V4 protocol version for streaming command execution. It only differs
+// in from v3 in the error stream format using an json-marshaled metav1.Status which carries
+// the process' exit code.
+type v4ProtocolHandler struct{}
+
+func (*v4ProtocolHandler) waitForStreams(streams <-chan streamAndReply, expectedStreams int, expired <-chan time.Time) (*context, error) {
+	return waitForStreamsWithWriteStatusFunc(streams, expectedStreams, expired, v4WriteStatusFunc)
+}
+
 // supportsTerminalResizing returns true because v4ProtocolHandler supports it
 func (*v4ProtocolHandler) supportsTerminalResizing() bool { return true }
 
@@ -247,48 +253,7 @@ func (*v4ProtocolHandler) supportsTerminalResizing() bool { return true }
 type v3ProtocolHandler struct{}
 
 func (*v3ProtocolHandler) waitForStreams(streams <-chan streamAndReply, expectedStreams int, expired <-chan time.Time) (*context, error) {
-	ctx := &context{}
-	receivedStreams := 0
-	replyChan := make(chan struct{})
-	stop := make(chan struct{})
-	defer close(stop)
-WaitForStreams:
-	for {
-		select {
-		case stream := <-streams:
-			streamType := stream.Headers().Get(api.StreamType)
-			switch streamType {
-			case api.StreamTypeError:
-				ctx.writeStatus = v1WriteStatusFunc(stream)
-				go waitStreamReply(stream.replySent, replyChan, stop)
-			case api.StreamTypeStdin:
-				ctx.stdinStream = stream
-				go waitStreamReply(stream.replySent, replyChan, stop)
-			case api.StreamTypeStdout:
-				ctx.stdoutStream = stream
-				go waitStreamReply(stream.replySent, replyChan, stop)
-			case api.StreamTypeStderr:
-				ctx.stderrStream = stream
-				go waitStreamReply(stream.replySent, replyChan, stop)
-			case api.StreamTypeResize:
-				ctx.resizeStream = stream
-				go waitStreamReply(stream.replySent, replyChan, stop)
-			default:
-				runtime.HandleError(fmt.Errorf("unexpected stream type: %q", streamType))
-			}
-		case <-replyChan:
-			receivedStreams++
-			if receivedStreams == expectedStreams {
-				break WaitForStreams
-			}
-		case <-expired:
-			// TODO find a way to return the error to the user. Maybe use a separate
-			// stream to report errors?
-			return nil, errors.New("timed out waiting for client to create streams")
-		}
-	}
-
-	return ctx, nil
+	return waitForStreamsWithWriteStatusFunc(streams, expectedStreams, expired, v1WriteStatusFunc)
 }
 
 // supportsTerminalResizing returns true because v3ProtocolHandler supports it

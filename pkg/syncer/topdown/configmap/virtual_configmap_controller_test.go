@@ -42,6 +42,29 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 		}
 	}
 
+	// Helper function to create a test ConfigMap
+	// For virtual ConfigMap: otherName is the physical name
+	// For physical ConfigMap: otherName is the virtual name
+	createTestConfigMap := func(name, namespace, otherName string, data map[string]string, isVirtual bool) *corev1.ConfigMap {
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+				Labels: map[string]string{
+					cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				},
+				Annotations: make(map[string]string),
+			},
+			Data: data,
+		}
+		if isVirtual {
+			cm.Annotations[cloudv1beta1.AnnotationPhysicalName] = otherName
+		} else {
+			cm.Annotations[cloudv1beta1.AnnotationVirtualName] = otherName
+		}
+		return cm
+	}
+
 	tests := []struct {
 		name              string
 		virtualConfigMap  *corev1.ConfigMap
@@ -183,39 +206,11 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "virtual configmap and physical configmap both exist and are in sync",
-			virtualConfigMap: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-config",
-					Namespace: "virtual-ns",
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName: "physical-config",
-					},
-				},
-				Data: map[string]string{
-					"key": "value",
-				},
-			},
-			physicalConfigMap: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "physical-config",
-					Namespace: "physical-ns",
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationVirtualName: "test-config",
-					},
-				},
-				Data: map[string]string{
-					"key": "value",
-				},
-			},
-			expectedResult: ctrl.Result{},
-			expectError:    false,
+			name:              "virtual configmap and physical configmap both exist and are in sync",
+			virtualConfigMap:  createTestConfigMap("test-config", "virtual-ns", "physical-config", map[string]string{"key": "value"}, true),
+			physicalConfigMap: createTestConfigMap("physical-config", "physical-ns", "test-config", map[string]string{"key": "value"}, false),
+			expectedResult:    ctrl.Result{},
+			expectError:       false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
 				// Physical configmap should remain unchanged
 				configMap := &corev1.ConfigMap{}
@@ -227,39 +222,11 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "virtual configmap and physical configmap both exist but need update",
-			virtualConfigMap: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-config",
-					Namespace: "virtual-ns",
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName: "physical-config",
-					},
-				},
-				Data: map[string]string{
-					"key": "new-value",
-				},
-			},
-			physicalConfigMap: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "physical-config",
-					Namespace: "physical-ns",
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationVirtualName: "test-config",
-					},
-				},
-				Data: map[string]string{
-					"key": "old-value",
-				},
-			},
-			expectedResult: ctrl.Result{},
-			expectError:    false,
+			name:              "virtual configmap and physical configmap both exist but need update",
+			virtualConfigMap:  createTestConfigMap("test-config", "virtual-ns", "physical-config", map[string]string{"key": "new-value"}, true),
+			physicalConfigMap: createTestConfigMap("physical-config", "physical-ns", "test-config", map[string]string{"key": "old-value"}, false),
+			expectedResult:    ctrl.Result{},
+			expectError:       false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
 				// Physical configmap should be updated
 				configMap := &corev1.ConfigMap{}

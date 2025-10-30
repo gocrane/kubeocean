@@ -28,6 +28,7 @@ linters:
     - staticcheck
     - unconvert
     - unparam
+    - dupl
   disable:
     - errcheck # Disabled for now due to controller code issues
     - revive # Disabled for now due to skeleton implementations
