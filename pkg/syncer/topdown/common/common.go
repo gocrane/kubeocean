@@ -335,58 +335,10 @@ func RemoveSyncedResourceFinalizerAndLabels(ctx context.Context, obj client.Obje
 	}
 
 	// Remove labels
-	if updatedObj.GetLabels() != nil {
-		labelsToRemove := []string{managedByClusterIDLabel, cloudv1beta1.LabelUsedByPV}
-
-		// Check if this is the last FinalizerClusterIDPrefix finalizer
-		// If so, also remove LabelManagedBy=LabelManagedByValue
-		if finalizerExists {
-			remainingClusterFinalizers := 0
-			for _, finalizer := range updatedObj.GetFinalizers() {
-				if strings.HasPrefix(finalizer, cloudv1beta1.FinalizerClusterIDPrefix) && finalizer != clusterSpecificFinalizer {
-					remainingClusterFinalizers++
-				}
-			}
-
-			// If this is the last cluster-specific finalizer, remove LabelManagedBy
-			if remainingClusterFinalizers == 0 {
-				labelsToRemove = append(labelsToRemove, cloudv1beta1.LabelManagedBy)
-				logger.V(1).Info("This is the last cluster-specific finalizer, will also remove LabelManagedBy", "clusterID", clusterID)
-			}
-		}
-
-		for _, labelKey := range labelsToRemove {
-			if _, exists := updatedObj.GetLabels()[labelKey]; exists {
-				delete(updatedObj.GetLabels(), labelKey)
-				logger.V(1).Info("Removed label", "labelKey", labelKey)
-			}
-		}
-
-		// If labels map is now empty, set it to nil to clean up
-		if len(updatedObj.GetLabels()) == 0 {
-			updatedObj.SetLabels(nil)
-		}
-	}
+	removeLabels(updatedObj, finalizerExists, clusterSpecificFinalizer, managedByClusterIDLabel, logger, clusterID)
 
 	// Remove annotations
-	if updatedObj.GetAnnotations() != nil {
-		annotationsToRemove := []string{
-			cloudv1beta1.AnnotationPhysicalName,
-			cloudv1beta1.AnnotationPhysicalNamespace,
-			cloudv1beta1.GetClusterBindingDeletingAnnotation(clusterID), // Remove cluster-specific deleting annotation
-		}
-		for _, annotationKey := range annotationsToRemove {
-			if _, exists := updatedObj.GetAnnotations()[annotationKey]; exists {
-				delete(updatedObj.GetAnnotations(), annotationKey)
-				logger.V(1).Info("Removed annotation", "annotationKey", annotationKey)
-			}
-		}
-
-		// If annotations map is now empty, set it to nil to clean up
-		if len(updatedObj.GetAnnotations()) == 0 {
-			updatedObj.SetAnnotations(nil)
-		}
-	}
+	removeAnnotations(updatedObj, clusterID, logger)
 
 	// Update the resource
 	if err := virtualClient.Update(ctx, updatedObj); err != nil {
@@ -396,6 +348,67 @@ func RemoveSyncedResourceFinalizerAndLabels(ctx context.Context, obj client.Obje
 
 	logger.Info("Successfully removed synced resource finalizer, labels and annotations from virtual resource", "clusterID", clusterID)
 	return nil
+}
+
+// removeLabels removes labels from the object
+func removeLabels(updatedObj client.Object, finalizerExists bool, clusterSpecificFinalizer, managedByClusterIDLabel string, logger logr.Logger, clusterID string) {
+	if updatedObj.GetLabels() == nil {
+		return
+	}
+
+	labelsToRemove := []string{managedByClusterIDLabel, cloudv1beta1.LabelUsedByPV}
+
+	// Check if this is the last FinalizerClusterIDPrefix finalizer
+	if finalizerExists {
+		remainingClusterFinalizers := 0
+		for _, finalizer := range updatedObj.GetFinalizers() {
+			if strings.HasPrefix(finalizer, cloudv1beta1.FinalizerClusterIDPrefix) && finalizer != clusterSpecificFinalizer {
+				remainingClusterFinalizers++
+			}
+		}
+
+		// If this is the last cluster-specific finalizer, remove LabelManagedBy
+		if remainingClusterFinalizers == 0 {
+			labelsToRemove = append(labelsToRemove, cloudv1beta1.LabelManagedBy)
+			logger.V(1).Info("This is the last cluster-specific finalizer, will also remove LabelManagedBy", "clusterID", clusterID)
+		}
+	}
+
+	for _, labelKey := range labelsToRemove {
+		if _, exists := updatedObj.GetLabels()[labelKey]; exists {
+			delete(updatedObj.GetLabels(), labelKey)
+			logger.V(1).Info("Removed label", "labelKey", labelKey)
+		}
+	}
+
+	// If labels map is now empty, set it to nil to clean up
+	if len(updatedObj.GetLabels()) == 0 {
+		updatedObj.SetLabels(nil)
+	}
+}
+
+// removeAnnotations removes annotations from the object
+func removeAnnotations(updatedObj client.Object, clusterID string, logger logr.Logger) {
+	if updatedObj.GetAnnotations() == nil {
+		return
+	}
+
+	annotationsToRemove := []string{
+		cloudv1beta1.AnnotationPhysicalName,
+		cloudv1beta1.AnnotationPhysicalNamespace,
+		cloudv1beta1.GetClusterBindingDeletingAnnotation(clusterID),
+	}
+	for _, annotationKey := range annotationsToRemove {
+		if _, exists := updatedObj.GetAnnotations()[annotationKey]; exists {
+			delete(updatedObj.GetAnnotations(), annotationKey)
+			logger.V(1).Info("Removed annotation", "annotationKey", annotationKey)
+		}
+	}
+
+	// If annotations map is now empty, set it to nil to clean up
+	if len(updatedObj.GetAnnotations()) == 0 {
+		updatedObj.SetAnnotations(nil)
+	}
 }
 
 // DeletePhysicalResourceParams contains parameters for deleting physical resources

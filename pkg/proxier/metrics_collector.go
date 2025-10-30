@@ -1066,50 +1066,73 @@ func (va *VNodeProxierAgent) aggregateNodeStats(summary *Summary) {
 	// Aggregate from all pods and their containers
 	for _, pod := range summary.Pods {
 		for _, container := range pod.Containers {
-			// Aggregate CPU stats
-			if container.CPU != nil {
-				hasAnyCPUStats = true
-				if container.CPU.UsageCoreNanoSeconds != nil {
-					totalCPUUsageCoreNanoSeconds += *container.CPU.UsageCoreNanoSeconds
-					cpuCount++
-				}
-				if container.CPU.UsageNanoCores != nil {
-					totalCPUUsageNanoCores += *container.CPU.UsageNanoCores
-				}
-				// Track latest timestamp
-				if container.CPU.Time.After(latestCPUTime.Time) {
-					latestCPUTime = container.CPU.Time
-				}
-			}
-
-			// Aggregate Memory stats
-			if container.Memory != nil {
-				hasAnyMemoryStats = true
-				if container.Memory.WorkingSetBytes != nil {
-					totalMemoryWorkingSetBytes += *container.Memory.WorkingSetBytes
-					memoryCount++
-				}
-				if container.Memory.UsageBytes != nil {
-					totalMemoryUsageBytes += *container.Memory.UsageBytes
-				}
-				if container.Memory.RSSBytes != nil {
-					totalMemoryRSSBytes += *container.Memory.RSSBytes
-				}
-				if container.Memory.PageFaults != nil {
-					totalMemoryPageFaults += *container.Memory.PageFaults
-				}
-				if container.Memory.MajorPageFaults != nil {
-					totalMemoryMajorPageFaults += *container.Memory.MajorPageFaults
-				}
-				// Track latest timestamp
-				if container.Memory.Time.After(latestMemoryTime.Time) {
-					latestMemoryTime = container.Memory.Time
-				}
-			}
+			va.aggregateCPUStats(container, &totalCPUUsageCoreNanoSeconds, &totalCPUUsageNanoCores,
+				&cpuCount, &hasAnyCPUStats, &latestCPUTime)
+			va.aggregateMemoryStats(container, &totalMemoryWorkingSetBytes, &totalMemoryUsageBytes,
+				&totalMemoryRSSBytes, &totalMemoryPageFaults, &totalMemoryMajorPageFaults,
+				&memoryCount, &hasAnyMemoryStats, &latestMemoryTime)
 		}
 	}
 
-	// Update Node CPU stats with aggregated values
+	va.updateNodeCPUStats(summary, hasAnyCPUStats, totalCPUUsageCoreNanoSeconds,
+		totalCPUUsageNanoCores, cpuCount, latestCPUTime)
+	va.updateNodeMemoryStats(summary, hasAnyMemoryStats, totalMemoryWorkingSetBytes,
+		totalMemoryUsageBytes, totalMemoryRSSBytes, totalMemoryPageFaults,
+		totalMemoryMajorPageFaults, memoryCount, latestMemoryTime)
+}
+
+// aggregateCPUStats aggregates CPU stats from a container
+func (va *VNodeProxierAgent) aggregateCPUStats(container ContainerStats,
+	totalCPUUsageCoreNanoSeconds, totalCPUUsageNanoCores *uint64,
+	cpuCount *int, hasAnyCPUStats *bool, latestCPUTime *metav1.Time) {
+	if container.CPU != nil {
+		*hasAnyCPUStats = true
+		if container.CPU.UsageCoreNanoSeconds != nil {
+			*totalCPUUsageCoreNanoSeconds += *container.CPU.UsageCoreNanoSeconds
+			*cpuCount++
+		}
+		if container.CPU.UsageNanoCores != nil {
+			*totalCPUUsageNanoCores += *container.CPU.UsageNanoCores
+		}
+		if container.CPU.Time.After(latestCPUTime.Time) {
+			*latestCPUTime = container.CPU.Time
+		}
+	}
+}
+
+// aggregateMemoryStats aggregates Memory stats from a container
+func (va *VNodeProxierAgent) aggregateMemoryStats(container ContainerStats,
+	totalMemoryWorkingSetBytes, totalMemoryUsageBytes, totalMemoryRSSBytes,
+	totalMemoryPageFaults, totalMemoryMajorPageFaults *uint64,
+	memoryCount *int, hasAnyMemoryStats *bool, latestMemoryTime *metav1.Time) {
+	if container.Memory != nil {
+		*hasAnyMemoryStats = true
+		if container.Memory.WorkingSetBytes != nil {
+			*totalMemoryWorkingSetBytes += *container.Memory.WorkingSetBytes
+			*memoryCount++
+		}
+		if container.Memory.UsageBytes != nil {
+			*totalMemoryUsageBytes += *container.Memory.UsageBytes
+		}
+		if container.Memory.RSSBytes != nil {
+			*totalMemoryRSSBytes += *container.Memory.RSSBytes
+		}
+		if container.Memory.PageFaults != nil {
+			*totalMemoryPageFaults += *container.Memory.PageFaults
+		}
+		if container.Memory.MajorPageFaults != nil {
+			*totalMemoryMajorPageFaults += *container.Memory.MajorPageFaults
+		}
+		if container.Memory.Time.After(latestMemoryTime.Time) {
+			*latestMemoryTime = container.Memory.Time
+		}
+	}
+}
+
+// updateNodeCPUStats updates Node CPU stats with aggregated values
+func (va *VNodeProxierAgent) updateNodeCPUStats(summary *Summary, hasAnyCPUStats bool,
+	totalCPUUsageCoreNanoSeconds, totalCPUUsageNanoCores uint64,
+	cpuCount int, latestCPUTime metav1.Time) {
 	if hasAnyCPUStats {
 		if summary.Node.CPU == nil {
 			summary.Node.CPU = &CPUStats{}
@@ -1126,8 +1149,13 @@ func (va *VNodeProxierAgent) aggregateNodeStats(summary *Summary) {
 			"totalUsageNanoCores", totalCPUUsageNanoCores,
 			"containerCount", cpuCount)
 	}
+}
 
-	// Update Node Memory stats with aggregated values
+// updateNodeMemoryStats updates Node Memory stats with aggregated values
+func (va *VNodeProxierAgent) updateNodeMemoryStats(summary *Summary, hasAnyMemoryStats bool,
+	totalMemoryWorkingSetBytes, totalMemoryUsageBytes, totalMemoryRSSBytes,
+	totalMemoryPageFaults, totalMemoryMajorPageFaults uint64,
+	memoryCount int, latestMemoryTime metav1.Time) {
 	if hasAnyMemoryStats {
 		if summary.Node.Memory == nil {
 			summary.Node.Memory = &MemoryStats{}

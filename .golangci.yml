@@ -17,7 +17,6 @@ linters-settings:
 linters:
   enable:
     - copyloopvar
-    - errcheck
     - ginkgolinter
     - goconst
     - gocyclo
@@ -26,24 +25,23 @@ linters:
     - misspell
     - nakedret
     - prealloc
-    - revive
     - staticcheck
     - unconvert
     - unparam
-    - unused
   disable:
     - errcheck # Disabled for now due to controller code issues
     - revive # Disabled for now due to skeleton implementations
     - unused # Disabled for now due to skeleton implementations
-
-issues:
-  exclude-rules:
-    - path: zz_generated\.deepcopy\.go
-      linters:
-        - all
-    - path: _test\.go
-      linters:
+  settings:
+    gocyclo:
+      min-complexity: 20
+  exclusions:
+    rules:
+      - path: '(.+)_test\.go'
+        linters:
         - gocyclo
         - errcheck
-        - dupl
         - gosec
+      - path: 'zz_generated\.deepcopy\.go'
+        linters:
+        - all
