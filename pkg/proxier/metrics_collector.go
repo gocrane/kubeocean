@@ -1,4 +1,4 @@
-// Copyright 2024 The Kubeocean Authors
+// Copyright 2025 The Kubeocean Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1066,50 +1065,73 @@ func (va *VNodeProxierAgent) aggregateNodeStats(summary *Summary) {
 	// Aggregate from all pods and their containers
 	for _, pod := range summary.Pods {
 		for _, container := range pod.Containers {
-			// Aggregate CPU stats
-			if container.CPU != nil {
-				hasAnyCPUStats = true
-				if container.CPU.UsageCoreNanoSeconds != nil {
-					totalCPUUsageCoreNanoSeconds += *container.CPU.UsageCoreNanoSeconds
-					cpuCount++
-				}
-				if container.CPU.UsageNanoCores != nil {
-					totalCPUUsageNanoCores += *container.CPU.UsageNanoCores
-				}
-				// Track latest timestamp
-				if container.CPU.Time.After(latestCPUTime.Time) {
-					latestCPUTime = container.CPU.Time
-				}
-			}
-
-			// Aggregate Memory stats
-			if container.Memory != nil {
-				hasAnyMemoryStats = true
-				if container.Memory.WorkingSetBytes != nil {
-					totalMemoryWorkingSetBytes += *container.Memory.WorkingSetBytes
-					memoryCount++
-				}
-				if container.Memory.UsageBytes != nil {
-					totalMemoryUsageBytes += *container.Memory.UsageBytes
-				}
-				if container.Memory.RSSBytes != nil {
-					totalMemoryRSSBytes += *container.Memory.RSSBytes
-				}
-				if container.Memory.PageFaults != nil {
-					totalMemoryPageFaults += *container.Memory.PageFaults
-				}
-				if container.Memory.MajorPageFaults != nil {
-					totalMemoryMajorPageFaults += *container.Memory.MajorPageFaults
-				}
-				// Track latest timestamp
-				if container.Memory.Time.After(latestMemoryTime.Time) {
-					latestMemoryTime = container.Memory.Time
-				}
-			}
+			va.aggregateCPUStats(container, &totalCPUUsageCoreNanoSeconds, &totalCPUUsageNanoCores,
+				&cpuCount, &hasAnyCPUStats, &latestCPUTime)
+			va.aggregateMemoryStats(container, &totalMemoryWorkingSetBytes, &totalMemoryUsageBytes,
+				&totalMemoryRSSBytes, &totalMemoryPageFaults, &totalMemoryMajorPageFaults,
+				&memoryCount, &hasAnyMemoryStats, &latestMemoryTime)
 		}
 	}
 
-	// Update Node CPU stats with aggregated values
+	va.updateNodeCPUStats(summary, hasAnyCPUStats, totalCPUUsageCoreNanoSeconds,
+		totalCPUUsageNanoCores, cpuCount, latestCPUTime)
+	va.updateNodeMemoryStats(summary, hasAnyMemoryStats, totalMemoryWorkingSetBytes,
+		totalMemoryUsageBytes, totalMemoryRSSBytes, totalMemoryPageFaults,
+		totalMemoryMajorPageFaults, memoryCount, latestMemoryTime)
+}
+
+// aggregateCPUStats aggregates CPU stats from a container
+func (va *VNodeProxierAgent) aggregateCPUStats(container ContainerStats,
+	totalCPUUsageCoreNanoSeconds, totalCPUUsageNanoCores *uint64,
+	cpuCount *int, hasAnyCPUStats *bool, latestCPUTime *metav1.Time) {
+	if container.CPU != nil {
+		*hasAnyCPUStats = true
+		if container.CPU.UsageCoreNanoSeconds != nil {
+			*totalCPUUsageCoreNanoSeconds += *container.CPU.UsageCoreNanoSeconds
+			*cpuCount++
+		}
+		if container.CPU.UsageNanoCores != nil {
+			*totalCPUUsageNanoCores += *container.CPU.UsageNanoCores
+		}
+		if container.CPU.Time.After(latestCPUTime.Time) {
+			*latestCPUTime = container.CPU.Time
+		}
+	}
+}
+
+// aggregateMemoryStats aggregates Memory stats from a container
+func (va *VNodeProxierAgent) aggregateMemoryStats(container ContainerStats,
+	totalMemoryWorkingSetBytes, totalMemoryUsageBytes, totalMemoryRSSBytes,
+	totalMemoryPageFaults, totalMemoryMajorPageFaults *uint64,
+	memoryCount *int, hasAnyMemoryStats *bool, latestMemoryTime *metav1.Time) {
+	if container.Memory != nil {
+		*hasAnyMemoryStats = true
+		if container.Memory.WorkingSetBytes != nil {
+			*totalMemoryWorkingSetBytes += *container.Memory.WorkingSetBytes
+			*memoryCount++
+		}
+		if container.Memory.UsageBytes != nil {
+			*totalMemoryUsageBytes += *container.Memory.UsageBytes
+		}
+		if container.Memory.RSSBytes != nil {
+			*totalMemoryRSSBytes += *container.Memory.RSSBytes
+		}
+		if container.Memory.PageFaults != nil {
+			*totalMemoryPageFaults += *container.Memory.PageFaults
+		}
+		if container.Memory.MajorPageFaults != nil {
+			*totalMemoryMajorPageFaults += *container.Memory.MajorPageFaults
+		}
+		if container.Memory.Time.After(latestMemoryTime.Time) {
+			*latestMemoryTime = container.Memory.Time
+		}
+	}
+}
+
+// updateNodeCPUStats updates Node CPU stats with aggregated values
+func (va *VNodeProxierAgent) updateNodeCPUStats(summary *Summary, hasAnyCPUStats bool,
+	totalCPUUsageCoreNanoSeconds, totalCPUUsageNanoCores uint64,
+	cpuCount int, latestCPUTime metav1.Time) {
 	if hasAnyCPUStats {
 		if summary.Node.CPU == nil {
 			summary.Node.CPU = &CPUStats{}
@@ -1126,8 +1148,13 @@ func (va *VNodeProxierAgent) aggregateNodeStats(summary *Summary) {
 			"totalUsageNanoCores", totalCPUUsageNanoCores,
 			"containerCount", cpuCount)
 	}
+}
 
-	// Update Node Memory stats with aggregated values
+// updateNodeMemoryStats updates Node Memory stats with aggregated values
+func (va *VNodeProxierAgent) updateNodeMemoryStats(summary *Summary, hasAnyMemoryStats bool,
+	totalMemoryWorkingSetBytes, totalMemoryUsageBytes, totalMemoryRSSBytes,
+	totalMemoryPageFaults, totalMemoryMajorPageFaults uint64,
+	memoryCount int, latestMemoryTime metav1.Time) {
 	if hasAnyMemoryStats {
 		if summary.Node.Memory == nil {
 			summary.Node.Memory = &MemoryStats{}
@@ -1150,79 +1177,9 @@ func (va *VNodeProxierAgent) aggregateNodeStats(summary *Summary) {
 	}
 }
 
-// parseLogOptions parses log options from query parameters (same as server.go)
+// parseLogOptions parses log options from query parameters (delegates to shared function)
 func (va *VNodeProxierAgent) parseLogOptions(query map[string][]string) (ContainerLogOpts, error) {
-	opts := ContainerLogOpts{}
-
-	if tailLines := getFirstValue(query, "tailLines"); tailLines != "" {
-		tail, err := strconv.Atoi(tailLines)
-		if err != nil {
-			return opts, fmt.Errorf("invalid tailLines: %w", err)
-		}
-		if tail < 0 {
-			return opts, fmt.Errorf("tailLines must be non-negative")
-		}
-		opts.Tail = tail
-	}
-
-	if follow := getFirstValue(query, "follow"); follow != "" {
-		followBool, err := strconv.ParseBool(follow)
-		if err != nil {
-			return opts, fmt.Errorf("invalid follow: %w", err)
-		}
-		opts.Follow = followBool
-	}
-
-	if limitBytes := getFirstValue(query, "limitBytes"); limitBytes != "" {
-		limit, err := strconv.Atoi(limitBytes)
-		if err != nil {
-			return opts, fmt.Errorf("invalid limitBytes: %w", err)
-		}
-		if limit < 1 {
-			return opts, fmt.Errorf("limitBytes must be positive")
-		}
-		opts.LimitBytes = limit
-	}
-
-	if previous := getFirstValue(query, "previous"); previous != "" {
-		prev, err := strconv.ParseBool(previous)
-		if err != nil {
-			return opts, fmt.Errorf("invalid previous: %w", err)
-		}
-		opts.Previous = prev
-	}
-
-	if sinceSeconds := getFirstValue(query, "sinceSeconds"); sinceSeconds != "" {
-		since, err := strconv.Atoi(sinceSeconds)
-		if err != nil {
-			return opts, fmt.Errorf("invalid sinceSeconds: %w", err)
-		}
-		if since < 1 {
-			return opts, fmt.Errorf("sinceSeconds must be positive")
-		}
-		opts.SinceSeconds = since
-	}
-
-	if sinceTime := getFirstValue(query, "sinceTime"); sinceTime != "" {
-		since, err := time.Parse(time.RFC3339, sinceTime)
-		if err != nil {
-			return opts, fmt.Errorf("invalid sinceTime: %w", err)
-		}
-		if opts.SinceSeconds > 0 {
-			return opts, fmt.Errorf("both sinceSeconds and sinceTime cannot be set")
-		}
-		opts.SinceTime = since
-	}
-
-	if timestamps := getFirstValue(query, "timestamps"); timestamps != "" {
-		ts, err := strconv.ParseBool(timestamps)
-		if err != nil {
-			return opts, fmt.Errorf("invalid timestamps: %w", err)
-		}
-		opts.Timestamps = ts
-	}
-
-	return opts, nil
+	return parseContainerLogOptions(query)
 }
 
 // getExecOptions parses exec options from the request - same as server.go
@@ -1310,27 +1267,7 @@ func (c *metricsCollectorExecContext) ExecInContainer(name string, uid types.UID
 	defer cancel()
 
 	if tty {
-		go func() {
-			send := func(s clientremotecommand.TerminalSize) bool {
-				select {
-				case eio.chResize <- TermSize{Width: s.Width, Height: s.Height}:
-					return false
-				case <-ctx.Done():
-					return true
-				}
-			}
-
-			for {
-				select {
-				case s := <-resize:
-					if send(s) {
-						return
-					}
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
+		go handleTerminalResize(ctx, resize, eio.chResize)
 	}
 
 	// Call our Kubelet proxy with the execIO

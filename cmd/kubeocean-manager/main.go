@@ -28,12 +28,14 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+// init registers Kubernetes API schemes for standard resources and Kubeocean CRDs.
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(cloudv1beta1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
+// the entry point for kubeocean-manager.
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
@@ -75,8 +77,9 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	setupLog.Info("Kubeocean Manager", "version", version.Get())
 
-	// Get the kubernetes config and modify it with QPS and Burst settings
+	// Configure Kubernetes client rate limiting to prevent overwhelming the API server.
 	cfg := ctrl.GetConfigOrDie()
+	// only set QPS and Burst if they are greater than 0. default is no limit.
 	if kubeClientQPS > 0 {
 		cfg.QPS = float32(kubeClientQPS)
 	}
@@ -90,7 +93,6 @@ func main() {
 		Metrics: server.Options{
 			BindAddress: metricsAddr,
 		},
-
 		HealthProbeBindAddress:        probeAddr,
 		LeaderElection:                enableLeaderElection,
 		LeaderElectionID:              leaderElectionID,
@@ -128,10 +130,10 @@ func main() {
 		"burst", kubeClientBurst,
 	)
 
-	// Register ClusterBinding metrics collector
+	// Register ClusterBinding metrics collector for Prometheus metrics.
 	metrics.RegisterClusterBindingCollector(mgr.GetClient(), setupLog.WithName("metrics"))
 
-	// Setup ClusterBinding controller
+	// Setup ClusterBinding controller to manage ClusterBinding lifecycle and create Proxier/Syncer components.
 	if err = controller.NewClusterBindingReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
@@ -144,10 +146,12 @@ func main() {
 
 	//+kubebuilder:scaffold:builder
 
+	// Add health check endpoint for liveness probe.
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
+	// Add readiness check endpoint for readiness probe.
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)

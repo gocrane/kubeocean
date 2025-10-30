@@ -131,6 +131,27 @@ func setupTestEnvironmentWithExistingBinding(t *testing.T) *ClusterBindingReconc
 	return reconciler
 }
 
+// Helper function to create a ClusterBinding with a specific node selector
+func createClusterBindingWithNodeSelector(osValue string) *cloudv1beta1.ClusterBinding {
+	return &cloudv1beta1.ClusterBinding{
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			NodeSelector: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      "kubernetes.io/os",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{osValue},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 // TestClusterBindingReconciler_hasNodeSelectorChanged tests the hasNodeSelectorChanged method
 func TestClusterBindingReconciler_hasNodeSelectorChanged(t *testing.T) {
 	reconciler := setupTestEnvironment(t)
@@ -141,45 +162,13 @@ func TestClusterBindingReconciler_hasNodeSelectorChanged(t *testing.T) {
 		expectedResult bool
 	}{
 		{
-			name: "first time loading - no existing binding",
-			newBinding: &cloudv1beta1.ClusterBinding{
-				Spec: cloudv1beta1.ClusterBindingSpec{
-					NodeSelector: &corev1.NodeSelector{
-						NodeSelectorTerms: []corev1.NodeSelectorTerm{
-							{
-								MatchExpressions: []corev1.NodeSelectorRequirement{
-									{
-										Key:      "kubernetes.io/os",
-										Operator: corev1.NodeSelectorOpIn,
-										Values:   []string{"linux"},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			name:           "first time loading - no existing binding",
+			newBinding:     createClusterBindingWithNodeSelector("linux"),
 			expectedResult: true,
 		},
 		{
-			name: "nodeSelector changed",
-			newBinding: &cloudv1beta1.ClusterBinding{
-				Spec: cloudv1beta1.ClusterBindingSpec{
-					NodeSelector: &corev1.NodeSelector{
-						NodeSelectorTerms: []corev1.NodeSelectorTerm{
-							{
-								MatchExpressions: []corev1.NodeSelectorRequirement{
-									{
-										Key:      "kubernetes.io/os",
-										Operator: corev1.NodeSelectorOpIn,
-										Values:   []string{"windows"},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			name:           "nodeSelector changed",
+			newBinding:     createClusterBindingWithNodeSelector("windows"),
 			expectedResult: true,
 		},
 	}
@@ -333,45 +322,13 @@ func TestClusterBindingReconciler_hasNodeSelectorChanged_WithExistingBinding(t *
 		expectedResult bool
 	}{
 		{
-			name: "nodeSelector unchanged",
-			newBinding: &cloudv1beta1.ClusterBinding{
-				Spec: cloudv1beta1.ClusterBindingSpec{
-					NodeSelector: &corev1.NodeSelector{
-						NodeSelectorTerms: []corev1.NodeSelectorTerm{
-							{
-								MatchExpressions: []corev1.NodeSelectorRequirement{
-									{
-										Key:      "kubernetes.io/os",
-										Operator: corev1.NodeSelectorOpIn,
-										Values:   []string{"linux"},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			name:           "nodeSelector unchanged",
+			newBinding:     createClusterBindingWithNodeSelector("linux"),
 			expectedResult: false,
 		},
 		{
-			name: "nodeSelector changed",
-			newBinding: &cloudv1beta1.ClusterBinding{
-				Spec: cloudv1beta1.ClusterBindingSpec{
-					NodeSelector: &corev1.NodeSelector{
-						NodeSelectorTerms: []corev1.NodeSelectorTerm{
-							{
-								MatchExpressions: []corev1.NodeSelectorRequirement{
-									{
-										Key:      "kubernetes.io/os",
-										Operator: corev1.NodeSelectorOpIn,
-										Values:   []string{"windows"},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			name:           "nodeSelector changed",
+			newBinding:     createClusterBindingWithNodeSelector("windows"),
 			expectedResult: true,
 		},
 	}

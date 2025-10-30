@@ -142,41 +142,7 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Physical pod exists and UID is already set, check if physical pod is scheduled
 	if physicalPod.Spec.NodeName == "" {
-		// Physical pod is not scheduled yet, check if it has exceeded the scheduling timeout
-		if physicalPod.CreationTimestamp.IsZero() || time.Since(physicalPod.CreationTimestamp.Time) > PhysicalPodSchedulingTimeout {
-			logger.Info("Physical pod scheduling timeout exceeded, deleting physical pod and setting FailedSchedulingPod event",
-				"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
-				"creationTime", physicalPod.CreationTimestamp.Time,
-				"timeout", PhysicalPodSchedulingTimeout)
-
-			// Delete the physical pod
-			err = r.PhysicalClient.Delete(ctx, physicalPod)
-			if err != nil && !apierrors.IsNotFound(err) {
-				logger.Error(err, "Failed to delete unscheduled physical pod")
-				return ctrl.Result{}, err
-			}
-
-			// Set FailedSchedulingPod event on virtual pod
-			if r.EventRecorder != nil {
-				r.EventRecorder.Event(virtualPod, corev1.EventTypeWarning, "FailedSchedulingPod",
-					fmt.Sprintf("Physical pod %s/%s failed to schedule within %v timeout",
-						physicalPod.Namespace, physicalPod.Name, PhysicalPodSchedulingTimeout))
-			}
-
-			return ctrl.Result{}, nil
-		}
-
-		// Physical pod is not scheduled but hasn't exceeded timeout, requeue with remaining time
-		var remainingTime time.Duration
-		if physicalPod.CreationTimestamp.IsZero() {
-			remainingTime = PhysicalPodSchedulingTimeout
-		} else {
-			remainingTime = PhysicalPodSchedulingTimeout - time.Since(physicalPod.CreationTimestamp.Time)
-		}
-		logger.V(1).Info("Physical pod not scheduled yet, requeuing with remaining time",
-			"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
-			"remainingTime", remainingTime)
-		return ctrl.Result{RequeueAfter: remainingTime}, nil
+		return r.handleUnScheduledPhysicalPod(ctx, logger, virtualPod, physicalPod)
 	}
 
 	// Physical pod is scheduled, check if service account token needs updating
@@ -202,6 +168,44 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
 		"nodeName", physicalPod.Spec.NodeName)
 	return ctrl.Result{}, nil
+}
+
+func (r *VirtualPodReconciler) handleUnScheduledPhysicalPod(ctx context.Context, logger logr.Logger, virtualPod *corev1.Pod, physicalPod *corev1.Pod) (ctrl.Result, error) {
+	// Physical pod is not scheduled yet, check if it has exceeded the scheduling timeout
+	if physicalPod.CreationTimestamp.IsZero() || time.Since(physicalPod.CreationTimestamp.Time) > PhysicalPodSchedulingTimeout {
+		logger.Info("Physical pod scheduling timeout exceeded, deleting physical pod and setting FailedSchedulingPod event",
+			"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+			"creationTime", physicalPod.CreationTimestamp.Time,
+			"timeout", PhysicalPodSchedulingTimeout)
+
+		// Delete the physical pod
+		err := r.PhysicalClient.Delete(ctx, physicalPod)
+		if err != nil && !apierrors.IsNotFound(err) {
+			logger.Error(err, "Failed to delete unscheduled physical pod")
+			return ctrl.Result{}, err
+		}
+
+		// Set FailedSchedulingPod event on virtual pod
+		if r.EventRecorder != nil {
+			r.EventRecorder.Event(virtualPod, corev1.EventTypeWarning, "FailedSchedulingPod",
+				fmt.Sprintf("Physical pod %s/%s failed to schedule within %v timeout",
+					physicalPod.Namespace, physicalPod.Name, PhysicalPodSchedulingTimeout))
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	// Physical pod is not scheduled but hasn't exceeded timeout, requeue with remaining time
+	var remainingTime time.Duration
+	if physicalPod.CreationTimestamp.IsZero() {
+		remainingTime = PhysicalPodSchedulingTimeout
+	} else {
+		remainingTime = PhysicalPodSchedulingTimeout - time.Since(physicalPod.CreationTimestamp.Time)
+	}
+	logger.V(1).Info("Physical pod not scheduled yet, requeuing with remaining time",
+		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+		"remainingTime", remainingTime)
+	return ctrl.Result{RequeueAfter: remainingTime}, nil
 }
 
 func (r *VirtualPodReconciler) shouldCreatePhysicalPod(virtualPod *corev1.Pod) bool {
@@ -860,94 +864,109 @@ func (r *VirtualPodReconciler) replaceVolumeResourceNames(spec *corev1.PodSpec, 
 	for i := range spec.Volumes {
 		volume := &spec.Volumes[i]
 
-		// Replace ConfigMap names
-		if volume.ConfigMap != nil {
-			if physicalName, exists := resourceMapping.ConfigMaps[volume.ConfigMap.Name]; exists {
-				volume.ConfigMap.Name = physicalName
-			} else {
-				return fmt.Errorf("configMap mapping not found for virtual ConfigMap: %s", volume.ConfigMap.Name)
-			}
+		if err := r.replaceBasicVolumeResourceNames(volume, resourceMapping); err != nil {
+			return err
 		}
 
-		// Replace Secret names
-		if volume.Secret != nil {
-			if physicalName, exists := resourceMapping.Secrets[volume.Secret.SecretName]; exists {
-				volume.Secret.SecretName = physicalName
-			} else {
-				return fmt.Errorf("secret mapping not found for virtual Secret: %s", volume.Secret.SecretName)
-			}
-		}
-
-		// Replace PVC names
-		if volume.PersistentVolumeClaim != nil {
-			if physicalName, exists := resourceMapping.PVCs[volume.PersistentVolumeClaim.ClaimName]; exists {
-				volume.PersistentVolumeClaim.ClaimName = physicalName
-			} else {
-				return fmt.Errorf("PVC mapping not found for virtual PVC: %s", volume.PersistentVolumeClaim.ClaimName)
-			}
-		}
-
-		// Handle projected volumes for ConfigMaps and Secrets
 		if volume.Projected != nil {
-			for j := range volume.Projected.Sources {
-				source := &volume.Projected.Sources[j]
-
-				// Replace ConfigMap names in projected sources
-				if source.ConfigMap != nil {
-					if physicalName, exists := resourceMapping.ConfigMaps[source.ConfigMap.Name]; exists {
-						source.ConfigMap.Name = physicalName
-					} else {
-						return fmt.Errorf("configMap mapping not found for virtual ConfigMap in projected volume: %s", source.ConfigMap.Name)
-					}
-				}
-
-				// Replace Secret names in projected sources
-				if source.Secret != nil {
-					if physicalName, exists := resourceMapping.Secrets[source.Secret.Name]; exists {
-						source.Secret.Name = physicalName
-					} else {
-						return fmt.Errorf("secret mapping not found for virtual Secret in projected volume: %s", source.Secret.Name)
-					}
-				}
-
-				// Handle DownwardAPI projections in projected volumes
-				if source.DownwardAPI != nil {
-					r.replaceDownwardAPIFieldPaths(source.DownwardAPI.Items)
-				}
+			if err := r.replaceProjectedVolumeResourceNames(volume, resourceMapping); err != nil {
+				return err
 			}
 		}
 
-		// Handle kube-api-access projected volumes for service account tokens
 		if strings.HasPrefix(volume.Name, "kube-api-access-") && virtualPod.Spec.ServiceAccountName != "" {
-			if resourceMapping.ServiceAccountTokenName == "" {
-				return fmt.Errorf("service account token mapping not found for virtual ServiceAccount: %s", virtualPod.Spec.ServiceAccountName)
-			}
-			if volume.Projected != nil {
-				for j := range volume.Projected.Sources {
-					source := &volume.Projected.Sources[j]
-					if source.ServiceAccountToken != nil {
-						// Replace the service account token source with our mapped secret
-						source.ServiceAccountToken = nil
-						source.Secret = &corev1.SecretProjection{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: resourceMapping.ServiceAccountTokenName,
-							},
-							Items: []corev1.KeyToPath{
-								{
-									Key:  "token",
-									Path: "token",
-								},
-							},
-						}
-						break
-					}
-				}
+			if err := r.replaceServiceAccountTokenVolume(volume, virtualPod, resourceMapping); err != nil {
+				return err
 			}
 		}
 
-		// Handle DownwardAPI volumes - replace metadata.namespace and metadata.name fieldPath
 		if volume.DownwardAPI != nil {
 			r.replaceDownwardAPIFieldPaths(volume.DownwardAPI.Items)
+		}
+	}
+	return nil
+}
+
+// replaceBasicVolumeResourceNames replaces resource names in basic volume types
+func (r *VirtualPodReconciler) replaceBasicVolumeResourceNames(volume *corev1.Volume, resourceMapping *ResourceMapping) error {
+	if volume.ConfigMap != nil {
+		if physicalName, exists := resourceMapping.ConfigMaps[volume.ConfigMap.Name]; exists {
+			volume.ConfigMap.Name = physicalName
+		} else {
+			return fmt.Errorf("configMap mapping not found for virtual ConfigMap: %s", volume.ConfigMap.Name)
+		}
+	}
+
+	if volume.Secret != nil {
+		if physicalName, exists := resourceMapping.Secrets[volume.Secret.SecretName]; exists {
+			volume.Secret.SecretName = physicalName
+		} else {
+			return fmt.Errorf("secret mapping not found for virtual Secret: %s", volume.Secret.SecretName)
+		}
+	}
+
+	if volume.PersistentVolumeClaim != nil {
+		if physicalName, exists := resourceMapping.PVCs[volume.PersistentVolumeClaim.ClaimName]; exists {
+			volume.PersistentVolumeClaim.ClaimName = physicalName
+		} else {
+			return fmt.Errorf("PVC mapping not found for virtual PVC: %s", volume.PersistentVolumeClaim.ClaimName)
+		}
+	}
+
+	return nil
+}
+
+// replaceProjectedVolumeResourceNames replaces resource names in projected volumes
+func (r *VirtualPodReconciler) replaceProjectedVolumeResourceNames(volume *corev1.Volume, resourceMapping *ResourceMapping) error {
+	for j := range volume.Projected.Sources {
+		source := &volume.Projected.Sources[j]
+
+		if source.ConfigMap != nil {
+			if physicalName, exists := resourceMapping.ConfigMaps[source.ConfigMap.Name]; exists {
+				source.ConfigMap.Name = physicalName
+			} else {
+				return fmt.Errorf("configMap mapping not found for virtual ConfigMap in projected volume: %s", source.ConfigMap.Name)
+			}
+		}
+
+		if source.Secret != nil {
+			if physicalName, exists := resourceMapping.Secrets[source.Secret.Name]; exists {
+				source.Secret.Name = physicalName
+			} else {
+				return fmt.Errorf("secret mapping not found for virtual Secret in projected volume: %s", source.Secret.Name)
+			}
+		}
+
+		if source.DownwardAPI != nil {
+			r.replaceDownwardAPIFieldPaths(source.DownwardAPI.Items)
+		}
+	}
+	return nil
+}
+
+// replaceServiceAccountTokenVolume replaces service account token in kube-api-access volumes
+func (r *VirtualPodReconciler) replaceServiceAccountTokenVolume(volume *corev1.Volume, virtualPod *corev1.Pod, resourceMapping *ResourceMapping) error {
+	if resourceMapping.ServiceAccountTokenName == "" {
+		return fmt.Errorf("service account token mapping not found for virtual ServiceAccount: %s", virtualPod.Spec.ServiceAccountName)
+	}
+	if volume.Projected != nil {
+		for j := range volume.Projected.Sources {
+			source := &volume.Projected.Sources[j]
+			if source.ServiceAccountToken != nil {
+				source.ServiceAccountToken = nil
+				source.Secret = &corev1.SecretProjection{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: resourceMapping.ServiceAccountTokenName,
+					},
+					Items: []corev1.KeyToPath{
+						{
+							Key:  "token",
+							Path: "token",
+						},
+					},
+				}
+				break
+			}
 		}
 	}
 	return nil

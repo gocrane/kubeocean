@@ -1923,34 +1923,39 @@ func (r *PhysicalNodeReconciler) SetupWithManager(physicalManager, virtualManage
 			&corev1.Pod{},
 			handler.Funcs{
 				CreateFunc: func(ctx context.Context, event event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-					pod := event.Object.(*corev1.Pod)
-					if pod == nil || pod.Spec.NodeName == "" {
-						return
-					}
-					r.Log.V(1).Info("pod created", "namespace", pod.Namespace, "name", pod.Name, "node", pod.Spec.NodeName)
-					q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: pod.Spec.NodeName}})
+					r.handlePodEvent(nil, event.Object.(*corev1.Pod), "create", q)
 				},
 				UpdateFunc: func(ctx context.Context, event event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-					opod := event.ObjectOld.(*corev1.Pod)
-					npod := event.ObjectNew.(*corev1.Pod)
-					if opod == nil || npod == nil || npod.Spec.NodeName == "" {
-						return
-					}
-					if opod.Spec.NodeName != npod.Spec.NodeName {
-						r.Log.V(1).Info("pod updated", "namespace", npod.Namespace, "name", npod.Name, "node", npod.Spec.NodeName)
-						q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: npod.Spec.NodeName}})
-					}
+					r.handlePodEvent(event.ObjectOld.(*corev1.Pod), event.ObjectNew.(*corev1.Pod), "update", q)
 				},
 				DeleteFunc: func(ctx context.Context, event event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-					pod := event.Object.(*corev1.Pod)
-					if pod == nil || pod.Spec.NodeName == "" {
-						return
-					}
-					r.Log.V(1).Info("pod deleted", "namespace", pod.Namespace, "name", pod.Name, "node", pod.Spec.NodeName)
-					q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: pod.Spec.NodeName}})
+					r.handlePodEvent(nil, event.Object.(*corev1.Pod), "delete", q)
 				}},
 		).
 		Complete(r)
+}
+
+func (r *PhysicalNodeReconciler) handlePodEvent(opod *corev1.Pod, npod *corev1.Pod, eventType string, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	if eventType == "update" {
+		if opod == nil || npod == nil || npod.Spec.NodeName == "" {
+			return
+		}
+		if opod.Spec.NodeName != npod.Spec.NodeName {
+			r.Log.V(1).Info("pod updated", "namespace", npod.Namespace, "name", npod.Name, "node", npod.Spec.NodeName)
+			q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: npod.Spec.NodeName}})
+		}
+	} else {
+		if npod == nil || npod.Spec.NodeName == "" {
+			return
+		}
+		switch eventType {
+		case "create":
+			r.Log.V(1).Info("pod created", "namespace", npod.Namespace, "name", npod.Name, "node", npod.Spec.NodeName)
+		case "delete":
+			r.Log.V(1).Info("pod deleted", "namespace", npod.Namespace, "name", npod.Name, "node", npod.Spec.NodeName)
+		}
+		q.Add(reconcile.Request{NamespacedName: types.NamespacedName{Name: npod.Spec.NodeName}})
+	}
 }
 
 // handleVirtualNodeEvent handles virtual node addition and deletion events

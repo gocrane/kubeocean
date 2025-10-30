@@ -1,4 +1,4 @@
-// Copyright 2024 The Kubeocean Authors
+// Copyright 2025 The Kubeocean Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -643,6 +643,12 @@ func (mp *MetricsParser) processNetworkMetric(port string, containerInfo Contain
 
 // processFilesystemMetric processes filesystem metrics
 func (mp *MetricsParser) processFilesystemMetric(port string, containerInfo ContainerInfo, device, metricType string, value float64) {
+	fsMetrics := mp.getOrCreateFilesystemMetrics(port, containerInfo, device)
+	mp.setFilesystemMetricValue(fsMetrics, metricType, value)
+}
+
+// getOrCreateFilesystemMetrics gets or creates filesystem metrics for the given port, container and device
+func (mp *MetricsParser) getOrCreateFilesystemMetrics(port string, containerInfo ContainerInfo, device string) *FilesystemMetrics {
 	if mp.fsMetrics[port] == nil {
 		mp.fsMetrics[port] = make(map[ContainerInfo]map[string]*FilesystemMetrics)
 	}
@@ -652,8 +658,11 @@ func (mp *MetricsParser) processFilesystemMetric(port string, containerInfo Cont
 	if mp.fsMetrics[port][containerInfo][device] == nil {
 		mp.fsMetrics[port][containerInfo][device] = &FilesystemMetrics{}
 	}
+	return mp.fsMetrics[port][containerInfo][device]
+}
 
-	fsMetrics := mp.fsMetrics[port][containerInfo][device]
+// setFilesystemMetricValue sets the value for a specific filesystem metric type
+func (mp *MetricsParser) setFilesystemMetricValue(fsMetrics *FilesystemMetrics, metricType string, value float64) {
 	switch metricType {
 	case "reads_total":
 		fsMetrics.ReadsTotal = value
@@ -758,22 +767,26 @@ func (mp *MetricsParser) WritePrometheusMetrics(w io.Writer, port string, nodeIP
 	blkioData := mp.blkioMetrics[port]
 	gpuData := mp.gpuMetrics[port]
 
-	// Write container CPU and memory metrics
+	mp.writeContainerMetrics(w, containerData, targetNamespace)
+	mp.writeNetworkMetrics(w, networkData, targetNamespace)
+	mp.writeFilesystemMetrics(w, fsData, targetNamespace)
+	mp.writeBlkioMetrics(w, blkioData, targetNamespace)
+	mp.writeGPUMetrics(w, gpuData, targetNamespace)
+}
+
+// writeContainerMetrics writes container CPU and memory metrics
+func (mp *MetricsParser) writeContainerMetrics(w io.Writer, containerData map[ContainerInfo]*ContainerMetrics, targetNamespace string) {
 	for container, stat := range containerData {
-		// If targetNamespace is specified, only expose metrics for that namespace
 		if targetNamespace != "" && container.NameSpace != targetNamespace {
 			continue
 		}
 
-		// Try to get virtual pod information for label conversion
 		virtualInfo, exists := GetVirtualPodInfo(container.PodName)
 		if !exists {
-			// Skip metrics for pods without virtual mapping
 			fmt.Printf("[DEBUG] No virtual mapping found for pod: %s, skipping container CPU/memory metrics\n", container.PodName)
 			continue
 		}
 
-		// Use virtual labels from mapping
 		labels := fmt.Sprintf(`{container="%s",pod="%s",namespace="%s",node="%s"}`,
 			container.Name, virtualInfo.VirtualPodName, virtualInfo.VirtualPodNamespace, virtualInfo.VirtualNodeName)
 
@@ -825,17 +838,17 @@ func (mp *MetricsParser) WritePrometheusMetrics(w io.Writer, port string, nodeIP
 		mp.writeMetric(w, "container_tasks_state", labels, stat.TasksState)
 		mp.writeMetric(w, "container_ulimits_soft", labels, stat.UlimitsSoft)
 	}
+}
 
-	// Write network metrics
+// writeNetworkMetrics writes network metrics
+func (mp *MetricsParser) writeNetworkMetrics(w io.Writer, networkData map[ContainerInfo]map[string]*NetworkMetrics, targetNamespace string) {
 	for container, interfaces := range networkData {
 		if targetNamespace != "" && container.NameSpace != targetNamespace {
 			continue
 		}
 
-		// Try to get virtual pod information for label conversion
 		virtualInfo, exists := GetVirtualPodInfo(container.PodName)
 		if !exists {
-			// Skip metrics for pods without virtual mapping
 			fmt.Printf("[DEBUG] No virtual mapping found for pod: %s, skipping network metrics\n", container.PodName)
 			continue
 		}
@@ -858,17 +871,17 @@ func (mp *MetricsParser) WritePrometheusMetrics(w io.Writer, port string, nodeIP
 			mp.writeMetric(w, "container_network_udp6_usage_total", networkLabels, networkStat.Udp6Usage)
 		}
 	}
+}
 
-	// Write filesystem metrics
+// writeFilesystemMetrics writes filesystem metrics
+func (mp *MetricsParser) writeFilesystemMetrics(w io.Writer, fsData map[ContainerInfo]map[string]*FilesystemMetrics, targetNamespace string) {
 	for container, devices := range fsData {
 		if targetNamespace != "" && container.NameSpace != targetNamespace {
 			continue
 		}
 
-		// Try to get virtual pod information for label conversion
 		virtualInfo, exists := GetVirtualPodInfo(container.PodName)
 		if !exists {
-			// Skip metrics for pods without virtual mapping
 			fmt.Printf("[DEBUG] No virtual mapping found for pod: %s, skipping filesystem metrics\n", container.PodName)
 			continue
 		}
@@ -896,40 +909,40 @@ func (mp *MetricsParser) WritePrometheusMetrics(w io.Writer, port string, nodeIP
 			mp.writeMetric(w, "container_fs_writes_merged_total", fsLabels, fsStat.WritesMergedTotal)
 		}
 	}
+}
 
-	// Write block device I/O metrics (new, ported from vnode_metrics)
+// writeBlkioMetrics writes block device I/O metrics
+func (mp *MetricsParser) writeBlkioMetrics(w io.Writer, blkioData map[ContainerInfo]map[string]*BlkioMetrics, targetNamespace string) {
 	for container, devices := range blkioData {
 		if targetNamespace != "" && container.NameSpace != targetNamespace {
 			continue
 		}
 
-		// Try to get virtual pod information for label conversion
 		virtualInfo, exists := GetVirtualPodInfo(container.PodName)
 		if !exists {
-			// Skip metrics for pods without virtual mapping
 			fmt.Printf("[DEBUG] No virtual mapping found for pod: %s, skipping block I/O metrics\n", container.PodName)
 			continue
 		}
 
 		for _, blkioStat := range devices {
-			if blkioStat.Value != 0 { // Only output non-zero values
+			if blkioStat.Value != 0 {
 				blkioLabels := fmt.Sprintf(`{container="%s",pod="%s",namespace="%s",node="%s",device="%s",operation="%s"}`,
 					container.Name, virtualInfo.VirtualPodName, virtualInfo.VirtualPodNamespace, virtualInfo.VirtualNodeName, blkioStat.Device, blkioStat.Operation)
 				mp.writeMetric(w, "container_blkio_device_usage_total", blkioLabels, blkioStat.Value)
 			}
 		}
 	}
+}
 
-	// Write GPU metrics (new, ported from vnode_metrics)
+// writeGPUMetrics writes GPU metrics
+func (mp *MetricsParser) writeGPUMetrics(w io.Writer, gpuData map[ContainerInfo]map[string]*GpuMetrics, targetNamespace string) {
 	for container, gpus := range gpuData {
 		if targetNamespace != "" && container.NameSpace != targetNamespace {
 			continue
 		}
 
-		// Try to get virtual pod information for label conversion
 		virtualInfo, exists := GetVirtualPodInfo(container.PodName)
 		if !exists {
-			// Skip metrics for pods without virtual mapping
 			fmt.Printf("[DEBUG] No virtual mapping found for pod: %s, skipping GPU metrics\n", container.PodName)
 			continue
 		}
@@ -939,8 +952,8 @@ func (mp *MetricsParser) WritePrometheusMetrics(w io.Writer, port string, nodeIP
 				container.Name, virtualInfo.VirtualPodName, virtualInfo.VirtualPodNamespace, virtualInfo.VirtualNodeName, gpuStat.MinorNumber)
 
 			mp.writeMetric(w, "container_accelerator_duty_cycle", gpuLabels, gpuStat.GpuDutyCycle)
-			mp.writeMetric(w, "container_accelerator_memory_used_bytes", gpuLabels, gpuStat.GpuMemUsedMib)      // Fixed: use correct field name
-			mp.writeMetric(w, "container_accelerator_memory_total_bytes", gpuLabels, gpuStat.GpuMemoryTotalMib) // Fixed: use correct field name
+			mp.writeMetric(w, "container_accelerator_memory_used_bytes", gpuLabels, gpuStat.GpuMemUsedMib)
+			mp.writeMetric(w, "container_accelerator_memory_total_bytes", gpuLabels, gpuStat.GpuMemoryTotalMib)
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2024 The Kubeocean Authors
+// Copyright 2025 The Kubeocean Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -397,6 +397,30 @@ type containerExecContext struct {
 	ctx       context.Context
 }
 
+// handleTerminalResize is a shared helper function that handles terminal resize events
+// It converts clientremotecommand.TerminalSize to our TermSize and forwards to the resize channel
+func handleTerminalResize(ctx context.Context, resize <-chan clientremotecommand.TerminalSize, resizeCh chan<- TermSize) {
+	send := func(s clientremotecommand.TerminalSize) bool {
+		select {
+		case resizeCh <- TermSize{Width: s.Width, Height: s.Height}:
+			return false
+		case <-ctx.Done():
+			return true
+		}
+	}
+
+	for {
+		select {
+		case s := <-resize:
+			if send(s) {
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 // ExecInContainer implements remotecommand.Executor interface
 func (c *containerExecContext) ExecInContainer(name string, uid types.UID, container string, cmd []string, in io.Reader, out, err io.WriteCloser, tty bool, resize <-chan clientremotecommand.TerminalSize, timeout time.Duration) error {
 	// Create execIO like official virtual-kubelet
@@ -415,27 +439,7 @@ func (c *containerExecContext) ExecInContainer(name string, uid types.UID, conta
 	defer cancel()
 
 	if tty {
-		go func() {
-			send := func(s clientremotecommand.TerminalSize) bool {
-				select {
-				case eio.chResize <- TermSize{Width: s.Width, Height: s.Height}:
-					return false
-				case <-ctx.Done():
-					return true
-				}
-			}
-
-			for {
-				select {
-				case s := <-resize:
-					if send(s) {
-						return
-					}
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
+		go handleTerminalResize(ctx, resize, eio.chResize)
 	}
 
 	// Call our Kubelet proxy with the execIO
@@ -511,8 +515,9 @@ func (s *server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Not Found", http.StatusNotFound)
 }
 
-// parseLogOptions parses log options from query parameters
-func (s *server) parseLogOptions(query map[string][]string) (ContainerLogOpts, error) {
+// parseContainerLogOptions parses container log options from query parameters
+// This is a shared function used by both server and metrics collector
+func parseContainerLogOptions(query map[string][]string) (ContainerLogOpts, error) {
 	opts := ContainerLogOpts{}
 
 	if tailLines := getFirstValue(query, "tailLines"); tailLines != "" {
@@ -584,6 +589,11 @@ func (s *server) parseLogOptions(query map[string][]string) (ContainerLogOpts, e
 	}
 
 	return opts, nil
+}
+
+// parseLogOptions parses log options from query parameters
+func (s *server) parseLogOptions(query map[string][]string) (ContainerLogOpts, error) {
+	return parseContainerLogOptions(query)
 }
 
 // getFirstValue gets the first value for a key from query parameters

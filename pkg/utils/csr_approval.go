@@ -137,11 +137,11 @@ func validateKubeletServingIdentity(csr *certificatesv1.CertificateSigningReques
 	if csr.Spec.Username == "" {
 		return fmt.Errorf("username is required for kubelet-serving CSR")
 	}
-	
+
 	if !strings.HasPrefix(csr.Spec.Username, "system:node:") {
 		return fmt.Errorf("invalid username format: %s, expected system:node:<node-name>", csr.Spec.Username)
 	}
-	
+
 	nodeName := strings.TrimPrefix(csr.Spec.Username, "system:node:")
 	if nodeName == "" {
 		return fmt.Errorf("node name cannot be empty in username: %s", csr.Spec.Username)
@@ -153,7 +153,7 @@ func validateKubeletServingIdentity(csr *certificatesv1.CertificateSigningReques
 	for _, group := range csr.Spec.Groups {
 		groupMap[group] = true
 	}
-	
+
 	for _, required := range requiredGroups {
 		if !groupMap[required] {
 			return fmt.Errorf("required group %s not found in CSR groups", required)
@@ -170,7 +170,7 @@ func validateKubeletServingCSRContent(csr *certificatesv1.CertificateSigningRequ
 	if block == nil {
 		return fmt.Errorf("failed to decode PEM block from CSR request")
 	}
-	
+
 	if block.Type != "CERTIFICATE REQUEST" {
 		return fmt.Errorf("invalid PEM block type: %s, expected CERTIFICATE REQUEST", block.Type)
 	}
@@ -213,7 +213,7 @@ func validateKubeletServingCSRContent(csr *certificatesv1.CertificateSigningRequ
 			break
 		}
 	}
-	
+
 	if !nodeNameFound {
 		return fmt.Errorf("node name %s should be included in DNS names for kubelet-serving certificate", expectedNodeName)
 	}

@@ -49,6 +49,31 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 		}
 	}
 
+	// Helper function to create a test Secret
+	// For virtual Secret: otherName is the physical name
+	// For physical Secret: otherName is the virtual name
+	createTestSecret := func(name, namespace, otherName, otherNamespace string, data map[string][]byte, isVirtual bool) *corev1.Secret {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+				Labels: map[string]string{
+					cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				},
+				Annotations: make(map[string]string),
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: data,
+		}
+		if isVirtual {
+			secret.Annotations[cloudv1beta1.AnnotationPhysicalName] = otherName
+			secret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] = otherNamespace
+		} else {
+			secret.Annotations[cloudv1beta1.AnnotationVirtualName] = otherName
+		}
+		return secret
+	}
+
 	tests := []struct {
 		name           string
 		virtualSecret  *corev1.Secret
@@ -199,40 +224,9 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "virtual secret and physical secret both exist and are in sync",
-			virtualSecret: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-secret",
-					Namespace: testVirtualNamespace,
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
-						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
-					},
-				},
-				Type: corev1.SecretTypeOpaque,
-				Data: map[string][]byte{
-					"key": []byte("value"),
-				},
-			},
-			physicalSecret: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "physical-secret",
-					Namespace: "physical-ns",
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationVirtualName: "test-secret",
-					},
-				},
-				Type: corev1.SecretTypeOpaque,
-				Data: map[string][]byte{
-					"key": []byte("value"),
-				},
-			},
+			name:           "virtual secret and physical secret both exist and are in sync",
+			virtualSecret:  createTestSecret("test-secret", testVirtualNamespace, "physical-secret", "physical-ns", map[string][]byte{"key": []byte("value")}, true),
+			physicalSecret: createTestSecret("physical-secret", "physical-ns", "test-secret", testVirtualNamespace, map[string][]byte{"key": []byte("value")}, false),
 			expectedResult: ctrl.Result{},
 			expectError:    false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
@@ -246,40 +240,9 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "virtual secret and physical secret both exist but need update",
-			virtualSecret: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-secret",
-					Namespace: testVirtualNamespace,
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
-						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
-					},
-				},
-				Type: corev1.SecretTypeOpaque,
-				Data: map[string][]byte{
-					"key": []byte("new-value"),
-				},
-			},
-			physicalSecret: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "physical-secret",
-					Namespace: "physical-ns",
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationVirtualName: "test-secret",
-					},
-				},
-				Type: corev1.SecretTypeOpaque,
-				Data: map[string][]byte{
-					"key": []byte("old-value"),
-				},
-			},
+			name:           "virtual secret and physical secret both exist but need update",
+			virtualSecret:  createTestSecret("test-secret", testVirtualNamespace, "physical-secret", "physical-ns", map[string][]byte{"key": []byte("new-value")}, true),
+			physicalSecret: createTestSecret("physical-secret", "physical-ns", "test-secret", testVirtualNamespace, map[string][]byte{"key": []byte("old-value")}, false),
 			expectedResult: ctrl.Result{},
 			expectError:    false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {

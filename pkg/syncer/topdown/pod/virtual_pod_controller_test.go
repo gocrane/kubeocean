@@ -2171,13 +2171,26 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 		assert.Equal(t, "/data", physicalPV.Spec.HostPath.Path)
 	})
 
-	t.Run("should return error when PVC is not bound", func(t *testing.T) {
-		ctx := context.Background()
+	// Helper function to create a reconciler for PVC tests
+	createPVCTestReconciler := func(objects ...client.Object) *VirtualPodReconciler {
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalK8sClient := fake.NewSimpleClientset()
+		return &VirtualPodReconciler{
+			VirtualClient:     virtualClient,
+			PhysicalClient:    physicalClient,
+			PhysicalK8sClient: physicalK8sClient,
+			ClusterBinding:    clusterBinding,
+			Scheme:            scheme,
+			Log:               zap.New(),
+		}
+	}
 
-		// Create an unbound PVC
-		unboundPVC := &corev1.PersistentVolumeClaim{
+	// Helper function to create a test PVC with specified phase
+	createTestPVC := func(name string, phase corev1.PersistentVolumeClaimPhase, volumeName string) *corev1.PersistentVolumeClaim {
+		pvc := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "unbound-pvc",
+				Name:      name,
 				Namespace: "virtual-ns",
 			},
 			Spec: corev1.PersistentVolumeClaimSpec{
@@ -2189,24 +2202,20 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 				},
 			},
 			Status: corev1.PersistentVolumeClaimStatus{
-				Phase: corev1.ClaimPending, // Not bound
+				Phase: phase,
 			},
 		}
-
-		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(unboundPVC).Build()
-		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalK8sClient := fake.NewSimpleClientset()
-
-		reconciler := &VirtualPodReconciler{
-			VirtualClient:     virtualClient,
-			PhysicalClient:    physicalClient,
-			PhysicalK8sClient: physicalK8sClient,
-			ClusterBinding:    clusterBinding,
-			Scheme:            scheme,
-			Log:               zap.New(),
+		if volumeName != "" {
+			pvc.Spec.VolumeName = volumeName
 		}
+		return pvc
+	}
 
-		// Test syncPVC - should return error since PVC is not bound
+	t.Run("should return error when PVC is not bound", func(t *testing.T) {
+		ctx := context.Background()
+		unboundPVC := createTestPVC("unbound-pvc", corev1.ClaimPending, "")
+		reconciler := createPVCTestReconciler(unboundPVC)
+
 		_, err := reconciler.syncPVC(ctx, "virtual-ns", "unbound-pvc")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "is not bound, current phase: Pending")
@@ -2214,41 +2223,9 @@ func TestVirtualPodReconciler_ResourceSync(t *testing.T) {
 
 	t.Run("should return error when PVC is bound but has no volumeName", func(t *testing.T) {
 		ctx := context.Background()
+		boundPVCNoVolume := createTestPVC("bound-pvc-no-volume", corev1.ClaimBound, "")
+		reconciler := createPVCTestReconciler(boundPVCNoVolume)
 
-		// Create a bound PVC without volumeName
-		boundPVCNoVolume := &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "bound-pvc-no-volume",
-				Namespace: "virtual-ns",
-			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: resource.MustParse("1Gi"),
-					},
-				},
-				// No VolumeName specified
-			},
-			Status: corev1.PersistentVolumeClaimStatus{
-				Phase: corev1.ClaimBound, // Bound but no volumeName
-			},
-		}
-
-		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(boundPVCNoVolume).Build()
-		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalK8sClient := fake.NewSimpleClientset()
-
-		reconciler := &VirtualPodReconciler{
-			VirtualClient:     virtualClient,
-			PhysicalClient:    physicalClient,
-			PhysicalK8sClient: physicalK8sClient,
-			ClusterBinding:    clusterBinding,
-			Scheme:            scheme,
-			Log:               zap.New(),
-		}
-
-		// Test syncPVC - should return error since PVC has no volumeName
 		_, err := reconciler.syncPVC(ctx, "virtual-ns", "bound-pvc-no-volume")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "is bound but has no volumeName")
@@ -4180,46 +4157,51 @@ func TestVirtualPodReconciler_SyncConfigMapsWithProjectedVolumes(t *testing.T) {
 		},
 	}
 
+	// Helper function to create reconciler and test resource syncing
+	testResourceSync := func(t *testing.T, resources []client.Object, syncFunc func(*VirtualPodReconciler, context.Context, *corev1.Pod) (map[string]string, error), virtualPod *corev1.Pod, expectedResult map[string]string, expectError bool) {
+		ctx := context.Background()
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalK8sClient := fake.NewSimpleClientset()
+
+		// Create virtual resources
+		for _, res := range resources {
+			err := virtualClient.Create(ctx, res)
+			require.NoError(t, err)
+		}
+
+		reconciler := &VirtualPodReconciler{
+			VirtualClient:     virtualClient,
+			PhysicalClient:    physicalClient,
+			PhysicalK8sClient: physicalK8sClient,
+			ClusterBinding:    clusterBinding,
+			Scheme:            scheme,
+			Log:               zap.New(),
+		}
+
+		result, err := syncFunc(reconciler, ctx, virtualPod)
+
+		if expectError {
+			assert.Error(t, err)
+			return
+		}
+
+		assert.NoError(t, err)
+		assert.Equal(t, len(expectedResult), len(result))
+		for virtualName := range expectedResult {
+			assert.Contains(t, result, virtualName)
+		}
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-
-			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-			physicalK8sClient := fake.NewSimpleClientset()
-
-			// Create virtual ConfigMaps
-			for _, cm := range tt.virtualConfigMaps {
-				err := virtualClient.Create(ctx, cm)
-				require.NoError(t, err)
+			resources := make([]client.Object, len(tt.virtualConfigMaps))
+			for i, cm := range tt.virtualConfigMaps {
+				resources[i] = cm
 			}
-
-			reconciler := &VirtualPodReconciler{
-				VirtualClient:     virtualClient,
-				PhysicalClient:    physicalClient,
-				PhysicalK8sClient: physicalK8sClient,
-				ClusterBinding:    clusterBinding,
-				Scheme:            scheme,
-				Log:               zap.New(),
-			}
-
-			// Call the function
-			result, err := reconciler.syncConfigMaps(ctx, tt.virtualPod)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				return
-			}
-
-			assert.NoError(t, err)
-			assert.Equal(t, len(tt.expectedResult), len(result))
-
-			// Verify that all expected ConfigMaps were synced
-			for virtualName := range tt.expectedResult {
-				assert.Contains(t, result, virtualName)
-				// Note: In a real test, we would verify the actual physical name generation
-				// For now, we just check that a mapping exists
-			}
+			testResourceSync(t, resources, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
+				return r.syncConfigMaps(ctx, pod)
+			}, tt.virtualPod, tt.expectedResult, tt.expectError)
 		})
 	}
 }
@@ -4318,46 +4300,48 @@ func TestVirtualPodReconciler_SyncSecretsWithProjectedVolumes(t *testing.T) {
 		},
 	}
 
+	// Helper function similar to the one in ConfigMap test
+	testSecretSync := func(t *testing.T, secrets []client.Object, virtualPod *corev1.Pod, expectedResult map[string]string, expectError bool) {
+		ctx := context.Background()
+		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+		physicalK8sClient := fake.NewSimpleClientset()
+
+		for _, secret := range secrets {
+			err := virtualClient.Create(ctx, secret)
+			require.NoError(t, err)
+		}
+
+		reconciler := &VirtualPodReconciler{
+			VirtualClient:     virtualClient,
+			PhysicalClient:    physicalClient,
+			PhysicalK8sClient: physicalK8sClient,
+			ClusterBinding:    clusterBinding,
+			Scheme:            scheme,
+			Log:               zap.New(),
+		}
+
+		result, err := reconciler.syncSecrets(ctx, virtualPod)
+
+		if expectError {
+			assert.Error(t, err)
+			return
+		}
+
+		assert.NoError(t, err)
+		assert.Equal(t, len(expectedResult), len(result))
+		for virtualName := range expectedResult {
+			assert.Contains(t, result, virtualName)
+		}
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-
-			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-			physicalK8sClient := fake.NewSimpleClientset()
-
-			// Create virtual Secrets
-			for _, secret := range tt.virtualSecrets {
-				err := virtualClient.Create(ctx, secret)
-				require.NoError(t, err)
+			secrets := make([]client.Object, len(tt.virtualSecrets))
+			for i, s := range tt.virtualSecrets {
+				secrets[i] = s
 			}
-
-			reconciler := &VirtualPodReconciler{
-				VirtualClient:     virtualClient,
-				PhysicalClient:    physicalClient,
-				PhysicalK8sClient: physicalK8sClient,
-				ClusterBinding:    clusterBinding,
-				Scheme:            scheme,
-				Log:               zap.New(),
-			}
-
-			// Call the function
-			result, err := reconciler.syncSecrets(ctx, tt.virtualPod)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				return
-			}
-
-			assert.NoError(t, err)
-			assert.Equal(t, len(tt.expectedResult), len(result))
-
-			// Verify that all expected Secrets were synced
-			for virtualName := range tt.expectedResult {
-				assert.Contains(t, result, virtualName)
-				// Note: In a real test, we would verify the actual physical name generation
-				// For now, we just check that a mapping exists
-			}
+			testSecretSync(t, secrets, tt.virtualPod, tt.expectedResult, tt.expectError)
 		})
 	}
 }

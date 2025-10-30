@@ -360,15 +360,15 @@ func (cm *CertificateManager) submitCSR(ctx context.Context, csrName string, csr
 	})
 
 	nodeName := cm.clusterBinding.Name
-	
+
 	csr := &certificatesv1.CertificateSigningRequest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: csrName,
 			// Add labels to help identify and manage the CSR
 			Labels: map[string]string{
-				"kubeocean.io/component":     "logs-proxy",
-				"kubeocean.io/cluster-id":    cm.clusterBinding.Spec.ClusterID,
-				"kubeocean.io/node-name":     nodeName,
+				"kubeocean.io/component":  "logs-proxy",
+				"kubeocean.io/cluster-id": cm.clusterBinding.Spec.ClusterID,
+				"kubeocean.io/node-name":  nodeName,
 			},
 		},
 		Spec: certificatesv1.CertificateSigningRequestSpec{
