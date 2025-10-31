@@ -161,6 +161,12 @@ spec:
                   PodPriorityClassName specifies the priority class name for physical pods
                   If empty, kubeocean-default will be used
                 type: string
+              runningDaemonsetByDefault:
+                description: |-
+                  RunningDaemonsetByDefault controls whether DaemonSet pods can run by default
+                  If true, DaemonSet pods can run without the kubeocean.io/running-daemonset annotation
+                  If false or not set, DaemonSet pods require the kubeocean.io/running-daemonset="true" annotation to run
+                type: boolean
               secretRef:
                 description: SecretRef references the secret containing kubeconfig
                   for the target cluster

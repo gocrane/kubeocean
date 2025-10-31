@@ -334,6 +334,172 @@ func TestCountVirtualPodsByPhase(t *testing.T) {
 	assert.Equal(t, 0, counts[corev1.PodFailed])
 }
 
+func TestCountVirtualPodsByPhase_WithDaemonSetPods(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = cloudv1beta1.AddToScheme(scheme)
+
+	// Helper function to create daemonset pod
+	createDaemonsetPod := func(name, nodeName string, annotations map[string]string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        name,
+				Namespace:   "default",
+				Annotations: annotations,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						Kind: "DaemonSet",
+						Name: "test-daemonset",
+					},
+				},
+			},
+			Spec: corev1.PodSpec{
+				NodeName: nodeName,
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+			},
+		}
+	}
+
+	// Helper function to create regular pod
+	createRegularPod := func(name, nodeName string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+			},
+			Spec: corev1.PodSpec{
+				NodeName: nodeName,
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+			},
+		}
+	}
+
+	// Helper function to create clusterBinding
+	createClusterBinding := func(name string, runningDaemonsetByDefault bool) *cloudv1beta1.ClusterBinding {
+		return &cloudv1beta1.ClusterBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+			},
+			Spec: cloudv1beta1.ClusterBindingSpec{
+				ClusterID:                 "test-cluster-id",
+				RunningDaemonsetByDefault: runningDaemonsetByDefault,
+				SecretRef: corev1.SecretReference{
+					Name:      "test-secret",
+					Namespace: "default",
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name                   string
+		pods                   []client.Object
+		clusterBinding         *cloudv1beta1.ClusterBinding
+		clusterBindingName     string
+		expectedRunningCount   int
+		expectedPendingCount   int
+		expectedSucceededCount int
+		expectedFailedCount    int
+	}{
+		{
+			name: "daemonset pod without annotation and RunningDaemonsetByDefault=false should not be counted",
+			pods: []client.Object{
+				createDaemonsetPod("daemonset-pod", "vnode-test-1", nil),
+				createRegularPod("regular-pod", "vnode-test-2"),
+			},
+			clusterBinding:       createClusterBinding("test-cluster-binding", false),
+			clusterBindingName:   "test-cluster-binding",
+			expectedRunningCount: 1, // Only regular pod should be counted
+		},
+		{
+			name: "daemonset pod without annotation and RunningDaemonsetByDefault=true should be counted",
+			pods: []client.Object{
+				createDaemonsetPod("daemonset-pod", "vnode-test-1", nil),
+				createRegularPod("regular-pod", "vnode-test-2"),
+			},
+			clusterBinding:       createClusterBinding("test-cluster-binding", true),
+			clusterBindingName:   "test-cluster-binding",
+			expectedRunningCount: 2, // Both daemonset and regular pod should be counted
+		},
+		{
+			name: "daemonset pod with annotation and RunningDaemonsetByDefault=false should be counted",
+			pods: []client.Object{
+				createDaemonsetPod("daemonset-pod-with-annotation", "vnode-test-1", map[string]string{
+					cloudv1beta1.AnnotationRunningDaemonSet: cloudv1beta1.LabelValueTrue,
+				}),
+			},
+			clusterBinding:       createClusterBinding("test-cluster-binding", false),
+			clusterBindingName:   "test-cluster-binding",
+			expectedRunningCount: 1, // Daemonset pod with annotation should be counted
+		},
+		{
+			name: "daemonset pod without annotation and clusterBinding not found should not be counted",
+			pods: []client.Object{
+				createDaemonsetPod("daemonset-pod", "vnode-test-1", nil),
+			},
+			clusterBinding:       nil,
+			clusterBindingName:   "non-existent",
+			expectedRunningCount: 0, // Daemonset pod should not be counted when clusterBinding not found
+		},
+		{
+			name: "system daemonset pod should not be counted even with RunningDaemonsetByDefault=true",
+			pods: []client.Object{
+				&corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "system-daemonset-pod",
+						Namespace: "kube-system",
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								Kind: "DaemonSet",
+								Name: "test-daemonset",
+							},
+						},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "vnode-test-1",
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+					},
+				},
+			},
+			clusterBinding:       createClusterBinding("test-cluster-binding", true),
+			clusterBindingName:   "test-cluster-binding",
+			expectedRunningCount: 0, // System pods should never be counted
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var objects []client.Object
+			objects = append(objects, tt.pods...)
+			if tt.clusterBinding != nil {
+				objects = append(objects, tt.clusterBinding)
+			}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+			collector := NewMetricsCollector(tt.clusterBindingName, fakeClient, nil)
+
+			counts := collector.countVirtualPodsByPhase(fakeClient)
+
+			assert.Equal(t, tt.expectedRunningCount, counts[corev1.PodRunning], "Running count mismatch")
+			if tt.expectedPendingCount > 0 || counts[corev1.PodPending] > 0 {
+				assert.Equal(t, tt.expectedPendingCount, counts[corev1.PodPending], "Pending count mismatch")
+			}
+			if tt.expectedSucceededCount > 0 || counts[corev1.PodSucceeded] > 0 {
+				assert.Equal(t, tt.expectedSucceededCount, counts[corev1.PodSucceeded], "Succeeded count mismatch")
+			}
+			if tt.expectedFailedCount > 0 || counts[corev1.PodFailed] > 0 {
+				assert.Equal(t, tt.expectedFailedCount, counts[corev1.PodFailed], "Failed count mismatch")
+			}
+		})
+	}
+}
+
 func TestCountPhysicalPodsByPhase(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)

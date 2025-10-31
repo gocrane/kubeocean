@@ -38,6 +38,12 @@ type ClusterBindingSpec struct {
 	// If empty, kubeocean-default will be used
 	// +optional
 	PodPriorityClassName string `json:"podPriorityClassName,omitempty"`
+
+	// RunningDaemonsetByDefault controls whether DaemonSet pods can run by default
+	// If true, DaemonSet pods can run without the kubeocean.io/running-daemonset annotation
+	// If false or not set, DaemonSet pods require the kubeocean.io/running-daemonset="true" annotation to run
+	// +optional
+	RunningDaemonsetByDefault bool `json:"runningDaemonsetByDefault,omitempty"`
 }
 
 // ClusterBindingStatus defines the observed state of ClusterBinding

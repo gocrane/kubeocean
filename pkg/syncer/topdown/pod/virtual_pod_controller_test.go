@@ -6880,6 +6880,7 @@ func TestVirtualPodReconciler_ShouldCreatePhysicalPod(t *testing.T) {
 	tests := []struct {
 		name               string
 		virtualPod         *corev1.Pod
+		setupReconciler    func() *VirtualPodReconciler
 		expectedShouldSync bool
 	}{
 		{
@@ -7071,11 +7072,153 @@ func TestVirtualPodReconciler_ShouldCreatePhysicalPod(t *testing.T) {
 			},
 			expectedShouldSync: false, // System pods should never sync regardless of annotations
 		},
+		{
+			name: "daemonset pod without annotation but RunningDaemonsetByDefault=true should sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-default-enabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: true,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedShouldSync: true,
+		},
+		{
+			name: "daemonset pod without annotation and RunningDaemonsetByDefault=false should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-default-disabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: false,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedShouldSync: false,
+		},
+		{
+			name: "daemonset pod with annotation and RunningDaemonsetByDefault=true should sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-with-annotation-default-enabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationRunningDaemonSet: cloudv1beta1.LabelValueTrue,
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: true,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedShouldSync: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := reconciler.shouldCreatePhysicalPod(tt.virtualPod)
+			testReconciler := reconciler
+			if tt.setupReconciler != nil {
+				testReconciler = tt.setupReconciler()
+			}
+			result := testReconciler.shouldCreatePhysicalPod(tt.virtualPod)
 			assert.Equal(t, tt.expectedShouldSync, result, "shouldCreatePhysicalPod result mismatch for test: %s", tt.name)
 		})
 	}
@@ -7084,9 +7227,10 @@ func TestVirtualPodReconciler_ShouldCreatePhysicalPod(t *testing.T) {
 // TestVirtualPodReconciler_EventFilterPredicate tests the event filter predicate for DaemonSet pods
 func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
 	tests := []struct {
-		name           string
-		pod            *corev1.Pod
-		expectedFilter bool
+		name            string
+		pod             *corev1.Pod
+		setupReconciler func() *VirtualPodReconciler
+		expectedFilter  bool
 	}{
 		{
 			name:           "nil pod should be filtered",
@@ -7229,10 +7373,104 @@ func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
 			},
 			expectedFilter: true, // Deletion should override DaemonSet filtering
 		},
+		{
+			name: "daemonset pod without annotation but RunningDaemonsetByDefault=true should not be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-default-enabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: true,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedFilter: true,
+		},
+		{
+			name: "daemonset pod without annotation and RunningDaemonsetByDefault=false should be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-default-disabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: false,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedFilter: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{}
+			if tt.setupReconciler != nil {
+				reconciler = tt.setupReconciler()
+			}
 			// Simulate the filter predicate logic from SetupWithManager
 			var result bool
 			if tt.pod == nil {
@@ -7251,13 +7489,24 @@ func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
 						if utils.IsSystemPod(pod) {
 							result = false
 						} else {
-							// Skip DaemonSet pods unless they have the running annotation
+							// Skip DaemonSet pods unless RunningDaemonsetByDefault is true or they have the running annotation
 							if utils.IsDaemonSetPod(pod) {
-								// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
-								if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
-									result = false
+								clusterBindingName := ""
+								if reconciler.ClusterBinding != nil {
+									clusterBindingName = reconciler.ClusterBinding.Name
+								}
+								// If RunningDaemonsetByDefault is true, allow DaemonSet pods to run by default
+								runningds, _ := utils.IsRunningDaemonsetByDefault(context.TODO(), reconciler.VirtualClient, clusterBindingName)
+								if !runningds {
+									// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
+									if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
+										result = false
+									} else {
+										// Allow DaemonSet pods with the running annotation to be synced
+										result = true
+									}
 								} else {
-									// Allow DaemonSet pods with the running annotation to be synced
+									// Allow DaemonSet pods to be synced when RunningDaemonsetByDefault is true
 									result = true
 								}
 							} else {

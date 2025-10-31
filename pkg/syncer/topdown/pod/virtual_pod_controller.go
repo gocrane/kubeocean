@@ -220,13 +220,20 @@ func (r *VirtualPodReconciler) shouldCreatePhysicalPod(virtualPod *corev1.Pod) b
 	if utils.IsSystemPod(virtualPod) {
 		return false
 	}
+	clusterBindingName := ""
+	if r.ClusterBinding != nil {
+		clusterBindingName = r.ClusterBinding.Name
+	}
 	// Skip DaemonSet pods unless they have the running annotation
 	if utils.IsDaemonSetPod(virtualPod) {
-		// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
-		if virtualPod.Annotations == nil || virtualPod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
-			return false
+		// If RunningDaemonsetByDefault is true, allow DaemonSet pods to run by default
+		if runningds, _ := utils.IsRunningDaemonsetByDefault(context.TODO(), r.VirtualClient, clusterBindingName); !runningds {
+			// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
+			if virtualPod.Annotations == nil || virtualPod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
+				return false
+			}
+			// Allow DaemonSet pods with the running annotation to be synced
 		}
-		// Allow DaemonSet pods with the running annotation to be synced
 	}
 	if virtualPod.Labels[cloudv1beta1.LabelHostPortFakePod] == cloudv1beta1.LabelValueTrue {
 		return false
@@ -1174,11 +1181,18 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 			}
 			// Skip DaemonSet pods unless they have the running annotation
 			if utils.IsDaemonSetPod(pod) {
-				// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
-				if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
-					return false
+				clusterBindingName := ""
+				if r.ClusterBinding != nil {
+					clusterBindingName = r.ClusterBinding.Name
 				}
-				// Allow DaemonSet pods with the running annotation to be synced
+				// If RunningDaemonsetByDefault is true, allow DaemonSet pods to run by default
+				if runningds, _ := utils.IsRunningDaemonsetByDefault(context.TODO(), r.VirtualClient, clusterBindingName); !runningds {
+					// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
+					if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
+						return false
+					}
+					// Allow DaemonSet pods with the running annotation to be synced
+				}
 			}
 			return true
 		})).
