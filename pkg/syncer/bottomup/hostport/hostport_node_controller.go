@@ -156,22 +156,6 @@ func (r *HostPortNodeReconciler) handleVirtualNodeEvent(node *corev1.Node, event
 // SetupWithManager sets up the controller with the Manager
 func (r *HostPortNodeReconciler) SetupWithManager(physicalManager ctrl.Manager, virtualManager ctrl.Manager) error {
 
-	// Setup virtualManager node informer for watching virtual node changes
-	nodeInformer, err := virtualManager.GetCache().GetInformer(context.TODO(), &corev1.Node{})
-	if err != nil {
-		return fmt.Errorf("failed to get node informer: %w", err)
-	}
-
-	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		// handle add event only
-		AddFunc: func(obj interface{}) {
-			node := obj.(*corev1.Node)
-			if node != nil {
-				r.handleVirtualNodeEvent(node, "add")
-			}
-		},
-	})
-
 	// Watch physical nodes with policy-applied label changes
 	nodePredicate := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
@@ -248,6 +232,22 @@ func (r *HostPortNodeReconciler) SetupWithManager(physicalManager ctrl.Manager, 
 	rateLimiter := workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute)
 	r.workQueue = workqueue.NewTypedRateLimitingQueueWithConfig(rateLimiter, workqueue.TypedRateLimitingQueueConfig[reconcile.Request]{
 		Name: uniqueControllerName,
+	})
+
+	// Setup virtualManager node informer for watching virtual node changes
+	nodeInformer, err := virtualManager.GetCache().GetInformer(context.TODO(), &corev1.Node{})
+	if err != nil {
+		return fmt.Errorf("failed to get node informer: %w", err)
+	}
+
+	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		// handle add event only
+		AddFunc: func(obj interface{}) {
+			node := obj.(*corev1.Node)
+			if node != nil {
+				r.handleVirtualNodeEvent(node, "add")
+			}
+		},
 	})
 
 	// Create controller using the builder pattern
