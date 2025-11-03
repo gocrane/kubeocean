@@ -1023,7 +1023,7 @@ func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spe
 	// Add hostAlias for kubernetes.default.svc
 	spec.HostAliases = append(spec.HostAliases, corev1.HostAlias{
 		IP:        kubernetesIntranetIP,
-		Hostnames: []string{"kubernetes.default.svc"},
+		Hostnames: []string{"kubernetes.default.svc", "kubernetes.default", "kubernetes", "kubernetes.default.svc.cluster.local"},
 	})
 
 	// Inject KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables to all containers

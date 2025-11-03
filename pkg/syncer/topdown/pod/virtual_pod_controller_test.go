@@ -5439,7 +5439,7 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing
 			if tt.expectedHostAlias {
 				assert.Len(t, result.HostAliases, 1, "Should have one hostAlias")
 				assert.Equal(t, "10.0.0.1", result.HostAliases[0].IP, "HostAlias IP should match kubernetes-intranet IP")
-				assert.Equal(t, []string{"kubernetes.default.svc"}, result.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
+				assert.Equal(t, []string{"kubernetes.default.svc", "kubernetes.default", "kubernetes", "kubernetes.default.svc.cluster.local"}, result.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
 			}
 
 			// Verify DNS configuration
@@ -6325,7 +6325,7 @@ func TestVirtualPodReconciler_AddHostAliasesAndEnvVars(t *testing.T) {
 			if tt.expectedHostAlias {
 				assert.Len(t, podSpec.HostAliases, 1, "Should have one hostAlias")
 				assert.Equal(t, "10.0.0.1", podSpec.HostAliases[0].IP, "HostAlias IP should match kubernetes-intranet IP")
-				assert.Equal(t, []string{"kubernetes.default.svc"}, podSpec.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
+				assert.Equal(t, []string{"kubernetes.default.svc", "kubernetes.default", "kubernetes", "kubernetes.default.svc.cluster.local"}, podSpec.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
 			}
 
 			// Verify environment variable injection in containers
