@@ -3687,8 +3687,25 @@ func TestVirtualPodReconciler_CleanupServiceAccountToken(t *testing.T) {
 			if tt.physicalSecret != nil {
 				// Generate the correct secret name using the same logic as the actual code
 				if tt.virtualPod.Spec.ServiceAccountName != "" {
+					// Find the first volume with ServiceAccountToken to get volume name
+					var volumeName string
+					for _, volume := range tt.virtualPod.Spec.Volumes {
+						if volume.Projected != nil {
+							for _, source := range volume.Projected.Sources {
+								if source.ServiceAccountToken != nil {
+									volumeName = volume.Name
+									break
+								}
+							}
+						}
+						if volumeName != "" {
+							break
+						}
+					}
+
 					// Use the same key generation logic as the actual code
-					key := fmt.Sprintf("%s-%s", tt.virtualPod.Name, tt.virtualPod.UID)
+					// Format: podName-volumeName-podUID
+					key := fmt.Sprintf("%s-%s-%s", tt.virtualPod.Name, volumeName, tt.virtualPod.UID)
 
 					// Generate physical name using the same logic as generatePhysicalName
 					truncatedKey := key
@@ -3815,7 +3832,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 				},
 			},
 			createIfNotExists: true,
-			expectedResult:    "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+			expectedResult:    "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 			expectError:       false,
 		},
 		{
@@ -3849,7 +3866,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 				},
 			},
 			createIfNotExists: false,
-			expectedResult:    "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+			expectedResult:    "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 			expectError:       false,
 		},
 		{
@@ -3883,7 +3900,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 				},
 			},
 			createIfNotExists: false,
-			expectedResult:    "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+			expectedResult:    "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 			expectError:       false,
 		},
 		{
@@ -3934,7 +3951,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 			if !tt.createIfNotExists && tt.name == "update existing service account token secret - token different" {
 				existingSecret := &corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+						Name:      "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 						Namespace: "test-cluster",
 					},
 					Type: corev1.SecretTypeOpaque,
@@ -3950,7 +3967,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 			if !tt.createIfNotExists && tt.name == "update existing service account token secret - token same" {
 				existingSecret := &corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+						Name:      "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 						Namespace: "test-cluster",
 					},
 					Type: corev1.SecretTypeOpaque,
@@ -3971,8 +3988,26 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 				TokenManager:   mockTokenManager,
 			}
 
+			// Extract volume name and ServiceAccountTokenProjection from virtualPod
+			var volumeName string
+			var tp *corev1.ServiceAccountTokenProjection
+			for _, volume := range tt.virtualPod.Spec.Volumes {
+				if volume.Projected != nil {
+					for _, source := range volume.Projected.Sources {
+						if source.ServiceAccountToken != nil {
+							volumeName = volume.Name
+							tp = source.ServiceAccountToken
+							break
+						}
+					}
+				}
+				if tp != nil {
+					break
+				}
+			}
+
 			// Call the function
-			result, err := reconciler.syncServiceAccountToken(ctx, tt.virtualPod, tt.createIfNotExists)
+			result, err := reconciler.syncServiceAccountToken(ctx, volumeName, tp, tt.virtualPod, tt.createIfNotExists)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -5903,7 +5938,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{"test-secret": "test-secret-physical"},
 			PVCs:                    map[string]string{"test-pvc": "test-pvc-physical"},
-			ServiceAccountTokenName: "test-sa-token-physical",
+			ServiceAccountTokenName: map[string]string{"kube-api-access-xyz": "test-sa-token-physical"},
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -5934,7 +5969,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "", // No ServiceAccountToken
+			ServiceAccountTokenName: nil, // No ServiceAccountToken
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -5957,7 +5992,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "",
+			ServiceAccountTokenName: nil,
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -5985,7 +6020,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "",
+			ServiceAccountTokenName: nil,
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -6029,7 +6064,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "",
+			ServiceAccountTokenName: nil,
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -6062,7 +6097,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"config1": "config1-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "",
+			ServiceAccountTokenName: nil,
 		}
 
 		// This should timeout, but we can verify the resource was checked multiple times

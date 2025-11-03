@@ -1809,12 +1809,13 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			}
 			gomega.Expect(kubeApiAccessVolumes).ToNot(gomega.BeEmpty())
 
-			// Calculate expected physical secret name using the same logic as the controller
-			expectedSecretKey := fmt.Sprintf("%s-%s", virtualPod.Name, virtualPod.UID)
-			expectedSecretName := generatePhysicalName(expectedSecretKey, virtualPod.Namespace)
-
 			// Verify each kube-api-access volume has corresponding physical resources
 			for _, volume := range kubeApiAccessVolumes {
+				// Calculate expected physical secret name using the same logic as the controller
+				// Format: podName-volumeName-podUID
+				expectedSecretKey := fmt.Sprintf("%s-%s-%s", virtualPod.Name, volume.Name, virtualPod.UID)
+				expectedSecretName := generatePhysicalName(expectedSecretKey, virtualPod.Namespace)
+
 				if volume.Projected != nil {
 					for _, source := range volume.Projected.Sources {
 						// 1. Verify ServiceAccountToken is nil in physical pod
