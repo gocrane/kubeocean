@@ -893,9 +893,9 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(physicalPod.Spec.DNSConfig.Nameservers).To(gomega.ContainElement("10.0.0.2")) // kube-dns-intranet IP
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options).To(gomega.HaveLen(1))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options[0].Name).To(gomega.Equal("ndots"))
-			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("3"))
+			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("5"))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Searches).To(gomega.Equal([]string{
-				"default.svc.cluster.local",
+				"pod-sync-test.svc.cluster.local",
 				"svc.cluster.local",
 				"cluster.local",
 			}))
@@ -1436,9 +1436,9 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(physicalPod.Spec.DNSConfig.Nameservers).To(gomega.ContainElement("10.0.0.2")) // kube-dns-intranet IP
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options).To(gomega.HaveLen(1))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options[0].Name).To(gomega.Equal("ndots"))
-			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("3"))
+			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("5"))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Searches).To(gomega.Equal([]string{
-				"default.svc.cluster.local",
+				"pod-sync-test.svc.cluster.local",
 				"svc.cluster.local",
 				"cluster.local",
 			}))
@@ -1789,9 +1789,9 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(physicalPod.Spec.DNSConfig.Nameservers).To(gomega.ContainElement("10.0.0.2")) // kube-dns-intranet IP
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options).To(gomega.HaveLen(1))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options[0].Name).To(gomega.Equal("ndots"))
-			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("3"))
+			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("5"))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Searches).To(gomega.Equal([]string{
-				"default.svc.cluster.local",
+				"pod-sync-test.svc.cluster.local",
 				"svc.cluster.local",
 				"cluster.local",
 			}))

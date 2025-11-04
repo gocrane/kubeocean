@@ -859,7 +859,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	}
 
 	// Configure DNS policy and DNS config
-	if err := r.configureDNSPolicy(ctx, &spec); err != nil {
+	if err := r.configureDNSPolicy(ctx, &spec, virtualPod.Namespace); err != nil {
 		return spec, err
 	}
 
@@ -1050,7 +1050,7 @@ func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spe
 }
 
 // configureDNSPolicy configures DNS policy and DNS config
-func (r *VirtualPodReconciler) configureDNSPolicy(ctx context.Context, spec *corev1.PodSpec) error {
+func (r *VirtualPodReconciler) configureDNSPolicy(ctx context.Context, spec *corev1.PodSpec, namespace string) error {
 	// Configure DNS policy and DNS config
 	if spec.DNSPolicy == corev1.DNSClusterFirst || spec.DNSPolicy == corev1.DNSClusterFirstWithHostNet {
 		// Get kube-dns-intranet IP
@@ -1068,11 +1068,11 @@ func (r *VirtualPodReconciler) configureDNSPolicy(ctx context.Context, spec *cor
 			Options: []corev1.PodDNSConfigOption{
 				{
 					Name:  "ndots",
-					Value: ptr.To("3"),
+					Value: ptr.To("5"),
 				},
 			},
 			Searches: []string{
-				"default.svc.cluster.local",
+				fmt.Sprintf("%s.svc.cluster.local", namespace),
 				"svc.cluster.local",
 				"cluster.local",
 			},

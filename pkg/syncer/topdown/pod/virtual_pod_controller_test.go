@@ -5485,9 +5485,9 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing
 				assert.Equal(t, "10.0.0.2", result.DNSConfig.Nameservers[0], "Nameserver should match kube-dns-intranet IP")
 				assert.Len(t, result.DNSConfig.Options, 1, "Should have one DNS option")
 				assert.Equal(t, "ndots", result.DNSConfig.Options[0].Name, "DNS option name should be ndots")
-				assert.Equal(t, "3", *result.DNSConfig.Options[0].Value, "DNS option value should be 3")
+				assert.Equal(t, "5", *result.DNSConfig.Options[0].Value, "DNS option value should be 5")
 				assert.Len(t, result.DNSConfig.Searches, 3, "Should have three search domains")
-				assert.Equal(t, []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"}, result.DNSConfig.Searches, "Search domains should be correct")
+				assert.Equal(t, []string{"test-ns.svc.cluster.local", "svc.cluster.local", "cluster.local"}, result.DNSConfig.Searches, "Search domains should be correct")
 			}
 
 			// Verify environment variable injection
