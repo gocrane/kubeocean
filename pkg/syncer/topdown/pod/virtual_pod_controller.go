@@ -1106,6 +1106,23 @@ func (r *VirtualPodReconciler) replaceContainerResourceNames(container *corev1.C
 		}
 	}
 
+	for _, envFrom := range container.EnvFrom {
+		if envFrom.ConfigMapRef != nil {
+			if physicalName, exists := resourceMapping.ConfigMaps[envFrom.ConfigMapRef.Name]; exists {
+				envFrom.ConfigMapRef.Name = physicalName
+			} else {
+				return fmt.Errorf("configMap mapping not found for virtual ConfigMap: %s", envFrom.ConfigMapRef.Name)
+			}
+		}
+		if envFrom.SecretRef != nil {
+			if physicalName, exists := resourceMapping.Secrets[envFrom.SecretRef.Name]; exists {
+				envFrom.SecretRef.Name = physicalName
+			} else {
+				return fmt.Errorf("secret mapping not found for virtual Secret: %s", envFrom.SecretRef.Name)
+			}
+		}
+	}
+
 	// Handle DownwardAPI fieldRef in environment variables
 	r.replaceContainerDownwardAPIFieldPaths(container.Env)
 
@@ -1547,6 +1564,11 @@ func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *c
 				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = true
 			}
 		}
+		for _, envFrom := range container.EnvFrom {
+			if envFrom.ConfigMapRef != nil {
+				configMapRefs[envFrom.ConfigMapRef.Name] = true
+			}
+		}
 	}
 
 	// From init containers
@@ -1554,6 +1576,11 @@ func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *c
 		for _, envVar := range container.Env {
 			if envVar.ValueFrom != nil && envVar.ValueFrom.ConfigMapKeyRef != nil {
 				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = true
+			}
+		}
+		for _, envFrom := range container.EnvFrom {
+			if envFrom.ConfigMapRef != nil {
+				configMapRefs[envFrom.ConfigMapRef.Name] = true
 			}
 		}
 	}
@@ -1579,43 +1606,11 @@ func (r *VirtualPodReconciler) syncSecrets(ctx context.Context, virtualPod *core
 	// Collect all Secret references from pod spec
 	secretRefs := make(map[string]bool)
 
-	// From volumes
-	for _, volume := range virtualPod.Spec.Volumes {
-		if volume.Secret != nil {
-			secretRefs[volume.Secret.SecretName] = true
-		}
-		// From projected volumes
-		if volume.Projected != nil {
-			for _, source := range volume.Projected.Sources {
-				if source.Secret != nil {
-					secretRefs[source.Secret.Name] = true
-				}
-			}
-		}
-	}
-
-	// From env vars
-	for _, container := range virtualPod.Spec.Containers {
-		for _, envVar := range container.Env {
-			if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
-				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = true
-			}
-		}
-	}
-
-	// From init containers
-	for _, container := range virtualPod.Spec.InitContainers {
-		for _, envVar := range container.Env {
-			if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
-				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = true
-			}
-		}
-	}
-
-	// From image pull secrets
-	for _, imagePullSecret := range virtualPod.Spec.ImagePullSecrets {
-		secretRefs[imagePullSecret.Name] = true
-	}
+	// Collect secrets from various sources
+	r.collectSecretsFromVolumes(virtualPod.Spec.Volumes, secretRefs)
+	r.collectSecretsFromContainers(virtualPod.Spec.Containers, secretRefs)
+	r.collectSecretsFromContainers(virtualPod.Spec.InitContainers, secretRefs)
+	r.collectSecretsFromImagePullSecrets(virtualPod.Spec.ImagePullSecrets, secretRefs)
 
 	// Sync each Secret and collect mappings
 	secretMappings := make(map[string]string)
@@ -1629,6 +1624,46 @@ func (r *VirtualPodReconciler) syncSecrets(ctx context.Context, virtualPod *core
 	}
 
 	return secretMappings, nil
+}
+
+// collectSecretsFromVolumes collects secret references from volumes
+func (r *VirtualPodReconciler) collectSecretsFromVolumes(volumes []corev1.Volume, secretRefs map[string]bool) {
+	for _, volume := range volumes {
+		if volume.Secret != nil {
+			secretRefs[volume.Secret.SecretName] = true
+		}
+		// From projected volumes
+		if volume.Projected != nil {
+			for _, source := range volume.Projected.Sources {
+				if source.Secret != nil {
+					secretRefs[source.Secret.Name] = true
+				}
+			}
+		}
+	}
+}
+
+// collectSecretsFromContainers collects secret references from containers (works for both regular and init containers)
+func (r *VirtualPodReconciler) collectSecretsFromContainers(containers []corev1.Container, secretRefs map[string]bool) {
+	for _, container := range containers {
+		for _, envVar := range container.Env {
+			if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
+				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = true
+			}
+		}
+		for _, envFrom := range container.EnvFrom {
+			if envFrom.SecretRef != nil {
+				secretRefs[envFrom.SecretRef.Name] = true
+			}
+		}
+	}
+}
+
+// collectSecretsFromImagePullSecrets collects secret references from image pull secrets
+func (r *VirtualPodReconciler) collectSecretsFromImagePullSecrets(imagePullSecrets []corev1.LocalObjectReference, secretRefs map[string]bool) {
+	for _, imagePullSecret := range imagePullSecrets {
+		secretRefs[imagePullSecret.Name] = true
+	}
 }
 
 // syncPVCs syncs PVCs referenced by the virtual pod and returns the mapping

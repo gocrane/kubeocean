@@ -100,6 +100,51 @@ func createTestVirtualNode(name, clusterName, ClusterID, physicalNodeName string
 	}
 }
 
+// testResourceSyncHelper is a generic helper function for testing resource synchronization
+func testResourceSyncHelper(
+	t *testing.T,
+	scheme *runtime.Scheme,
+	clusterBinding *cloudv1beta1.ClusterBinding,
+	resources []client.Object,
+	virtualPod *corev1.Pod,
+	syncFunc func(*VirtualPodReconciler, context.Context, *corev1.Pod) (map[string]string, error),
+	expectedResult map[string]string,
+	expectError bool,
+) {
+	ctx := context.Background()
+	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalK8sClient := fake.NewSimpleClientset()
+
+	// Create virtual resources
+	for _, res := range resources {
+		err := virtualClient.Create(ctx, res)
+		require.NoError(t, err)
+	}
+
+	reconciler := &VirtualPodReconciler{
+		VirtualClient:     virtualClient,
+		PhysicalClient:    physicalClient,
+		PhysicalK8sClient: physicalK8sClient,
+		ClusterBinding:    clusterBinding,
+		Scheme:            scheme,
+		Log:               zap.New(),
+	}
+
+	result, err := syncFunc(reconciler, ctx, virtualPod)
+
+	if expectError {
+		assert.Error(t, err)
+		return
+	}
+
+	assert.NoError(t, err)
+	assert.Equal(t, len(expectedResult), len(result))
+	for virtualName := range expectedResult {
+		assert.Contains(t, result, virtualName)
+	}
+}
+
 func TestVirtualPodReconciler_Reconcile(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -4192,51 +4237,15 @@ func TestVirtualPodReconciler_SyncConfigMapsWithProjectedVolumes(t *testing.T) {
 		},
 	}
 
-	// Helper function to create reconciler and test resource syncing
-	testResourceSync := func(t *testing.T, resources []client.Object, syncFunc func(*VirtualPodReconciler, context.Context, *corev1.Pod) (map[string]string, error), virtualPod *corev1.Pod, expectedResult map[string]string, expectError bool) {
-		ctx := context.Background()
-		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalK8sClient := fake.NewSimpleClientset()
-
-		// Create virtual resources
-		for _, res := range resources {
-			err := virtualClient.Create(ctx, res)
-			require.NoError(t, err)
-		}
-
-		reconciler := &VirtualPodReconciler{
-			VirtualClient:     virtualClient,
-			PhysicalClient:    physicalClient,
-			PhysicalK8sClient: physicalK8sClient,
-			ClusterBinding:    clusterBinding,
-			Scheme:            scheme,
-			Log:               zap.New(),
-		}
-
-		result, err := syncFunc(reconciler, ctx, virtualPod)
-
-		if expectError {
-			assert.Error(t, err)
-			return
-		}
-
-		assert.NoError(t, err)
-		assert.Equal(t, len(expectedResult), len(result))
-		for virtualName := range expectedResult {
-			assert.Contains(t, result, virtualName)
-		}
-	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resources := make([]client.Object, len(tt.virtualConfigMaps))
 			for i, cm := range tt.virtualConfigMaps {
 				resources[i] = cm
 			}
-			testResourceSync(t, resources, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
+			testResourceSyncHelper(t, scheme, clusterBinding, resources, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
 				return r.syncConfigMaps(ctx, pod)
-			}, tt.virtualPod, tt.expectedResult, tt.expectError)
+			}, tt.expectedResult, tt.expectError)
 		})
 	}
 }
@@ -4335,48 +4344,15 @@ func TestVirtualPodReconciler_SyncSecretsWithProjectedVolumes(t *testing.T) {
 		},
 	}
 
-	// Helper function similar to the one in ConfigMap test
-	testSecretSync := func(t *testing.T, secrets []client.Object, virtualPod *corev1.Pod, expectedResult map[string]string, expectError bool) {
-		ctx := context.Background()
-		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalK8sClient := fake.NewSimpleClientset()
-
-		for _, secret := range secrets {
-			err := virtualClient.Create(ctx, secret)
-			require.NoError(t, err)
-		}
-
-		reconciler := &VirtualPodReconciler{
-			VirtualClient:     virtualClient,
-			PhysicalClient:    physicalClient,
-			PhysicalK8sClient: physicalK8sClient,
-			ClusterBinding:    clusterBinding,
-			Scheme:            scheme,
-			Log:               zap.New(),
-		}
-
-		result, err := reconciler.syncSecrets(ctx, virtualPod)
-
-		if expectError {
-			assert.Error(t, err)
-			return
-		}
-
-		assert.NoError(t, err)
-		assert.Equal(t, len(expectedResult), len(result))
-		for virtualName := range expectedResult {
-			assert.Contains(t, result, virtualName)
-		}
-	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			secrets := make([]client.Object, len(tt.virtualSecrets))
 			for i, s := range tt.virtualSecrets {
 				secrets[i] = s
 			}
-			testSecretSync(t, secrets, tt.virtualPod, tt.expectedResult, tt.expectError)
+			testResourceSyncHelper(t, scheme, clusterBinding, secrets, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
+				return r.syncSecrets(ctx, pod)
+			}, tt.expectedResult, tt.expectError)
 		})
 	}
 }
@@ -7553,6 +7529,567 @@ func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.expectedFilter, result, "Event filter result mismatch for test: %s", tt.name)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_SyncConfigMapsWithEnvFrom tests syncConfigMaps with EnvFrom field
+func TestVirtualPodReconciler_SyncConfigMapsWithEnvFrom(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name              string
+		virtualPod        *corev1.Pod
+		virtualConfigMaps []*corev1.ConfigMap
+		expectedResult    map[string]string
+		expectError       bool
+	}{
+		{
+			name: "pod with envFrom configMapRef in container",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "app-config",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "app-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"APP_ENV":   "production",
+						"LOG_LEVEL": "info",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"app-config": "app-config-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with envFrom configMapRef in init container",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-container",
+							Image: "busybox:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "init-config",
+										},
+									},
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "init-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"INIT_FLAG": "true",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"init-config": "init-config-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with multiple envFrom configMapRef",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "app-config",
+										},
+									},
+								},
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "db-config",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "app-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"APP_ENV": "production",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "db-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"DB_HOST": "localhost",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"app-config": "app-config-physical",
+				"db-config":  "db-config-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with mixed configmap sources (envFrom, env, volume)",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "config-volume",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "volume-config",
+									},
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "envfrom-config",
+										},
+									},
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "SINGLE_VAR",
+									ValueFrom: &corev1.EnvVarSource{
+										ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: "env-config",
+											},
+											Key: "key1",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "volume-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"config.yaml": "key: value",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "envfrom-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"APP_ENV": "production",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "env-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"key1": "value1",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"volume-config":  "volume-config-physical",
+				"envfrom-config": "envfrom-config-physical",
+				"env-config":     "env-config-physical",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := make([]client.Object, len(tt.virtualConfigMaps))
+			for i, cm := range tt.virtualConfigMaps {
+				resources[i] = cm
+			}
+			testResourceSyncHelper(t, scheme, clusterBinding, resources, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
+				return r.syncConfigMaps(ctx, pod)
+			}, tt.expectedResult, tt.expectError)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_SyncSecretsWithEnvFrom tests syncSecrets with EnvFrom field
+func TestVirtualPodReconciler_SyncSecretsWithEnvFrom(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		virtualSecrets []*corev1.Secret
+		expectedResult map[string]string
+		expectError    bool
+	}{
+		{
+			name: "pod with envFrom secretRef in container",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "app-secret",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualSecrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "app-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"API_KEY":     []byte("secret-api-key"),
+						"DB_PASSWORD": []byte("secret-password"),
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"app-secret": "app-secret-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with envFrom secretRef in init container",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-container",
+							Image: "busybox:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "init-secret",
+										},
+									},
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+						},
+					},
+				},
+			},
+			virtualSecrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "init-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"INIT_TOKEN": []byte("init-token-value"),
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"init-secret": "init-secret-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with multiple envFrom secretRef",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "app-secret",
+										},
+									},
+								},
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "db-secret",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualSecrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "app-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"API_KEY": []byte("app-api-key"),
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "db-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"DB_PASSWORD": []byte("db-password"),
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"app-secret": "app-secret-physical",
+				"db-secret":  "db-secret-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with mixed secret sources (envFrom, env, volume, imagePullSecrets)",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					ImagePullSecrets: []corev1.LocalObjectReference{
+						{Name: "registry-secret"},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "secret-volume",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: "volume-secret",
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "envfrom-secret",
+										},
+									},
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "SINGLE_SECRET",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: "env-secret",
+											},
+											Key: "secret-key",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualSecrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "registry-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeDockerConfigJson,
+					Data: map[string][]byte{
+						".dockerconfigjson": []byte(`{"auths":{}}`),
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "volume-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"cert.pem": []byte("certificate-content"),
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "envfrom-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"API_KEY": []byte("api-key-value"),
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "env-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"secret-key": []byte("secret-value"),
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"registry-secret": "registry-secret-physical",
+				"volume-secret":   "volume-secret-physical",
+				"envfrom-secret":  "envfrom-secret-physical",
+				"env-secret":      "env-secret-physical",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := make([]client.Object, len(tt.virtualSecrets))
+			for i, secret := range tt.virtualSecrets {
+				resources[i] = secret
+			}
+			testResourceSyncHelper(t, scheme, clusterBinding, resources, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
+				return r.syncSecrets(ctx, pod)
+			}, tt.expectedResult, tt.expectError)
 		})
 	}
 }
