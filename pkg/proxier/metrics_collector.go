@@ -85,6 +85,23 @@ type MetricsConfig struct {
 	TLSSecretNamespace string // TLS secret namespace
 }
 
+// LoggingHandler is a object for handling http request
+type LoggingHandler struct {
+	log logr.Logger
+	h   http.Handler
+}
+
+func (lh LoggingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	lh.log.V(1).Info("Handling http request",
+		"method", r.Method,
+		"from", r.RemoteAddr,
+		"uri", r.RequestURI,
+		"userAgent", r.UserAgent(),
+		"headers", r.Header,
+	)
+	lh.h.ServeHTTP(w, r)
+}
+
 // VNodeProxierAgent VNode proxier agent for data collection and service provision
 type VNodeProxierAgent struct {
 	config        *MetricsConfig
@@ -516,9 +533,13 @@ func (va *VNodeProxierAgent) startHTTPServerForNode(port string, nodeInfo NodeIn
 	// Use gorilla/mux router to support multiple endpoints
 	router := va.setupRoutes(port, nodeInfo)
 
+	// Log all requests and then pass through to serveMux
+	loggingServeMux := http.NewServeMux()
+	loggingServeMux.Handle("/", LoggingHandler{va.log, router})
+
 	server := &http.Server{
 		Addr:    ":" + port,
-		Handler: router,
+		Handler: loggingServeMux,
 	}
 
 	// Determine server type based on TLS configuration
