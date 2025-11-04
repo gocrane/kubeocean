@@ -65,8 +65,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup logging
-	setupLogging()
+	// Setup
 	setupLog.Info("Kubeocean Proxier", "version", version.Get())
 
 	setupLog.Info("Starting Kubeocean Proxier",
@@ -181,22 +180,13 @@ func parseFlags() *ProxierConfig {
 	opts := zap.Options{
 		Development:     false,
 		StacktraceLevel: zapcore.DPanicLevel,
-		Level:           zapcore.InfoLevel,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	return config
-}
-
-// setupLogging configures the logging system
-func setupLogging() {
-	opts := zap.Options{
-		Development:     false,
-		StacktraceLevel: zapcore.DPanicLevel,
-		Level:           zapcore.InfoLevel,
-	}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	return config
 }
 
 // setupContextAndSignals sets up context and signal handling
