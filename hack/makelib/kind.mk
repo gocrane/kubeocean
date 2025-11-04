@@ -255,7 +255,7 @@ kind-deploy-pre: kind-create-all ## Pre-deploy kubeocean to all KIND clusters.
 	@echo "🔧 Step 2/2: Creating kube-dns-intranet service in manager cluster..."
 	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER)
 	@# Patch coredns deployment to add hostPort
-	@kubectl patch deployment coredns -n kube-system --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/ports/0/hostPort","value":53}]' || echo "   ⚠️  hostPort may already exist"; \
+	@kubectl patch deployment coredns -n kube-system --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/ports/0/hostPort","value":53},{"op":"add","path":"/spec/template/spec/containers/0/ports/1/hostPort","value":53}]' || echo "   ⚠️  hostPort may already exist"; \
 	kubectl rollout status deployment/coredns -n kube-system --timeout=60s; \
 	sleep 1; \
 	kubectl apply -f hack/makelib/kind/dns-svc.yaml; \
