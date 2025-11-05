@@ -866,7 +866,11 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 
 	// set hostname to virtual pod name if not set
 	if spec.Hostname == "" {
-		spec.Hostname = virtualPod.Name
+		hostname, err := utils.TruncateHostnameIfNeeded(r.Log, virtualPod.Name)
+		if err != nil {
+			return spec, fmt.Errorf("failed to truncate hostname: %w", err)
+		}
+		spec.Hostname = hostname
 	}
 
 	// Replace resource names in volumes
