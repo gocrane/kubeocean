@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -148,7 +149,7 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Physical pod exists and UID is already set, sync metadata to physical pod
-	if err := r.syncVirtualPodMetadataToPhysicalPod(ctx, virtualPod, physicalPod); err != nil {
+	if err := r.syncVirtualPodMetadataAndSpecToPhysicalPod(ctx, virtualPod, physicalPod); err != nil {
 		logger.Error(err, "Failed to sync virtual pod metadata to physical pod")
 		return ctrl.Result{}, err
 	}
@@ -2469,7 +2470,7 @@ func (r *VirtualPodReconciler) syncMetadata(target, previousExpected, current ma
 }
 
 // syncVirtualPodMetadataToPhysicalPod syncs virtual pod metadata (annotations and labels) to physical pod
-func (r *VirtualPodReconciler) syncVirtualPodMetadataToPhysicalPod(ctx context.Context, virtualPod *corev1.Pod, physicalPod *corev1.Pod) error {
+func (r *VirtualPodReconciler) syncVirtualPodMetadataAndSpecToPhysicalPod(ctx context.Context, virtualPod *corev1.Pod, physicalPod *corev1.Pod) error {
 	logger := r.Log.WithValues(
 		"virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name),
 		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
@@ -2528,8 +2529,14 @@ func (r *VirtualPodReconciler) syncVirtualPodMetadataToPhysicalPod(ctx context.C
 		needsUpdate = true
 	}
 
+	if !reflect.DeepEqual(updatedPhysicalPod.Spec.ActiveDeadlineSeconds, virtualPod.Spec.ActiveDeadlineSeconds) {
+		updatedPhysicalPod.Spec.ActiveDeadlineSeconds = virtualPod.Spec.ActiveDeadlineSeconds
+		needsUpdate = true
+		logger.Info("Updating physical pod active deadline seconds", "activeDeadlineSeconds", ptr.Deref(virtualPod.Spec.ActiveDeadlineSeconds, 0))
+	}
+
 	if !needsUpdate {
-		logger.V(1).Info("No updates needed for physical pod metadata")
+		logger.V(1).Info("No updates needed for physical pod metadata and spec")
 		return nil
 	}
 
@@ -2539,6 +2546,6 @@ func (r *VirtualPodReconciler) syncVirtualPodMetadataToPhysicalPod(ctx context.C
 		return fmt.Errorf("failed to update physical pod metadata: %w", err)
 	}
 
-	logger.Info("Successfully synced virtual pod metadata to physical pod")
+	logger.Info("Successfully synced virtual pod metadata and spec to physical pod")
 	return nil
 }

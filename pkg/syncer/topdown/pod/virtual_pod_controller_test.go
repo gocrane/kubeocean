@@ -8531,8 +8531,8 @@ func TestVirtualPodReconciler_syncMetadata(t *testing.T) {
 	}
 }
 
-// TestVirtualPodReconciler_syncVirtualPodMetadataToPhysicalPod tests syncing virtual pod metadata to physical pod
-func TestVirtualPodReconciler_syncVirtualPodMetadataToPhysicalPod(t *testing.T) {
+// TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod tests syncing virtual pod metadata and spec to physical pod
+func TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod(t *testing.T) {
 	tests := []struct {
 		name         string
 		virtualPod   *corev1.Pod
@@ -8710,7 +8710,7 @@ func TestVirtualPodReconciler_syncVirtualPodMetadataToPhysicalPod(t *testing.T) 
 				Log:            ctrl.Log.WithName("test"),
 			}
 
-			err := reconciler.syncVirtualPodMetadataToPhysicalPod(ctx, tt.virtualPod, tt.physicalPod)
+			err := reconciler.syncVirtualPodMetadataAndSpecToPhysicalPod(ctx, tt.virtualPod, tt.physicalPod)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -8732,4 +8732,196 @@ func createEncodedExpectedMetadata(annotations, labels map[string]string) string
 	}
 	bytes, _ := json.Marshal(metadata)
 	return base64.StdEncoding.EncodeToString(bytes)
+}
+
+// TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_ActiveDeadlineSeconds tests ActiveDeadlineSeconds sync
+func TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_ActiveDeadlineSeconds(t *testing.T) {
+	tests := []struct {
+		name         string
+		virtualPod   *corev1.Pod
+		physicalPod  *corev1.Pod
+		setupClient  func() client.Client
+		expectError  bool
+		validateFunc func(t *testing.T, client client.Client)
+	}{
+		{
+			name: "should sync ActiveDeadlineSeconds from virtual pod to physical pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: ptr.To(int64(3600)),
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: nil,
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						ActiveDeadlineSeconds: nil,
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.ActiveDeadlineSeconds)
+				assert.Equal(t, int64(3600), *pod.Spec.ActiveDeadlineSeconds)
+			},
+		},
+		{
+			name: "should update ActiveDeadlineSeconds when value changes",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: ptr.To(int64(7200)),
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: ptr.To(int64(3600)),
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						ActiveDeadlineSeconds: ptr.To(int64(3600)),
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.ActiveDeadlineSeconds)
+				assert.Equal(t, int64(7200), *pod.Spec.ActiveDeadlineSeconds)
+			},
+		},
+		{
+			name: "should handle nil ActiveDeadlineSeconds in virtual pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: nil,
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: ptr.To(int64(3600)),
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						ActiveDeadlineSeconds: ptr.To(int64(3600)),
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.Nil(t, pod.Spec.ActiveDeadlineSeconds)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient: tt.setupClient(),
+				Log:            ctrl.Log.WithName("test"),
+			}
+
+			err := reconciler.syncVirtualPodMetadataAndSpecToPhysicalPod(ctx, tt.virtualPod, tt.physicalPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, reconciler.PhysicalClient)
+				}
+			}
+		})
+	}
 }
