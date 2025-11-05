@@ -3,6 +3,8 @@ package toppod
 import (
 	"context"
 	"crypto/md5"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -8092,4 +8094,642 @@ func TestVirtualPodReconciler_SyncSecretsWithEnvFrom(t *testing.T) {
 			}, tt.expectedResult, tt.expectError)
 		})
 	}
+}
+
+// TestVirtualPodReconciler_filterVirtualPodAnnotations tests filtering virtual pod annotations
+func TestVirtualPodReconciler_filterVirtualPodAnnotations(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		expected    map[string]string
+	}{
+		{
+			name: "should filter kubeocean internal annotations",
+			annotations: map[string]string{
+				"custom-annotation":                         "value1",
+				cloudv1beta1.AnnotationLastSyncTime:         "2024-01-01",
+				cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
+				cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+				cloudv1beta1.AnnotationPhysicalPodUID:       "uid-123",
+				"another-custom":                            "value2",
+			},
+			expected: map[string]string{
+				"custom-annotation": "value1",
+				"another-custom":    "value2",
+			},
+		},
+		{
+			name:        "should return empty map for nil input",
+			annotations: nil,
+			expected:    map[string]string{},
+		},
+		{
+			name:        "should return empty map for empty input",
+			annotations: map[string]string{},
+			expected:    map[string]string{},
+		},
+		{
+			name: "should keep all annotations when no kubeocean annotations present",
+			annotations: map[string]string{
+				"custom-1": "value1",
+				"custom-2": "value2",
+			},
+			expected: map[string]string{
+				"custom-1": "value1",
+				"custom-2": "value2",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			result := reconciler.filterVirtualPodAnnotations(tt.annotations)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_filterVirtualPodLabels tests filtering virtual pod labels
+func TestVirtualPodReconciler_filterVirtualPodLabels(t *testing.T) {
+	tests := []struct {
+		name     string
+		labels   map[string]string
+		expected map[string]string
+	}{
+		{
+			name: "should filter kubeocean managed-by label",
+			labels: map[string]string{
+				"custom-label":              "value1",
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				"another-custom":            "value2",
+			},
+			expected: map[string]string{
+				"custom-label":   "value1",
+				"another-custom": "value2",
+			},
+		},
+		{
+			name:     "should return empty map for nil input",
+			labels:   nil,
+			expected: map[string]string{},
+		},
+		{
+			name:     "should return empty map for empty input",
+			labels:   map[string]string{},
+			expected: map[string]string{},
+		},
+		{
+			name: "should keep all labels when no managed-by label present",
+			labels: map[string]string{
+				"custom-1": "value1",
+				"custom-2": "value2",
+			},
+			expected: map[string]string{
+				"custom-1": "value1",
+				"custom-2": "value2",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			result := reconciler.filterVirtualPodLabels(tt.labels)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_outputExpectedPodMetadataToAnnotation tests outputting expected metadata
+func TestVirtualPodReconciler_outputExpectedPodMetadataToAnnotation(t *testing.T) {
+	tests := []struct {
+		name         string
+		metadata     *ExpectedPodMetadata
+		expectError  bool
+		validateFunc func(t *testing.T, result string)
+	}{
+		{
+			name: "should encode metadata successfully",
+			metadata: &ExpectedPodMetadata{
+				Labels: map[string]string{
+					"label1": "value1",
+					"label2": "value2",
+				},
+				Annotations: map[string]string{
+					"annotation1": "value1",
+					"annotation2": "value2",
+				},
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, result string) {
+				assert.NotEmpty(t, result)
+				// Decode and verify
+				decoded, err := base64.StdEncoding.DecodeString(result)
+				assert.NoError(t, err)
+				var metadata ExpectedPodMetadata
+				err = json.Unmarshal(decoded, &metadata)
+				assert.NoError(t, err)
+				assert.Equal(t, 2, len(metadata.Labels))
+				assert.Equal(t, 2, len(metadata.Annotations))
+			},
+		},
+		{
+			name: "should handle empty metadata",
+			metadata: &ExpectedPodMetadata{
+				Labels:      map[string]string{},
+				Annotations: map[string]string{},
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, result string) {
+				assert.NotEmpty(t, result)
+			},
+		},
+		{
+			name: "should handle nil maps in metadata",
+			metadata: &ExpectedPodMetadata{
+				Labels:      nil,
+				Annotations: nil,
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, result string) {
+				assert.NotEmpty(t, result)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			result, err := reconciler.outputExpectedPodMetadataToAnnotation(tt.metadata)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, result)
+				}
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_getExpectedPodMetadataFromAnnotation tests getting expected metadata from annotation
+func TestVirtualPodReconciler_getExpectedPodMetadataFromAnnotation(t *testing.T) {
+	// Helper to create encoded metadata
+	createEncodedMetadata := func(metadata *ExpectedPodMetadata) string {
+		bytes, _ := json.Marshal(metadata)
+		return base64.StdEncoding.EncodeToString(bytes)
+	}
+
+	tests := []struct {
+		name        string
+		pod         *corev1.Pod
+		expected    *ExpectedPodMetadata
+		expectError bool
+	}{
+		{
+			name: "should decode metadata successfully",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedMetadata(&ExpectedPodMetadata{
+							Labels: map[string]string{
+								"label1": "value1",
+							},
+							Annotations: map[string]string{
+								"annotation1": "value1",
+							},
+						}),
+					},
+				},
+			},
+			expected: &ExpectedPodMetadata{
+				Labels: map[string]string{
+					"label1": "value1",
+				},
+				Annotations: map[string]string{
+					"annotation1": "value1",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "should return empty metadata when annotation is missing",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"other-annotation": "value",
+					},
+				},
+			},
+			expected:    &ExpectedPodMetadata{},
+			expectError: false,
+		},
+		{
+			name: "should return empty metadata when annotations map is nil",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: nil,
+				},
+			},
+			expected:    &ExpectedPodMetadata{},
+			expectError: false,
+		},
+		{
+			name: "should return empty metadata when annotation is empty",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: "",
+					},
+				},
+			},
+			expected:    &ExpectedPodMetadata{},
+			expectError: false,
+		},
+		{
+			name: "should return error for invalid base64",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: "invalid-base64!@#",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "should return error for invalid json",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: base64.StdEncoding.EncodeToString([]byte("invalid json")),
+					},
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			result, err := reconciler.getExpectedPodMetadataFromAnnotation(tt.pod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_syncMetadata tests the generic metadata sync function
+func TestVirtualPodReconciler_syncMetadata(t *testing.T) {
+	tests := []struct {
+		name             string
+		target           map[string]string
+		previousExpected map[string]string
+		current          map[string]string
+		metadataType     string
+		expectedTarget   map[string]string
+		expectedUpdated  bool
+	}{
+		{
+			name: "should add new metadata",
+			target: map[string]string{
+				"existing": "value",
+			},
+			previousExpected: map[string]string{},
+			current: map[string]string{
+				"existing": "value",
+				"new-key":  "new-value",
+			},
+			metadataType: "label",
+			expectedTarget: map[string]string{
+				"existing": "value",
+				"new-key":  "new-value",
+			},
+			expectedUpdated: true,
+		},
+		{
+			name: "should update changed metadata",
+			target: map[string]string{
+				"key1": "old-value",
+			},
+			previousExpected: map[string]string{
+				"key1": "old-value",
+			},
+			current: map[string]string{
+				"key1": "new-value",
+			},
+			metadataType: "annotation",
+			expectedTarget: map[string]string{
+				"key1": "new-value",
+			},
+			expectedUpdated: true,
+		},
+		{
+			name: "should remove deleted metadata",
+			target: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+			previousExpected: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+			current: map[string]string{
+				"key1": "value1",
+			},
+			metadataType: "label",
+			expectedTarget: map[string]string{
+				"key1": "value1",
+			},
+			expectedUpdated: true,
+		},
+		{
+			name: "should not update when no changes",
+			target: map[string]string{
+				"key1": "value1",
+			},
+			previousExpected: map[string]string{
+				"key1": "value1",
+			},
+			current: map[string]string{
+				"key1": "value1",
+			},
+			metadataType: "annotation",
+			expectedTarget: map[string]string{
+				"key1": "value1",
+			},
+			expectedUpdated: false,
+		},
+		{
+			name:             "should handle empty maps",
+			target:           map[string]string{},
+			previousExpected: map[string]string{},
+			current:          map[string]string{},
+			metadataType:     "label",
+			expectedTarget:   map[string]string{},
+			expectedUpdated:  false,
+		},
+		{
+			name: "should handle complex scenario with add, update, and delete",
+			target: map[string]string{
+				"keep":   "value",
+				"update": "old-value",
+				"delete": "value",
+			},
+			previousExpected: map[string]string{
+				"keep":   "value",
+				"update": "old-value",
+				"delete": "value",
+			},
+			current: map[string]string{
+				"keep":   "value",
+				"update": "new-value",
+				"add":    "new",
+			},
+			metadataType: "annotation",
+			expectedTarget: map[string]string{
+				"keep":   "value",
+				"update": "new-value",
+				"add":    "new",
+			},
+			expectedUpdated: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			updated := reconciler.syncMetadata(tt.target, tt.previousExpected, tt.current, tt.metadataType, reconciler.Log)
+
+			assert.Equal(t, tt.expectedUpdated, updated)
+			assert.Equal(t, tt.expectedTarget, tt.target)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_syncVirtualPodMetadataToPhysicalPod tests syncing virtual pod metadata to physical pod
+func TestVirtualPodReconciler_syncVirtualPodMetadataToPhysicalPod(t *testing.T) {
+	tests := []struct {
+		name         string
+		virtualPod   *corev1.Pod
+		physicalPod  *corev1.Pod
+		setupClient  func() client.Client
+		expectError  bool
+		validateFunc func(t *testing.T, client client.Client)
+	}{
+		{
+			name: "should skip sync when physical pod has no expected-metadata annotation",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					Labels: map[string]string{
+						"app": "test",
+					},
+					Annotations: map[string]string{
+						"custom": "value",
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationVirtualPodName: "virtual-pod",
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				// No update should happen
+			},
+		},
+		{
+			name: "should sync new annotations and labels to physical pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					Labels: map[string]string{
+						"app":                       "test",
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+					},
+					Annotations: map[string]string{
+						"custom":                              "value",
+						cloudv1beta1.AnnotationPhysicalPodUID: "uid-123",
+						cloudv1beta1.AnnotationLastSyncTime:   "2024-01-01",
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Labels:    map[string]string{},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Labels:    map[string]string{},
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.Equal(t, "test", pod.Labels["app"])
+				assert.Equal(t, "value", pod.Annotations["custom"])
+			},
+		},
+		{
+			name: "should remove deleted annotations and labels from physical pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					Labels: map[string]string{
+						"keep-label": "value",
+					},
+					Annotations: map[string]string{
+						"keep-annotation": "value",
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Labels: map[string]string{
+						"keep-label":   "value",
+						"delete-label": "value",
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(
+							map[string]string{"keep-annotation": "value", "delete-annotation": "value"},
+							map[string]string{"keep-label": "value", "delete-label": "value"},
+						),
+						"keep-annotation":   "value",
+						"delete-annotation": "value",
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Labels: map[string]string{
+							"keep-label":   "value",
+							"delete-label": "value",
+						},
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(
+								map[string]string{"keep-annotation": "value", "delete-annotation": "value"},
+								map[string]string{"keep-label": "value", "delete-label": "value"},
+							),
+							"keep-annotation":   "value",
+							"delete-annotation": "value",
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.Equal(t, "value", pod.Labels["keep-label"])
+				assert.NotContains(t, pod.Labels, "delete-label")
+				assert.Equal(t, "value", pod.Annotations["keep-annotation"])
+				assert.NotContains(t, pod.Annotations, "delete-annotation")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient: tt.setupClient(),
+				Log:            ctrl.Log.WithName("test"),
+			}
+
+			err := reconciler.syncVirtualPodMetadataToPhysicalPod(ctx, tt.virtualPod, tt.physicalPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, reconciler.PhysicalClient)
+				}
+			}
+		})
+	}
+}
+
+// Helper function to create encoded expected metadata
+func createEncodedExpectedMetadata(annotations, labels map[string]string) string {
+	metadata := &ExpectedPodMetadata{
+		Annotations: annotations,
+		Labels:      labels,
+	}
+	bytes, _ := json.Marshal(metadata)
+	return base64.StdEncoding.EncodeToString(bytes)
 }

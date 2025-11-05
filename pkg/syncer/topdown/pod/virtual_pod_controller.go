@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -48,6 +49,12 @@ const (
 var (
 	PhysicalPodSchedulingTimeout = 5 * time.Minute
 )
+
+// ExpectedPodMetadata represents the expected metadata for a physical pod
+type ExpectedPodMetadata struct {
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
 
 // VirtualPodReconciler reconciles Pod objects from virtual cluster
 // This implements requirement 5.1, 5.2, 5.4, 5.5 - Top-down Pod synchronization
@@ -138,6 +145,12 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
 			"physicalUID", actualPhysicalUID)
 		return r.updateVirtualPodWithPhysicalUID(ctx, virtualPod, actualPhysicalUID)
+	}
+
+	// Physical pod exists and UID is already set, sync metadata to physical pod
+	if err := r.syncVirtualPodMetadataToPhysicalPod(ctx, virtualPod, physicalPod); err != nil {
+		logger.Error(err, "Failed to sync virtual pod metadata to physical pod")
+		return ctrl.Result{}, err
 	}
 
 	// Physical pod exists and UID is already set, check if physical pod is scheduled
@@ -718,6 +731,24 @@ func (r *VirtualPodReconciler) buildPhysicalPodAnnotations(virtualPod *corev1.Po
 
 	// Add virtual node name annotation
 	annotations[cloudv1beta1.AnnotationVirtualNodeName] = virtualPod.Spec.NodeName
+
+	// Add initial expected-metadata annotation
+	filteredAnnotations := r.filterVirtualPodAnnotations(virtualPod.Annotations)
+	filteredLabels := r.filterVirtualPodLabels(virtualPod.Labels)
+	expectedMetadata := &ExpectedPodMetadata{
+		Annotations: filteredAnnotations,
+		Labels:      filteredLabels,
+	}
+
+	var encodedMetadata string
+	encodedMetadata, err := r.outputExpectedPodMetadataToAnnotation(expectedMetadata)
+	if err != nil {
+		r.Log.Error(err, "Failed to save initial expected metadata to annotation",
+			"virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+	} else {
+		// Copy the expected-metadata annotation back to our annotations map
+		annotations[cloudv1beta1.AnnotationExpectedMetadata] = encodedMetadata
+	}
 
 	return annotations
 }
@@ -2326,5 +2357,184 @@ func (r *VirtualPodReconciler) ensureDefaultPriorityClass(ctx context.Context) e
 	}
 
 	logger.Info("Successfully created default PriorityClass")
+	return nil
+}
+
+// getExpectedPodMetadataFromAnnotation retrieves the expected metadata from physical pod annotation
+func (r *VirtualPodReconciler) getExpectedPodMetadataFromAnnotation(pod *corev1.Pod) (*ExpectedPodMetadata, error) {
+	if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationExpectedMetadata] == "" {
+		return &ExpectedPodMetadata{}, nil
+	}
+
+	encodedMetadata, exists := pod.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
+	if !exists {
+		return &ExpectedPodMetadata{}, nil
+	}
+
+	// Base64 decode the metadata
+	metadataBytes, err := base64.StdEncoding.DecodeString(encodedMetadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to base64 decode expected metadata: %w", err)
+	}
+
+	// JSON unmarshal the decoded data
+	var metadata ExpectedPodMetadata
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal expected metadata: %w", err)
+	}
+
+	return &metadata, nil
+}
+
+// outputExpectedPodMetadataToAnnotation output the expected metadata to physical pod annotation
+func (r *VirtualPodReconciler) outputExpectedPodMetadataToAnnotation(metadata *ExpectedPodMetadata) (string, error) {
+	// JSON marshal the metadata
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal expected metadata: %w", err)
+	}
+
+	// Base64 encode the JSON data
+	encodedMetadata := base64.StdEncoding.EncodeToString(metadataBytes)
+	return encodedMetadata, nil
+}
+
+// filterVirtualPodAnnotations removes kubeocean internal annotations from virtual pod
+func (r *VirtualPodReconciler) filterVirtualPodAnnotations(annotations map[string]string) map[string]string {
+	if annotations == nil {
+		return make(map[string]string)
+	}
+
+	filtered := make(map[string]string)
+	for k, v := range annotations {
+		// Skip kubeocean internal annotations
+		if k != cloudv1beta1.AnnotationLastSyncTime &&
+			k != cloudv1beta1.AnnotationPhysicalPodName &&
+			k != cloudv1beta1.AnnotationPhysicalPodNamespace &&
+			k != cloudv1beta1.AnnotationPhysicalPodUID {
+			filtered[k] = v
+		}
+	}
+	return filtered
+}
+
+// filterVirtualPodLabels removes kubeocean managed-by label from virtual pod
+func (r *VirtualPodReconciler) filterVirtualPodLabels(labels map[string]string) map[string]string {
+	if labels == nil {
+		return make(map[string]string)
+	}
+
+	filtered := make(map[string]string)
+	for k, v := range labels {
+		// Skip kubeocean managed-by label
+		if k != cloudv1beta1.LabelManagedBy {
+			filtered[k] = v
+		}
+	}
+	return filtered
+}
+
+// syncMetadata synchronizes metadata (annotations or labels) between expected, current and target maps
+// Returns true if any updates were made
+func (r *VirtualPodReconciler) syncMetadata(target, previousExpected, current map[string]string, metadataType string, logger logr.Logger) bool {
+	updated := false
+
+	// 1. Add or update metadata from current
+	for k, v := range current {
+		// Only update if the value changed from previous expected or target doesn't match
+		if previousExpected[k] != v && target[k] != v {
+			target[k] = v
+			updated = true
+			logger.Info(fmt.Sprintf("Updating physical pod %s", metadataType), "key", k, "value", v)
+		}
+	}
+
+	// 2. Remove metadata that were in previous expected but not in current
+	for k := range previousExpected {
+		if _, exists := current[k]; !exists {
+			// This metadata was removed from virtual pod, remove it from physical pod
+			if _, exists := target[k]; exists {
+				delete(target, k)
+				updated = true
+				logger.Info(fmt.Sprintf("Removing physical pod %s", metadataType), "key", k)
+			}
+		}
+	}
+
+	return updated
+}
+
+// syncVirtualPodMetadataToPhysicalPod syncs virtual pod metadata (annotations and labels) to physical pod
+func (r *VirtualPodReconciler) syncVirtualPodMetadataToPhysicalPod(ctx context.Context, virtualPod *corev1.Pod, physicalPod *corev1.Pod) error {
+	logger := r.Log.WithValues(
+		"virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name),
+		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+
+	// Check if physical pod has expected-metadata annotation
+	if physicalPod.Annotations == nil || physicalPod.Annotations[cloudv1beta1.AnnotationExpectedMetadata] == "" {
+		logger.V(1).Info("Physical pod does not have expected-metadata annotation, skipping sync")
+		return nil
+	}
+
+	// Get previous expected metadata from physical pod
+	previousExpected, err := r.getExpectedPodMetadataFromAnnotation(physicalPod)
+	if err != nil {
+		return fmt.Errorf("failed to get previous expected metadata: %w", err)
+	}
+
+	// Filter virtual pod annotations and labels (remove kubeocean internal ones)
+	currentAnnotations := r.filterVirtualPodAnnotations(virtualPod.Annotations)
+	currentLabels := r.filterVirtualPodLabels(virtualPod.Labels)
+
+	// Create new expected metadata
+	newExpected := &ExpectedPodMetadata{
+		Annotations: currentAnnotations,
+		Labels:      currentLabels,
+	}
+
+	// Check if we need to update physical pod
+	needsUpdate := false
+	updatedPhysicalPod := physicalPod.DeepCopy()
+
+	// Initialize maps if nil
+	if updatedPhysicalPod.Annotations == nil {
+		updatedPhysicalPod.Annotations = make(map[string]string)
+	}
+	if updatedPhysicalPod.Labels == nil {
+		updatedPhysicalPod.Labels = make(map[string]string)
+	}
+
+	// Sync annotations
+	if r.syncMetadata(updatedPhysicalPod.Annotations, previousExpected.Annotations, currentAnnotations, "annotation", logger) {
+		needsUpdate = true
+	}
+
+	// Sync labels
+	if r.syncMetadata(updatedPhysicalPod.Labels, previousExpected.Labels, currentLabels, "label", logger) {
+		needsUpdate = true
+	}
+
+	// generate new expected metadata to physical pod annotation
+	var encodedMetadata string
+	if encodedMetadata, err = r.outputExpectedPodMetadataToAnnotation(newExpected); err != nil {
+		return fmt.Errorf("failed to generate expected metadata: %w", err)
+	}
+	if encodedMetadata != updatedPhysicalPod.Annotations[cloudv1beta1.AnnotationExpectedMetadata] {
+		updatedPhysicalPod.Annotations[cloudv1beta1.AnnotationExpectedMetadata] = encodedMetadata
+		needsUpdate = true
+	}
+
+	if !needsUpdate {
+		logger.V(1).Info("No updates needed for physical pod metadata")
+		return nil
+	}
+
+	// Always update to save new expected metadata or metadata changes
+	if err := r.PhysicalClient.Update(ctx, updatedPhysicalPod); err != nil {
+		logger.Error(err, "Failed to update physical pod metadata")
+		return fmt.Errorf("failed to update physical pod metadata: %w", err)
+	}
+
+	logger.Info("Successfully synced virtual pod metadata to physical pod")
 	return nil
 }
