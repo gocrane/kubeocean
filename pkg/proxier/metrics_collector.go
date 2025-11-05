@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apiserver/pkg/util/flushwriter"
 	"k8s.io/client-go/kubernetes"
 	clientremotecommand "k8s.io/client-go/tools/remotecommand"
 
@@ -729,7 +731,7 @@ func (va *VNodeProxierAgent) handleContainerLogs(w http.ResponseWriter, r *http.
 		return
 	}
 
-	va.log.Info("Parsed log options successfully", "namespace", namespace, "pod", pod, "container", container)
+	va.log.Info("Parsed log options successfully", "namespace", namespace, "pod", pod, "container", container, "opts", opts)
 
 	// Get logs from proxy
 	logs, err := va.kubeletProxy.GetContainerLogs(r.Context(), namespace, pod, container, opts)
@@ -740,12 +742,17 @@ func (va *VNodeProxierAgent) handleContainerLogs(w http.ResponseWriter, r *http.
 	}
 	defer logs.Close()
 
+	if _, ok := w.(http.Flusher); !ok {
+		va.log.Error(fmt.Errorf("unable to convert %v into http.Flusher, cannot show logs", reflect.TypeOf(w)), "Failed to get container logs", "namespace", namespace, "pod", pod, "container", container)
+		return
+	}
+	fw := flushwriter.Wrap(w)
+
 	// Set response headers
 	w.Header().Set("Transfer-Encoding", "chunked")
-	w.Header().Set("Content-Type", "text/plain")
 
 	// Stream logs to client
-	_, err = io.Copy(w, logs)
+	_, err = io.Copy(fw, logs)
 	if err != nil {
 		va.log.Error(err, "Failed to stream logs to client", "namespace", namespace, "pod", pod, "container", container)
 	}
