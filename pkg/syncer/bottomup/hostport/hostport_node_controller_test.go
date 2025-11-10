@@ -1100,6 +1100,189 @@ func TestHostPortNodeReconciler_handleVirtualNodeEvent(t *testing.T) {
 	}
 }
 
+func TestHostPortNodeReconciler_PatchFakePodScheduledCondition(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	tests := []struct {
+		name                      string
+		pod                       *corev1.Pod
+		expectError               bool
+		shouldPatch               bool
+		expectConditionSet        bool
+		expectConditionStatusTrue bool
+		description               string
+	}{
+		{
+			name: "pod already has PodScheduled condition",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: FakePodNamespace,
+				},
+				Status: corev1.PodStatus{
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodScheduled,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expectError:               false,
+			shouldPatch:               false,
+			expectConditionSet:        true,
+			expectConditionStatusTrue: true,
+			description:               "Should skip patching when PodScheduled condition already exists",
+		},
+		{
+			name: "pod has no conditions",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: FakePodNamespace,
+				},
+				Status: corev1.PodStatus{
+					Conditions: []corev1.PodCondition{},
+				},
+			},
+			expectError:               false,
+			shouldPatch:               true,
+			expectConditionSet:        true,
+			expectConditionStatusTrue: true,
+			description:               "Should add PodScheduled condition when pod has no conditions",
+		},
+		{
+			name: "pod has other conditions but no PodScheduled",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: FakePodNamespace,
+				},
+				Status: corev1.PodStatus{
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodInitialized,
+							Status: corev1.ConditionTrue,
+						},
+						{
+							Type:   corev1.PodReady,
+							Status: corev1.ConditionFalse,
+						},
+					},
+				},
+			},
+			expectError:               false,
+			shouldPatch:               true,
+			expectConditionSet:        true,
+			expectConditionStatusTrue: true,
+			description:               "Should add PodScheduled condition when other conditions exist",
+		},
+		{
+			name: "pod with nil status conditions",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: FakePodNamespace,
+				},
+			},
+			expectError:               false,
+			shouldPatch:               true,
+			expectConditionSet:        true,
+			expectConditionStatusTrue: true,
+			description:               "Should add PodScheduled condition when status conditions is nil",
+		},
+		{
+			name: "pod has PodScheduled with False status",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: FakePodNamespace,
+				},
+				Status: corev1.PodStatus{
+					Conditions: []corev1.PodCondition{
+						{
+							Type:   corev1.PodScheduled,
+							Status: corev1.ConditionFalse,
+						},
+					},
+				},
+			},
+			expectError:               false,
+			shouldPatch:               true,
+			expectConditionSet:        true,
+			expectConditionStatusTrue: true,
+			description:               "Should patch when PodScheduled condition is False",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create fake client with the pod
+			client := fakeclient.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.pod).
+				WithStatusSubresource(tt.pod).
+				Build()
+
+			reconciler := &HostPortNodeReconciler{
+				VirtualClient: client,
+				Log:           logr.Discard(),
+			}
+
+			// Record the original ResourceVersion
+			originalResourceVersion := tt.pod.ResourceVersion
+
+			// Call PatchFakePodScheduledCondition
+			err := reconciler.PatchFakePodScheduledCondition(context.Background(), tt.pod, reconciler.Log)
+
+			// Check error expectation
+			if tt.expectError {
+				assert.Error(t, err, tt.description)
+				return
+			}
+			assert.NoError(t, err, tt.description)
+
+			// Get the updated pod from the client
+			updatedPod := &corev1.Pod{}
+			err = client.Get(context.Background(), types.NamespacedName{
+				Name:      tt.pod.Name,
+				Namespace: tt.pod.Namespace,
+			}, updatedPod)
+			require.NoError(t, err, "Should be able to get updated pod")
+
+			// Check if condition was set
+			if tt.expectConditionSet {
+				found := false
+				for _, condition := range updatedPod.Status.Conditions {
+					if condition.Type == corev1.PodScheduled {
+						found = true
+						if tt.expectConditionStatusTrue {
+							assert.Equal(t, corev1.ConditionTrue, condition.Status, "PodScheduled condition should be True")
+						} else {
+							assert.Equal(t, corev1.ConditionFalse, condition.Status, "PodScheduled condition should remain False")
+						}
+						break
+					}
+				}
+				assert.True(t, found, "PodScheduled condition should exist")
+			}
+
+			// If patch was expected, ResourceVersion should change
+			if tt.shouldPatch {
+				// For fake client, ResourceVersion might not change, but we can verify the condition exists
+				assert.True(t, len(updatedPod.Status.Conditions) > 0, "Pod should have conditions after patch")
+			} else {
+				// If no patch expected, the original conditions should remain
+				if originalResourceVersion != "" {
+					// Original pod already had the condition
+					assert.True(t, len(updatedPod.Status.Conditions) > 0, "Pod should keep original conditions")
+				}
+			}
+		})
+	}
+}
+
 func TestConstants(t *testing.T) {
 	// Test that our constants have reasonable values
 	assert.Equal(t, "kubeocean-fake", FakePodNamespace, "Fake pod namespace should be kubeocean-fake")

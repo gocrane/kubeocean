@@ -468,8 +468,14 @@ func (r *HostPortNodeReconciler) handleFakePod(ctx context.Context, virtualNodeN
 			return fmt.Errorf("failed to create fake pod: %w", err)
 		}
 		logger.Info("Created new fake pod for hostPorts", "fakePod", desiredFakePod.Name)
+		if err := r.PatchFakePodScheduledCondition(ctx, desiredFakePod, logger); err != nil {
+			return fmt.Errorf("failed to patch fake pod scheduled condition: %w", err)
+		}
 	} else {
 		logger.Info("Found existing fake pod for hostPorts, skip creation", "fakePod", correctFakePod.Name, "hostPorts", hostPorts)
+		if err := r.PatchFakePodScheduledCondition(ctx, correctFakePod, logger); err != nil {
+			return fmt.Errorf("failed to patch fake pod scheduled condition: %w", err)
+		}
 	}
 
 	// Delete extra fake pods
@@ -480,6 +486,28 @@ func (r *HostPortNodeReconciler) handleFakePod(ctx context.Context, virtualNodeN
 		}
 	}
 
+	return nil
+}
+
+func (r *HostPortNodeReconciler) PatchFakePodScheduledCondition(ctx context.Context, pod *corev1.Pod, logger logr.Logger) error {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionTrue {
+			return nil
+		}
+	}
+	podCopy := pod.DeepCopy()
+	podCopy.Status.Conditions = []corev1.PodCondition{
+		{
+			Type:               corev1.PodScheduled,
+			Status:             corev1.ConditionTrue,
+			LastProbeTime:      metav1.Now(),
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+	if err := r.VirtualClient.Status().Patch(ctx, podCopy, client.MergeFrom(pod)); err != nil {
+		return fmt.Errorf("failed to patch fake pod status: %w", err)
+	}
+	logger.Info("Patched fake pod scheduled condition", "pod", podCopy.Name)
 	return nil
 }
 
