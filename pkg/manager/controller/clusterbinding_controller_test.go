@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	fakek8s "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -150,6 +151,7 @@ func TestClusterBindingReconciler_validateClusterBinding(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 			reconciler := NewClusterBindingReconciler(
 				fakeClient,
+				fakek8s.NewSimpleClientset(),
 				scheme,
 				zap.New(zap.UseDevMode(true)),
 				record.NewFakeRecorder(10),
@@ -287,6 +289,7 @@ func TestClusterBindingReconciler_validateClusterIDConsistency(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 			reconciler := NewClusterBindingReconciler(
 				fakeClient,
+				fakek8s.NewSimpleClientset(),
 				scheme,
 				zap.New(zap.UseDevMode(true)),
 				record.NewFakeRecorder(10),
@@ -317,6 +320,7 @@ func TestClusterBindingReconciler_cleanupClusterIDMappings(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reconciler := NewClusterBindingReconciler(
 		fakeClient,
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(10),
@@ -464,6 +468,7 @@ func TestClusterBindingReconciler_readKubeconfigSecret(t *testing.T) {
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 			reconciler := NewClusterBindingReconciler(
 				fakeClient,
+				fakek8s.NewSimpleClientset(),
 				scheme,
 				zap.New(zap.UseDevMode(true)),
 				record.NewFakeRecorder(10),
@@ -566,6 +571,7 @@ users:
 
 	reconciler := NewClusterBindingReconciler(
 		fakeClient,
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(100),
@@ -620,6 +626,7 @@ func TestClusterBindingReconciler_SyncerCreation(t *testing.T) {
 	// Create the reconciler
 	reconciler := NewClusterBindingReconciler(
 		fakeClient,
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(100),
@@ -827,6 +834,7 @@ spec:
 
 			reconciler := NewClusterBindingReconciler(
 				fakeClient,
+				fakek8s.NewSimpleClientset(),
 				scheme,
 				zap.New(zap.UseDevMode(true)),
 				record.NewFakeRecorder(100),
@@ -859,6 +867,7 @@ spec:
 	}
 }
 
+// TestClusterBindingReconciler_handleDeletion tests the deletion logic
 func TestClusterBindingReconciler_handleDeletion(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
@@ -988,6 +997,7 @@ spec:
 
 			reconciler := NewClusterBindingReconciler(
 				fakeClient,
+				fakek8s.NewSimpleClientset(),
 				scheme,
 				zap.New(zap.UseDevMode(true)),
 				record.NewFakeRecorder(100),
@@ -1017,6 +1027,7 @@ spec:
 func TestClusterBindingReconciler_isCleanupComplete(t *testing.T) {
 	reconciler := NewClusterBindingReconciler(
 		fake.NewClientBuilder().Build(),
+		fakek8s.NewSimpleClientset(),
 		runtime.NewScheme(),
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(10),
@@ -1118,6 +1129,7 @@ func TestClusterBindingReconciler_createOrUpdateResource_DeploymentSkipsUpdate(t
 
 	reconciler := NewClusterBindingReconciler(
 		fakeClient,
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		ctrl.Log.WithName("test"),
 		record.NewFakeRecorder(10),
@@ -1203,6 +1215,7 @@ func TestClusterBindingReconciler_createOrUpdateResource_NonDeploymentUpdates(t 
 
 	reconciler := NewClusterBindingReconciler(
 		fakeClient,
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		ctrl.Log.WithName("test"),
 		record.NewFakeRecorder(10),
@@ -1329,6 +1342,7 @@ spec:
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 			reconciler := NewClusterBindingReconciler(
 				fakeClient,
+				fakek8s.NewSimpleClientset(),
 				scheme,
 				zap.New(zap.UseDevMode(true)),
 				record.NewFakeRecorder(10),
@@ -1490,6 +1504,7 @@ spec:
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 			reconciler := NewClusterBindingReconciler(
 				fakeClient,
+				fakek8s.NewSimpleClientset(),
 				scheme,
 				zap.New(zap.UseDevMode(true)),
 				record.NewFakeRecorder(10),
@@ -1630,6 +1645,7 @@ func TestClusterBindingReconciler_prepareProxierTemplateData_TLS(t *testing.T) {
 
 			reconciler := NewClusterBindingReconciler(
 				fake.NewClientBuilder().Build(),
+				fakek8s.NewSimpleClientset(),
 				runtime.NewScheme(),
 				zap.New(zap.UseDevMode(true)),
 				record.NewFakeRecorder(10),
@@ -1671,6 +1687,7 @@ func TestClusterBindingReconciler_handleDeletion_WaitForSyncerFinalizer(t *testi
 
 	reconciler := NewClusterBindingReconciler(
 		fakeClient,
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(100),
@@ -1689,6 +1706,7 @@ func TestClusterBindingReconciler_updateCondition(t *testing.T) {
 
 	reconciler := NewClusterBindingReconciler(
 		fake.NewClientBuilder().Build(),
+		fakek8s.NewSimpleClientset(),
 		runtime.NewScheme(),
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(10),
@@ -1809,6 +1827,7 @@ func TestClusterBindingReconciler_Reconcile_ResourceNotFound(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reconciler := NewClusterBindingReconciler(
 		fakeClient,
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(10),
@@ -1860,6 +1879,7 @@ func TestClusterBindingReconciler_Reconcile_ValidationFailure(t *testing.T) {
 
 	reconciler := NewClusterBindingReconciler(
 		fakeClient,
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(100),
@@ -1898,6 +1918,7 @@ func TestClusterBindingReconciler_SetupWithManager(t *testing.T) {
 
 	reconciler := NewClusterBindingReconciler(
 		fake.NewClientBuilder().WithScheme(scheme).Build(),
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(10),
@@ -1916,6 +1937,7 @@ func TestClusterBindingReconciler_SetupWithManagerAndName(t *testing.T) {
 
 	reconciler := NewClusterBindingReconciler(
 		fake.NewClientBuilder().WithScheme(scheme).Build(),
+		fakek8s.NewSimpleClientset(),
 		scheme,
 		zap.New(zap.UseDevMode(true)),
 		record.NewFakeRecorder(10),

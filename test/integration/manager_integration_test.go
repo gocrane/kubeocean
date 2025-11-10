@@ -50,6 +50,7 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 		// Start manager and register ClusterBindingReconciler (once only)
 		reconciler := controllerpkg.NewClusterBindingReconciler(
 			k8sVirtual,
+			k8sVirtualClient,
 			scheme,
 			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
 			record.NewFakeRecorder(100),
@@ -103,6 +104,7 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 		// Register controller (once) and start manager
 		reconciler := controllerpkg.NewClusterBindingReconciler(
 			k8sVirtual,
+			k8sVirtualClient,
 			scheme,
 			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
 			record.NewFakeRecorder(100),
@@ -171,6 +173,7 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 		// Ensure manager is started
 		reconciler := controllerpkg.NewClusterBindingReconciler(
 			k8sVirtual,
+			k8sVirtualClient,
 			scheme,
 			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
 			record.NewFakeRecorder(100),
@@ -216,6 +219,7 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 		// Ensure manager is started
 		reconciler := controllerpkg.NewClusterBindingReconciler(
 			k8sVirtual,
+			k8sVirtualClient,
 			scheme,
 			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
 			record.NewFakeRecorder(100),
@@ -266,6 +270,7 @@ var _ = ginkgo.Describe("Manager Integration Tests", func() {
 		// Register controller and start manager
 		reconciler := controllerpkg.NewClusterBindingReconciler(
 			k8sVirtual,
+			k8sVirtualClient,
 			scheme,
 			ctrl.Log.WithName("e2e").WithName("ClusterBinding"),
 			record.NewFakeRecorder(100),
