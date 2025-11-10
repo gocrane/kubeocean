@@ -78,6 +78,7 @@ type VirtualPodReconciler struct {
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=core,resources=pods/ephemeralcontainers,verbs=get
 //+kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch;create;update;patch
 
 // Reconcile implements the main reconciliation logic for virtual pods
@@ -2535,17 +2536,27 @@ func (r *VirtualPodReconciler) syncVirtualPodMetadataAndSpecToPhysicalPod(ctx co
 		logger.Info("Updating physical pod active deadline seconds", "activeDeadlineSeconds", ptr.Deref(virtualPod.Spec.ActiveDeadlineSeconds, 0))
 	}
 
-	if !needsUpdate {
+	if needsUpdate {
+		// Always update to save new expected metadata or metadata changes
+		if err := r.PhysicalClient.Update(ctx, updatedPhysicalPod); err != nil {
+			logger.Error(err, "Failed to update physical pod metadata")
+			return fmt.Errorf("failed to update physical pod metadata: %w", err)
+		}
+		logger.Info("Successfully synced virtual pod metadata and spec to physical pod")
+	} else {
 		logger.V(1).Info("No updates needed for physical pod metadata and spec")
-		return nil
 	}
 
-	// Always update to save new expected metadata or metadata changes
-	if err := r.PhysicalClient.Update(ctx, updatedPhysicalPod); err != nil {
-		logger.Error(err, "Failed to update physical pod metadata")
-		return fmt.Errorf("failed to update physical pod metadata: %w", err)
+	if !reflect.DeepEqual(updatedPhysicalPod.Spec.EphemeralContainers, virtualPod.Spec.EphemeralContainers) {
+		logger.Info("Patching physical pod ephemeral containers", "ephemeralContainers", virtualPod.Spec.EphemeralContainers)
+		updatedPhysicalPodCopy := updatedPhysicalPod.DeepCopy()
+		updatedPhysicalPodCopy.Spec.EphemeralContainers = virtualPod.Spec.EphemeralContainers
+		err = r.PhysicalClient.SubResource("ephemeralcontainers").Patch(ctx, updatedPhysicalPodCopy, client.MergeFrom(updatedPhysicalPod))
+		if err != nil {
+			return fmt.Errorf("failed to patch physical pod ephemeral containers: %w", err)
+		}
+		logger.Info("Successfully patched physical pod ephemeral containers")
 	}
 
-	logger.Info("Successfully synced virtual pod metadata and spec to physical pod")
 	return nil
 }

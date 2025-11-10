@@ -50,6 +50,12 @@ rules:
   - patch
   - update
 - apiGroups:
+  - ""
+  resources:
+  - pods/ephemeralcontainers
+  verbs:
+  - get
+- apiGroups:
   - apps
   resources:
   - deployments

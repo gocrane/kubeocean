@@ -8925,3 +8925,325 @@ func TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_ActiveD
 		})
 	}
 }
+
+// TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_EphemeralContainers tests EphemeralContainers sync
+func TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_EphemeralContainers(t *testing.T) {
+	tests := []struct {
+		name         string
+		virtualPod   *corev1.Pod
+		physicalPod  *corev1.Pod
+		setupClient  func() client.Client
+		expectError  bool
+		validateFunc func(t *testing.T, client client.Client)
+	}{
+		{
+			name: "should sync EphemeralContainers from virtual pod to physical pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						EphemeralContainers: []corev1.EphemeralContainer{},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.EphemeralContainers)
+				assert.Len(t, pod.Spec.EphemeralContainers, 1)
+				assert.Equal(t, "debug-container", pod.Spec.EphemeralContainers[0].Name)
+				assert.Equal(t, "busybox:latest", pod.Spec.EphemeralContainers[0].Image)
+			},
+		},
+		{
+			name: "should update EphemeralContainers when value changes",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container-2",
+								Image: "alpine:latest",
+							},
+						},
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						EphemeralContainers: []corev1.EphemeralContainer{
+							{
+								EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+									Name:  "debug-container",
+									Image: "busybox:latest",
+								},
+							},
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.EphemeralContainers)
+				assert.Len(t, pod.Spec.EphemeralContainers, 2)
+				assert.Equal(t, "debug-container", pod.Spec.EphemeralContainers[0].Name)
+				assert.Equal(t, "busybox:latest", pod.Spec.EphemeralContainers[0].Image)
+				assert.Equal(t, "debug-container-2", pod.Spec.EphemeralContainers[1].Name)
+				assert.Equal(t, "alpine:latest", pod.Spec.EphemeralContainers[1].Image)
+			},
+		},
+		{
+			name: "should handle nil EphemeralContainers in virtual pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: nil,
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						EphemeralContainers: []corev1.EphemeralContainer{
+							{
+								EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+									Name:  "debug-container",
+									Image: "busybox:latest",
+								},
+							},
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.Nil(t, pod.Spec.EphemeralContainers)
+			},
+		},
+		{
+			name: "should not update when EphemeralContainers are the same",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						EphemeralContainers: []corev1.EphemeralContainer{
+							{
+								EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+									Name:  "debug-container",
+									Image: "busybox:latest",
+								},
+							},
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.EphemeralContainers)
+				assert.Len(t, pod.Spec.EphemeralContainers, 1)
+				assert.Equal(t, "debug-container", pod.Spec.EphemeralContainers[0].Name)
+				assert.Equal(t, "busybox:latest", pod.Spec.EphemeralContainers[0].Image)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient: tt.setupClient(),
+				Log:            ctrl.Log.WithName("test"),
+			}
+
+			err := reconciler.syncVirtualPodMetadataAndSpecToPhysicalPod(ctx, tt.virtualPod, tt.physicalPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, reconciler.PhysicalClient)
+				}
+			}
+		})
+	}
+}
