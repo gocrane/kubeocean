@@ -24,7 +24,7 @@ manager:
   # Image configuration
   image:
     repository: kubeocean-manager
-    tag: v0.1.0
+    tag: v0.1.1
     pullPolicy: IfNotPresent
   # Replica count
   replicas: 2
@@ -111,7 +111,7 @@ syncer:
   # Image configuration
   image:
     repository: kubeocean-syncer
-    tag: v0.1.0
+    tag: v0.1.1
     pullPolicy: IfNotPresent
   # Default replica count for syncer instances
   replicas: 2
@@ -188,7 +188,7 @@ proxier:
   # Image configuration
   image:
     repository: kubeocean-proxier
-    tag: v0.1.0
+    tag: v0.1.1
     pullPolicy: IfNotPresent
   # Default replica count for proxier instances
   replicas: 2
