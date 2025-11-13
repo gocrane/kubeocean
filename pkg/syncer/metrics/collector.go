@@ -479,6 +479,12 @@ func (mc *MetricsCollector) countVirtualPodsByPhase(c client.Client) map[corev1.
 		return podCounts
 	}
 
+	// If RunningDaemonsetByDefault is true, allow DaemonSet pods to run by default
+	runningds, err := utils.IsRunningDaemonsetByDefault(ctx, c, mc.clusterbindingName)
+	if err != nil {
+		logger.Error(err, "Failed to get running daemonset by default")
+	}
+
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 
@@ -491,8 +497,8 @@ func (mc *MetricsCollector) countVirtualPodsByPhase(c client.Client) map[corev1.
 		if utils.IsSystemPod(pod) {
 			continue
 		}
-		// Skip DaemonSet pods unless they have the running annotation
-		if utils.IsDaemonSetPod(pod) {
+		// Skip DaemonSet pods unless RunningDaemonsetByDefault is true or they have the running annotation
+		if utils.IsDaemonSetPod(pod) && !runningds {
 			// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
 			if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
 				continue

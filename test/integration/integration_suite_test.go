@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -46,6 +47,8 @@ var (
 	suiteCtx        context.Context
 	suiteCancel     context.CancelFunc
 	uniqueID        string
+
+	k8sVirtualClient kubernetes.Interface
 )
 
 func TestE2E(t *testing.T) {
@@ -88,6 +91,8 @@ var _ = ginkgo.BeforeEach(func(ctx context.Context) {
 
 	// 构造两个集群的 client
 	k8sVirtual, err = client.New(cfgVirtual, client.Options{Scheme: scheme})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	k8sVirtualClient, err = kubernetes.NewForConfig(cfgVirtual)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	k8sPhysical, err = client.New(cfgPhysical, client.Options{Scheme: scheme})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())

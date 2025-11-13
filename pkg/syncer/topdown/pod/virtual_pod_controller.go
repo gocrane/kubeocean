@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -49,6 +51,12 @@ var (
 	PhysicalPodSchedulingTimeout = 5 * time.Minute
 )
 
+// ExpectedPodMetadata represents the expected metadata for a physical pod
+type ExpectedPodMetadata struct {
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
 // VirtualPodReconciler reconciles Pod objects from virtual cluster
 // This implements requirement 5.1, 5.2, 5.4, 5.5 - Top-down Pod synchronization
 type VirtualPodReconciler struct {
@@ -70,6 +78,7 @@ type VirtualPodReconciler struct {
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=core,resources=pods/ephemeralcontainers,verbs=get
 //+kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch;create;update;patch
 
 // Reconcile implements the main reconciliation logic for virtual pods
@@ -140,6 +149,12 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.updateVirtualPodWithPhysicalUID(ctx, virtualPod, actualPhysicalUID)
 	}
 
+	// Physical pod exists and UID is already set, sync metadata to physical pod
+	if err := r.syncVirtualPodMetadataAndSpecToPhysicalPod(ctx, virtualPod, physicalPod); err != nil {
+		logger.Error(err, "Failed to sync virtual pod metadata to physical pod")
+		return ctrl.Result{}, err
+	}
+
 	// Physical pod exists and UID is already set, check if physical pod is scheduled
 	if physicalPod.Spec.NodeName == "" {
 		return r.handleUnScheduledPhysicalPod(ctx, logger, virtualPod, physicalPod)
@@ -148,7 +163,7 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Physical pod is scheduled, check if service account token needs updating
 	if virtualPod.Spec.ServiceAccountName != "" {
 		// Check and update service account token, don't create if not exists
-		_, err = r.syncServiceAccountToken(ctx, virtualPod, false)
+		_, err = r.syncServiceAccountTokens(ctx, virtualPod, false)
 		if err != nil {
 			if !apierrors.IsNotFound(err) {
 				logger.Error(err, "Failed to check and update service account token")
@@ -220,13 +235,20 @@ func (r *VirtualPodReconciler) shouldCreatePhysicalPod(virtualPod *corev1.Pod) b
 	if utils.IsSystemPod(virtualPod) {
 		return false
 	}
+	clusterBindingName := ""
+	if r.ClusterBinding != nil {
+		clusterBindingName = r.ClusterBinding.Name
+	}
 	// Skip DaemonSet pods unless they have the running annotation
 	if utils.IsDaemonSetPod(virtualPod) {
-		// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
-		if virtualPod.Annotations == nil || virtualPod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
-			return false
+		// If RunningDaemonsetByDefault is true, allow DaemonSet pods to run by default
+		if runningds, _ := utils.IsRunningDaemonsetByDefault(context.TODO(), r.VirtualClient, clusterBindingName); !runningds {
+			// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
+			if virtualPod.Annotations == nil || virtualPod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
+				return false
+			}
+			// Allow DaemonSet pods with the running annotation to be synced
 		}
-		// Allow DaemonSet pods with the running annotation to be synced
 	}
 	if virtualPod.Labels[cloudv1beta1.LabelHostPortFakePod] == cloudv1beta1.LabelValueTrue {
 		return false
@@ -712,6 +734,24 @@ func (r *VirtualPodReconciler) buildPhysicalPodAnnotations(virtualPod *corev1.Po
 	// Add virtual node name annotation
 	annotations[cloudv1beta1.AnnotationVirtualNodeName] = virtualPod.Spec.NodeName
 
+	// Add initial expected-metadata annotation
+	filteredAnnotations := r.filterVirtualPodAnnotations(virtualPod.Annotations)
+	filteredLabels := r.filterVirtualPodLabels(virtualPod.Labels)
+	expectedMetadata := &ExpectedPodMetadata{
+		Annotations: filteredAnnotations,
+		Labels:      filteredLabels,
+	}
+
+	var encodedMetadata string
+	encodedMetadata, err := r.outputExpectedPodMetadataToAnnotation(expectedMetadata)
+	if err != nil {
+		r.Log.Error(err, "Failed to save initial expected metadata to annotation",
+			"virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+	} else {
+		// Copy the expected-metadata annotation back to our annotations map
+		annotations[cloudv1beta1.AnnotationExpectedMetadata] = encodedMetadata
+	}
+
 	return annotations
 }
 
@@ -828,7 +868,11 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 
 	// set hostname to virtual pod name if not set
 	if spec.Hostname == "" {
-		spec.Hostname = virtualPod.Name
+		hostname, err := utils.TruncateHostnameIfNeeded(r.Log, virtualPod.Name)
+		if err != nil {
+			return spec, fmt.Errorf("failed to truncate hostname: %w", err)
+		}
+		spec.Hostname = hostname
 	}
 
 	// Replace resource names in volumes
@@ -852,7 +896,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	}
 
 	// Configure DNS policy and DNS config
-	if err := r.configureDNSPolicy(ctx, &spec); err != nil {
+	if err := r.configureDNSPolicy(ctx, &spec, virtualPod.Namespace); err != nil {
 		return spec, err
 	}
 
@@ -874,9 +918,13 @@ func (r *VirtualPodReconciler) replaceVolumeResourceNames(spec *corev1.PodSpec, 
 			}
 		}
 
-		if strings.HasPrefix(volume.Name, "kube-api-access-") && virtualPod.Spec.ServiceAccountName != "" {
-			if err := r.replaceServiceAccountTokenVolume(volume, virtualPod, resourceMapping); err != nil {
-				return err
+		if volume.Projected != nil && virtualPod.Spec.ServiceAccountName != "" {
+			for _, source := range volume.Projected.Sources {
+				if source.ServiceAccountToken != nil {
+					if err := r.replaceServiceAccountTokenVolume(volume, virtualPod, resourceMapping); err != nil {
+						return err
+					}
+				}
 			}
 		}
 
@@ -946,25 +994,26 @@ func (r *VirtualPodReconciler) replaceProjectedVolumeResourceNames(volume *corev
 
 // replaceServiceAccountTokenVolume replaces service account token in kube-api-access volumes
 func (r *VirtualPodReconciler) replaceServiceAccountTokenVolume(volume *corev1.Volume, virtualPod *corev1.Pod, resourceMapping *ResourceMapping) error {
-	if resourceMapping.ServiceAccountTokenName == "" {
-		return fmt.Errorf("service account token mapping not found for virtual ServiceAccount: %s", virtualPod.Spec.ServiceAccountName)
+	saName, ok := resourceMapping.ServiceAccountTokenName[volume.Name]
+	if !ok {
+		return fmt.Errorf("service account token mapping not found for virtual ServiceAccount %s and volume %s", virtualPod.Spec.ServiceAccountName, volume.Name)
 	}
 	if volume.Projected != nil {
 		for j := range volume.Projected.Sources {
 			source := &volume.Projected.Sources[j]
 			if source.ServiceAccountToken != nil {
-				source.ServiceAccountToken = nil
 				source.Secret = &corev1.SecretProjection{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: resourceMapping.ServiceAccountTokenName,
+						Name: saName,
 					},
 					Items: []corev1.KeyToPath{
 						{
 							Key:  "token",
-							Path: "token",
+							Path: source.ServiceAccountToken.Path,
 						},
 					},
 				}
+				source.ServiceAccountToken = nil
 				break
 			}
 		}
@@ -1016,7 +1065,7 @@ func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spe
 	// Add hostAlias for kubernetes.default.svc
 	spec.HostAliases = append(spec.HostAliases, corev1.HostAlias{
 		IP:        kubernetesIntranetIP,
-		Hostnames: []string{"kubernetes.default.svc"},
+		Hostnames: []string{"kubernetes.default.svc", "kubernetes.default", "kubernetes", "kubernetes.default.svc.cluster.local"},
 	})
 
 	// Inject KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT environment variables to all containers
@@ -1038,7 +1087,7 @@ func (r *VirtualPodReconciler) addHostAliasesAndEnvVars(ctx context.Context, spe
 }
 
 // configureDNSPolicy configures DNS policy and DNS config
-func (r *VirtualPodReconciler) configureDNSPolicy(ctx context.Context, spec *corev1.PodSpec) error {
+func (r *VirtualPodReconciler) configureDNSPolicy(ctx context.Context, spec *corev1.PodSpec, namespace string) error {
 	// Configure DNS policy and DNS config
 	if spec.DNSPolicy == corev1.DNSClusterFirst || spec.DNSPolicy == corev1.DNSClusterFirstWithHostNet {
 		// Get kube-dns-intranet IP
@@ -1056,11 +1105,11 @@ func (r *VirtualPodReconciler) configureDNSPolicy(ctx context.Context, spec *cor
 			Options: []corev1.PodDNSConfigOption{
 				{
 					Name:  "ndots",
-					Value: ptr.To("3"),
+					Value: ptr.To("5"),
 				},
 			},
 			Searches: []string{
-				"default.svc.cluster.local",
+				fmt.Sprintf("%s.svc.cluster.local", namespace),
 				"svc.cluster.local",
 				"cluster.local",
 			},
@@ -1090,6 +1139,23 @@ func (r *VirtualPodReconciler) replaceContainerResourceNames(container *corev1.C
 				} else {
 					return fmt.Errorf("secret mapping not found for virtual Secret: %s", envVar.ValueFrom.SecretKeyRef.Name)
 				}
+			}
+		}
+	}
+
+	for _, envFrom := range container.EnvFrom {
+		if envFrom.ConfigMapRef != nil {
+			if physicalName, exists := resourceMapping.ConfigMaps[envFrom.ConfigMapRef.Name]; exists {
+				envFrom.ConfigMapRef.Name = physicalName
+			} else {
+				return fmt.Errorf("configMap mapping not found for virtual ConfigMap: %s", envFrom.ConfigMapRef.Name)
+			}
+		}
+		if envFrom.SecretRef != nil {
+			if physicalName, exists := resourceMapping.Secrets[envFrom.SecretRef.Name]; exists {
+				envFrom.SecretRef.Name = physicalName
+			} else {
+				return fmt.Errorf("secret mapping not found for virtual Secret: %s", envFrom.SecretRef.Name)
 			}
 		}
 	}
@@ -1174,11 +1240,18 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 			}
 			// Skip DaemonSet pods unless they have the running annotation
 			if utils.IsDaemonSetPod(pod) {
-				// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
-				if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
-					return false
+				clusterBindingName := ""
+				if r.ClusterBinding != nil {
+					clusterBindingName = r.ClusterBinding.Name
 				}
-				// Allow DaemonSet pods with the running annotation to be synced
+				// If RunningDaemonsetByDefault is true, allow DaemonSet pods to run by default
+				if runningds, _ := utils.IsRunningDaemonsetByDefault(context.TODO(), r.VirtualClient, clusterBindingName); !runningds {
+					// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
+					if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
+						return false
+					}
+					// Allow DaemonSet pods with the running annotation to be synced
+				}
 			}
 			return true
 		})).
@@ -1361,12 +1434,12 @@ func (r *VirtualPodReconciler) syncDependentResources(ctx context.Context, virtu
 		return nil, err
 	}
 
-	// 4. Sync ServiceAccountToken if ServiceAccountName is not empty
-	var serviceAccountTokenName string
+	// 4. Sync ServiceAccountTokens if ServiceAccountName is not empty
+	var serviceAccountTokenNames map[string]string
 	if virtualPod.Spec.ServiceAccountName != "" {
-		serviceAccountTokenName, err = r.syncServiceAccountToken(ctx, virtualPod, true) // Create if not exists during pod creation
+		serviceAccountTokenNames, err = r.syncServiceAccountTokens(ctx, virtualPod, true)
 		if err != nil {
-			logger.Error(err, "Failed to sync ServiceAccountToken")
+			logger.Error(err, "Failed to sync ServiceAccountTokens")
 			return nil, err
 		}
 	}
@@ -1376,7 +1449,7 @@ func (r *VirtualPodReconciler) syncDependentResources(ctx context.Context, virtu
 		ConfigMaps:              configMapMappings,
 		Secrets:                 secretMappings,
 		PVCs:                    pvcMappings,
-		ServiceAccountTokenName: serviceAccountTokenName,
+		ServiceAccountTokenName: serviceAccountTokenNames,
 	}
 
 	// 5. Poll to verify all resources are created in physical cluster
@@ -1467,19 +1540,19 @@ func (r *VirtualPodReconciler) pollPhysicalResources(ctx context.Context, resour
 		}
 
 		// Check ServiceAccountToken if exists
-		if resourceMapping.ServiceAccountTokenName != "" {
+		for volumeName, saName := range resourceMapping.ServiceAccountTokenName {
 			var secret corev1.Secret
-			err := r.PhysicalClient.Get(ctx, types.NamespacedName{Namespace: physicalNamespace, Name: resourceMapping.ServiceAccountTokenName}, &secret)
+			err := r.PhysicalClient.Get(ctx, types.NamespacedName{Namespace: physicalNamespace, Name: saName}, &secret)
 			if err != nil {
 				// For non-NotFound errors, return immediately
 				if !apierrors.IsNotFound(err) {
 					logger.Error(err, "Error checking ServiceAccountToken existence",
-						"physicalName", resourceMapping.ServiceAccountTokenName)
+						"physicalName", saName, "volumeName", volumeName)
 					return false, err
 				}
 				// Resource not found, continue polling
 				logger.V(1).Info("ServiceAccountToken not found, continuing to poll",
-					"physicalName", resourceMapping.ServiceAccountTokenName)
+					"physicalName", saName, "volumeName", volumeName)
 				return false, nil
 			}
 		}
@@ -1528,6 +1601,11 @@ func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *c
 				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = true
 			}
 		}
+		for _, envFrom := range container.EnvFrom {
+			if envFrom.ConfigMapRef != nil {
+				configMapRefs[envFrom.ConfigMapRef.Name] = true
+			}
+		}
 	}
 
 	// From init containers
@@ -1535,6 +1613,11 @@ func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *c
 		for _, envVar := range container.Env {
 			if envVar.ValueFrom != nil && envVar.ValueFrom.ConfigMapKeyRef != nil {
 				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = true
+			}
+		}
+		for _, envFrom := range container.EnvFrom {
+			if envFrom.ConfigMapRef != nil {
+				configMapRefs[envFrom.ConfigMapRef.Name] = true
 			}
 		}
 	}
@@ -1560,43 +1643,11 @@ func (r *VirtualPodReconciler) syncSecrets(ctx context.Context, virtualPod *core
 	// Collect all Secret references from pod spec
 	secretRefs := make(map[string]bool)
 
-	// From volumes
-	for _, volume := range virtualPod.Spec.Volumes {
-		if volume.Secret != nil {
-			secretRefs[volume.Secret.SecretName] = true
-		}
-		// From projected volumes
-		if volume.Projected != nil {
-			for _, source := range volume.Projected.Sources {
-				if source.Secret != nil {
-					secretRefs[source.Secret.Name] = true
-				}
-			}
-		}
-	}
-
-	// From env vars
-	for _, container := range virtualPod.Spec.Containers {
-		for _, envVar := range container.Env {
-			if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
-				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = true
-			}
-		}
-	}
-
-	// From init containers
-	for _, container := range virtualPod.Spec.InitContainers {
-		for _, envVar := range container.Env {
-			if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
-				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = true
-			}
-		}
-	}
-
-	// From image pull secrets
-	for _, imagePullSecret := range virtualPod.Spec.ImagePullSecrets {
-		secretRefs[imagePullSecret.Name] = true
-	}
+	// Collect secrets from various sources
+	r.collectSecretsFromVolumes(virtualPod.Spec.Volumes, secretRefs)
+	r.collectSecretsFromContainers(virtualPod.Spec.Containers, secretRefs)
+	r.collectSecretsFromContainers(virtualPod.Spec.InitContainers, secretRefs)
+	r.collectSecretsFromImagePullSecrets(virtualPod.Spec.ImagePullSecrets, secretRefs)
 
 	// Sync each Secret and collect mappings
 	secretMappings := make(map[string]string)
@@ -1610,6 +1661,46 @@ func (r *VirtualPodReconciler) syncSecrets(ctx context.Context, virtualPod *core
 	}
 
 	return secretMappings, nil
+}
+
+// collectSecretsFromVolumes collects secret references from volumes
+func (r *VirtualPodReconciler) collectSecretsFromVolumes(volumes []corev1.Volume, secretRefs map[string]bool) {
+	for _, volume := range volumes {
+		if volume.Secret != nil {
+			secretRefs[volume.Secret.SecretName] = true
+		}
+		// From projected volumes
+		if volume.Projected != nil {
+			for _, source := range volume.Projected.Sources {
+				if source.Secret != nil {
+					secretRefs[source.Secret.Name] = true
+				}
+			}
+		}
+	}
+}
+
+// collectSecretsFromContainers collects secret references from containers (works for both regular and init containers)
+func (r *VirtualPodReconciler) collectSecretsFromContainers(containers []corev1.Container, secretRefs map[string]bool) {
+	for _, container := range containers {
+		for _, envVar := range container.Env {
+			if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
+				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = true
+			}
+		}
+		for _, envFrom := range container.EnvFrom {
+			if envFrom.SecretRef != nil {
+				secretRefs[envFrom.SecretRef.Name] = true
+			}
+		}
+	}
+}
+
+// collectSecretsFromImagePullSecrets collects secret references from image pull secrets
+func (r *VirtualPodReconciler) collectSecretsFromImagePullSecrets(imagePullSecrets []corev1.LocalObjectReference, secretRefs map[string]bool) {
+	for _, imagePullSecret := range imagePullSecrets {
+		secretRefs[imagePullSecret.Name] = true
+	}
 }
 
 // syncPVCs syncs PVCs referenced by the virtual pod and returns the mapping
@@ -1645,7 +1736,7 @@ type ResourceMapping struct {
 	ConfigMaps              map[string]string // virtual name -> physical name
 	Secrets                 map[string]string // virtual name -> physical name
 	PVCs                    map[string]string // virtual name -> physical name
-	ServiceAccountTokenName string            // physical secret name for service account token
+	ServiceAccountTokenName map[string]string // volume name -> physical secret name for service account token
 }
 
 // syncResource syncs a single resource (ConfigMap, Secret, or PVC) and returns the physical resource name
@@ -1799,6 +1890,26 @@ func (r *VirtualPodReconciler) syncPV(ctx context.Context, pvName string) (strin
 	return r.syncResource(ctx, topcommon.ResourceTypePV, "", pvName, "", &corev1.PersistentVolume{}, nil)
 }
 
+func (r *VirtualPodReconciler) deleteServiceAccountTokenSecret(ctx context.Context, logger logr.Logger, secretName string, secretNamespace string) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: secretNamespace,
+		},
+	}
+	err := r.PhysicalClient.Delete(ctx, secret)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("Service account token secret already deleted", "secret", fmt.Sprintf("%s/%s", secretNamespace, secretName))
+			return nil
+		}
+		logger.Error(err, "Failed to delete service account token secret", "secret", fmt.Sprintf("%s/%s", secretNamespace, secretName))
+		return fmt.Errorf("failed to delete service account token secret %s/%s: %v", secretNamespace, secretName, err)
+	}
+	logger.Info("Successfully deleted service account token secret", "secret", fmt.Sprintf("%s/%s", secretNamespace, secretName))
+	return nil
+}
+
 // cleanupServiceAccountToken cleans up the service account token secret when pod is deleted
 func (r *VirtualPodReconciler) cleanupServiceAccountToken(ctx context.Context, virtualPod *corev1.Pod) error {
 	if virtualPod.Spec.ServiceAccountName == "" {
@@ -1809,54 +1920,66 @@ func (r *VirtualPodReconciler) cleanupServiceAccountToken(ctx context.Context, v
 	// Delete the service account token from TokenManager
 	r.TokenManager.DeleteServiceAccountToken(virtualPod.UID)
 
-	key := fmt.Sprintf("%s-%s", virtualPod.Name, virtualPod.UID)
-	// Generate physical secret name using the key
-	physicalSecretName := r.generatePhysicalName(key, virtualPod.Namespace)
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
 
-	// Delete the secret from physical cluster
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      physicalSecretName,
-			Namespace: physicalNamespace,
-		},
-	}
+	// Delete the service account token secret for the service account
+	key := fmt.Sprintf("%s-%s", virtualPod.Name, virtualPod.UID)
+	physicalSecretName := r.generatePhysicalName(key, virtualPod.Namespace)
 	logger.V(1).Info("Deleting service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
-
-	err := r.PhysicalClient.Delete(ctx, secret)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			logger.V(1).Info("Service account token secret already deleted", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
-			return nil
-		}
-		logger.Error(err, "Failed to delete service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
-		return fmt.Errorf("failed to delete service account token secret %s/%s: %v", physicalNamespace, physicalSecretName, err)
+	if err := r.deleteServiceAccountTokenSecret(ctx, logger, physicalSecretName, physicalNamespace); err != nil {
+		return err
 	}
 
-	logger.Info("Successfully deleted service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+	// Delete secrets for all volumes that have ServiceAccountToken projections
+	for _, volume := range virtualPod.Spec.Volumes {
+		if volume.Projected != nil {
+			for _, source := range volume.Projected.Sources {
+				if source.ServiceAccountToken != nil {
+					// Generate physical secret name for this volume
+					key := fmt.Sprintf("%s-%s-%s", virtualPod.Name, volume.Name, virtualPod.UID)
+					physicalSecretName := r.generatePhysicalName(key, virtualPod.Namespace)
+					logger.V(1).Info("Deleting service account token secret", "volume", volume.Name, "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+					if err := r.deleteServiceAccountTokenSecret(ctx, logger, physicalSecretName, physicalNamespace); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+
 	return nil
+}
+
+func (r *VirtualPodReconciler) syncServiceAccountTokens(ctx context.Context, virtualPod *corev1.Pod, createIfNotExists bool) (map[string]string, error) {
+	serviceAccountTokenNames := make(map[string]string)
+	for _, volume := range virtualPod.Spec.Volumes {
+		if volume.Projected != nil {
+			for _, source := range volume.Projected.Sources {
+				if source.ServiceAccountToken != nil {
+					saName, err := r.syncServiceAccountToken(ctx, volume.Name, source.ServiceAccountToken, virtualPod, createIfNotExists)
+					if err != nil {
+						if !createIfNotExists && apierrors.IsNotFound(err) {
+							return nil, err
+						}
+						return nil, fmt.Errorf("failed to sync service account token for volume %s: %v", volume.Name, err)
+					}
+					serviceAccountTokenNames[volume.Name] = saName
+				}
+			}
+		}
+	}
+	return serviceAccountTokenNames, nil
 }
 
 // syncServiceAccountToken syncs the service account token for the virtual pod
 // createIfNotExists: if true, create secret when not exists; if false, return error when not exists
-func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, virtualPod *corev1.Pod, createIfNotExists bool) (string, error) {
+func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, volumeName string, tp *corev1.ServiceAccountTokenProjection, virtualPod *corev1.Pod, createIfNotExists bool) (string, error) {
 	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
 
 	if r.TokenManager == nil {
 		return "", fmt.Errorf("TokenManager is not initialized")
 	}
 
-	var tp *corev1.ServiceAccountTokenProjection
-	for _, volume := range virtualPod.Spec.Volumes {
-		if volume.Projected != nil {
-			for _, source := range volume.Projected.Sources {
-				if source.ServiceAccountToken != nil {
-					tp = source.ServiceAccountToken
-					break
-				}
-			}
-		}
-	}
 	if tp == nil {
 		return "", fmt.Errorf("service account token projection not found in virtual pod %s/%s", virtualPod.Namespace, virtualPod.Name)
 	}
@@ -1886,7 +2009,7 @@ func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, virt
 	}
 
 	// Generate physical secret name using the key
-	key := fmt.Sprintf("%s-%s", virtualPod.Name, virtualPod.UID)
+	key := fmt.Sprintf("%s-%s-%s", virtualPod.Name, volumeName, virtualPod.UID)
 	physicalSecretName := r.generatePhysicalName(key, virtualPod.Namespace)
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
 
@@ -2240,5 +2363,200 @@ func (r *VirtualPodReconciler) ensureDefaultPriorityClass(ctx context.Context) e
 	}
 
 	logger.Info("Successfully created default PriorityClass")
+	return nil
+}
+
+// getExpectedPodMetadataFromAnnotation retrieves the expected metadata from physical pod annotation
+func (r *VirtualPodReconciler) getExpectedPodMetadataFromAnnotation(pod *corev1.Pod) (*ExpectedPodMetadata, error) {
+	if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationExpectedMetadata] == "" {
+		return &ExpectedPodMetadata{}, nil
+	}
+
+	encodedMetadata, exists := pod.Annotations[cloudv1beta1.AnnotationExpectedMetadata]
+	if !exists {
+		return &ExpectedPodMetadata{}, nil
+	}
+
+	// Base64 decode the metadata
+	metadataBytes, err := base64.StdEncoding.DecodeString(encodedMetadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to base64 decode expected metadata: %w", err)
+	}
+
+	// JSON unmarshal the decoded data
+	var metadata ExpectedPodMetadata
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal expected metadata: %w", err)
+	}
+
+	return &metadata, nil
+}
+
+// outputExpectedPodMetadataToAnnotation output the expected metadata to physical pod annotation
+func (r *VirtualPodReconciler) outputExpectedPodMetadataToAnnotation(metadata *ExpectedPodMetadata) (string, error) {
+	// JSON marshal the metadata
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal expected metadata: %w", err)
+	}
+
+	// Base64 encode the JSON data
+	encodedMetadata := base64.StdEncoding.EncodeToString(metadataBytes)
+	return encodedMetadata, nil
+}
+
+// filterVirtualPodAnnotations removes kubeocean internal annotations from virtual pod
+func (r *VirtualPodReconciler) filterVirtualPodAnnotations(annotations map[string]string) map[string]string {
+	if annotations == nil {
+		return make(map[string]string)
+	}
+
+	filtered := make(map[string]string)
+	for k, v := range annotations {
+		// Skip kubeocean internal annotations
+		if k != cloudv1beta1.AnnotationLastSyncTime &&
+			k != cloudv1beta1.AnnotationPhysicalPodName &&
+			k != cloudv1beta1.AnnotationPhysicalPodNamespace &&
+			k != cloudv1beta1.AnnotationPhysicalPodUID {
+			filtered[k] = v
+		}
+	}
+	return filtered
+}
+
+// filterVirtualPodLabels removes kubeocean managed-by label from virtual pod
+func (r *VirtualPodReconciler) filterVirtualPodLabels(labels map[string]string) map[string]string {
+	if labels == nil {
+		return make(map[string]string)
+	}
+
+	filtered := make(map[string]string)
+	for k, v := range labels {
+		// Skip kubeocean managed-by label
+		if k != cloudv1beta1.LabelManagedBy {
+			filtered[k] = v
+		}
+	}
+	return filtered
+}
+
+// syncMetadata synchronizes metadata (annotations or labels) between expected, current and target maps
+// Returns true if any updates were made
+func (r *VirtualPodReconciler) syncMetadata(target, previousExpected, current map[string]string, metadataType string, logger logr.Logger) bool {
+	updated := false
+
+	// 1. Add or update metadata from current
+	for k, v := range current {
+		// Only update if the value changed from previous expected or target doesn't match
+		if previousExpected[k] != v && target[k] != v {
+			target[k] = v
+			updated = true
+			logger.Info(fmt.Sprintf("Updating physical pod %s", metadataType), "key", k, "value", v)
+		}
+	}
+
+	// 2. Remove metadata that were in previous expected but not in current
+	for k := range previousExpected {
+		if _, exists := current[k]; !exists {
+			// This metadata was removed from virtual pod, remove it from physical pod
+			if _, exists := target[k]; exists {
+				delete(target, k)
+				updated = true
+				logger.Info(fmt.Sprintf("Removing physical pod %s", metadataType), "key", k)
+			}
+		}
+	}
+
+	return updated
+}
+
+// syncVirtualPodMetadataToPhysicalPod syncs virtual pod metadata (annotations and labels) to physical pod
+func (r *VirtualPodReconciler) syncVirtualPodMetadataAndSpecToPhysicalPod(ctx context.Context, virtualPod *corev1.Pod, physicalPod *corev1.Pod) error {
+	logger := r.Log.WithValues(
+		"virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name),
+		"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+
+	// Check if physical pod has expected-metadata annotation
+	if physicalPod.Annotations == nil || physicalPod.Annotations[cloudv1beta1.AnnotationExpectedMetadata] == "" {
+		logger.V(1).Info("Physical pod does not have expected-metadata annotation, skipping sync")
+		return nil
+	}
+
+	// Get previous expected metadata from physical pod
+	previousExpected, err := r.getExpectedPodMetadataFromAnnotation(physicalPod)
+	if err != nil {
+		return fmt.Errorf("failed to get previous expected metadata: %w", err)
+	}
+
+	// Filter virtual pod annotations and labels (remove kubeocean internal ones)
+	currentAnnotations := r.filterVirtualPodAnnotations(virtualPod.Annotations)
+	currentLabels := r.filterVirtualPodLabels(virtualPod.Labels)
+
+	// Create new expected metadata
+	newExpected := &ExpectedPodMetadata{
+		Annotations: currentAnnotations,
+		Labels:      currentLabels,
+	}
+
+	// Check if we need to update physical pod
+	needsUpdate := false
+	updatedPhysicalPod := physicalPod.DeepCopy()
+
+	// Initialize maps if nil
+	if updatedPhysicalPod.Annotations == nil {
+		updatedPhysicalPod.Annotations = make(map[string]string)
+	}
+	if updatedPhysicalPod.Labels == nil {
+		updatedPhysicalPod.Labels = make(map[string]string)
+	}
+
+	// Sync annotations
+	if r.syncMetadata(updatedPhysicalPod.Annotations, previousExpected.Annotations, currentAnnotations, "annotation", logger) {
+		needsUpdate = true
+	}
+
+	// Sync labels
+	if r.syncMetadata(updatedPhysicalPod.Labels, previousExpected.Labels, currentLabels, "label", logger) {
+		needsUpdate = true
+	}
+
+	// generate new expected metadata to physical pod annotation
+	var encodedMetadata string
+	if encodedMetadata, err = r.outputExpectedPodMetadataToAnnotation(newExpected); err != nil {
+		return fmt.Errorf("failed to generate expected metadata: %w", err)
+	}
+	if encodedMetadata != updatedPhysicalPod.Annotations[cloudv1beta1.AnnotationExpectedMetadata] {
+		updatedPhysicalPod.Annotations[cloudv1beta1.AnnotationExpectedMetadata] = encodedMetadata
+		needsUpdate = true
+	}
+
+	if !reflect.DeepEqual(updatedPhysicalPod.Spec.ActiveDeadlineSeconds, virtualPod.Spec.ActiveDeadlineSeconds) {
+		updatedPhysicalPod.Spec.ActiveDeadlineSeconds = virtualPod.Spec.ActiveDeadlineSeconds
+		needsUpdate = true
+		logger.Info("Updating physical pod active deadline seconds", "activeDeadlineSeconds", ptr.Deref(virtualPod.Spec.ActiveDeadlineSeconds, 0))
+	}
+
+	if needsUpdate {
+		// Always update to save new expected metadata or metadata changes
+		if err := r.PhysicalClient.Update(ctx, updatedPhysicalPod); err != nil {
+			logger.Error(err, "Failed to update physical pod metadata")
+			return fmt.Errorf("failed to update physical pod metadata: %w", err)
+		}
+		logger.Info("Successfully synced virtual pod metadata and spec to physical pod")
+	} else {
+		logger.V(1).Info("No updates needed for physical pod metadata and spec")
+	}
+
+	if !reflect.DeepEqual(updatedPhysicalPod.Spec.EphemeralContainers, virtualPod.Spec.EphemeralContainers) {
+		logger.Info("Patching physical pod ephemeral containers", "ephemeralContainers", virtualPod.Spec.EphemeralContainers)
+		updatedPhysicalPodCopy := updatedPhysicalPod.DeepCopy()
+		updatedPhysicalPodCopy.Spec.EphemeralContainers = virtualPod.Spec.EphemeralContainers
+		err = r.PhysicalClient.SubResource("ephemeralcontainers").Patch(ctx, updatedPhysicalPodCopy, client.MergeFrom(updatedPhysicalPod))
+		if err != nil {
+			return fmt.Errorf("failed to patch physical pod ephemeral containers: %w", err)
+		}
+		logger.Info("Successfully patched physical pod ephemeral containers")
+	}
+
 	return nil
 }

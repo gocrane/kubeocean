@@ -86,15 +86,17 @@ type ClusterBindingReconciler struct {
 	Recorder record.EventRecorder
 
 	// ClusterID validation maps with thread safety
+	k8sClient       kubernetes.Interface
 	mu              sync.RWMutex
 	nameToClusterID map[string]string // clusterbinding.Name -> spec.clusterID
 	clusterIDToName map[string]string // spec.clusterID -> clusterbinding.Name
 }
 
 // NewClusterBindingReconciler creates a new ClusterBindingReconciler with initialized maps
-func NewClusterBindingReconciler(client client.Client, scheme *runtime.Scheme, log logr.Logger, recorder record.EventRecorder) *ClusterBindingReconciler {
+func NewClusterBindingReconciler(client client.Client, k8sClient kubernetes.Interface, scheme *runtime.Scheme, log logr.Logger, recorder record.EventRecorder) *ClusterBindingReconciler {
 	return &ClusterBindingReconciler{
 		Client:          client,
+		k8sClient:       k8sClient,
 		Scheme:          scheme,
 		Log:             log,
 		Recorder:        recorder,
@@ -1075,16 +1077,9 @@ func (r *ClusterBindingReconciler) cleanupAutoManagedCertificates(ctx context.Co
 	log := r.Log.WithValues("clusterbinding", client.ObjectKeyFromObject(clusterBinding))
 	log.Info("Starting cleanup of auto-managed certificates")
 
-	// Create Kubernetes clientset for certificate operations
-	config := ctrl.GetConfigOrDie()
-	k8sClient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("failed to create Kubernetes client: %w", err)
-	}
-
 	// Create certificate manager
 	certManager := proxier.NewCertificateManager(
-		k8sClient,
+		r.k8sClient,
 		clusterBinding,
 		"kubeocean-system", // Default namespace where certificates are stored
 		log.WithName("cert-cleanup"),

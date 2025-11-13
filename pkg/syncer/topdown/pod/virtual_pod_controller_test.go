@@ -3,6 +3,8 @@ package toppod
 import (
 	"context"
 	"crypto/md5"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -97,6 +99,51 @@ func createTestVirtualNode(name, clusterName, ClusterID, physicalNodeName string
 		Status: corev1.NodeStatus{
 			Phase: corev1.NodeRunning,
 		},
+	}
+}
+
+// testResourceSyncHelper is a generic helper function for testing resource synchronization
+func testResourceSyncHelper(
+	t *testing.T,
+	scheme *runtime.Scheme,
+	clusterBinding *cloudv1beta1.ClusterBinding,
+	resources []client.Object,
+	virtualPod *corev1.Pod,
+	syncFunc func(*VirtualPodReconciler, context.Context, *corev1.Pod) (map[string]string, error),
+	expectedResult map[string]string,
+	expectError bool,
+) {
+	ctx := context.Background()
+	virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalK8sClient := fake.NewSimpleClientset()
+
+	// Create virtual resources
+	for _, res := range resources {
+		err := virtualClient.Create(ctx, res)
+		require.NoError(t, err)
+	}
+
+	reconciler := &VirtualPodReconciler{
+		VirtualClient:     virtualClient,
+		PhysicalClient:    physicalClient,
+		PhysicalK8sClient: physicalK8sClient,
+		ClusterBinding:    clusterBinding,
+		Scheme:            scheme,
+		Log:               zap.New(),
+	}
+
+	result, err := syncFunc(reconciler, ctx, virtualPod)
+
+	if expectError {
+		assert.Error(t, err)
+		return
+	}
+
+	assert.NoError(t, err)
+	assert.Equal(t, len(expectedResult), len(result))
+	for virtualName := range expectedResult {
+		assert.Contains(t, result, virtualName)
 	}
 }
 
@@ -3687,8 +3734,25 @@ func TestVirtualPodReconciler_CleanupServiceAccountToken(t *testing.T) {
 			if tt.physicalSecret != nil {
 				// Generate the correct secret name using the same logic as the actual code
 				if tt.virtualPod.Spec.ServiceAccountName != "" {
+					// Find the first volume with ServiceAccountToken to get volume name
+					var volumeName string
+					for _, volume := range tt.virtualPod.Spec.Volumes {
+						if volume.Projected != nil {
+							for _, source := range volume.Projected.Sources {
+								if source.ServiceAccountToken != nil {
+									volumeName = volume.Name
+									break
+								}
+							}
+						}
+						if volumeName != "" {
+							break
+						}
+					}
+
 					// Use the same key generation logic as the actual code
-					key := fmt.Sprintf("%s-%s", tt.virtualPod.Name, tt.virtualPod.UID)
+					// Format: podName-volumeName-podUID
+					key := fmt.Sprintf("%s-%s-%s", tt.virtualPod.Name, volumeName, tt.virtualPod.UID)
 
 					// Generate physical name using the same logic as generatePhysicalName
 					truncatedKey := key
@@ -3815,7 +3879,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 				},
 			},
 			createIfNotExists: true,
-			expectedResult:    "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+			expectedResult:    "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 			expectError:       false,
 		},
 		{
@@ -3849,7 +3913,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 				},
 			},
 			createIfNotExists: false,
-			expectedResult:    "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+			expectedResult:    "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 			expectError:       false,
 		},
 		{
@@ -3883,7 +3947,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 				},
 			},
 			createIfNotExists: false,
-			expectedResult:    "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+			expectedResult:    "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 			expectError:       false,
 		},
 		{
@@ -3934,7 +3998,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 			if !tt.createIfNotExists && tt.name == "update existing service account token secret - token different" {
 				existingSecret := &corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+						Name:      "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 						Namespace: "test-cluster",
 					},
 					Type: corev1.SecretTypeOpaque,
@@ -3950,7 +4014,7 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 			if !tt.createIfNotExists && tt.name == "update existing service account token secret - token same" {
 				existingSecret := &corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-pod-test-uid-123-91332ab8b19f77a4f643c354bf79559d",
+						Name:      "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821",
 						Namespace: "test-cluster",
 					},
 					Type: corev1.SecretTypeOpaque,
@@ -3971,8 +4035,26 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 				TokenManager:   mockTokenManager,
 			}
 
+			// Extract volume name and ServiceAccountTokenProjection from virtualPod
+			var volumeName string
+			var tp *corev1.ServiceAccountTokenProjection
+			for _, volume := range tt.virtualPod.Spec.Volumes {
+				if volume.Projected != nil {
+					for _, source := range volume.Projected.Sources {
+						if source.ServiceAccountToken != nil {
+							volumeName = volume.Name
+							tp = source.ServiceAccountToken
+							break
+						}
+					}
+				}
+				if tp != nil {
+					break
+				}
+			}
+
 			// Call the function
-			result, err := reconciler.syncServiceAccountToken(ctx, tt.virtualPod, tt.createIfNotExists)
+			result, err := reconciler.syncServiceAccountToken(ctx, volumeName, tp, tt.virtualPod, tt.createIfNotExists)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -4157,51 +4239,15 @@ func TestVirtualPodReconciler_SyncConfigMapsWithProjectedVolumes(t *testing.T) {
 		},
 	}
 
-	// Helper function to create reconciler and test resource syncing
-	testResourceSync := func(t *testing.T, resources []client.Object, syncFunc func(*VirtualPodReconciler, context.Context, *corev1.Pod) (map[string]string, error), virtualPod *corev1.Pod, expectedResult map[string]string, expectError bool) {
-		ctx := context.Background()
-		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalK8sClient := fake.NewSimpleClientset()
-
-		// Create virtual resources
-		for _, res := range resources {
-			err := virtualClient.Create(ctx, res)
-			require.NoError(t, err)
-		}
-
-		reconciler := &VirtualPodReconciler{
-			VirtualClient:     virtualClient,
-			PhysicalClient:    physicalClient,
-			PhysicalK8sClient: physicalK8sClient,
-			ClusterBinding:    clusterBinding,
-			Scheme:            scheme,
-			Log:               zap.New(),
-		}
-
-		result, err := syncFunc(reconciler, ctx, virtualPod)
-
-		if expectError {
-			assert.Error(t, err)
-			return
-		}
-
-		assert.NoError(t, err)
-		assert.Equal(t, len(expectedResult), len(result))
-		for virtualName := range expectedResult {
-			assert.Contains(t, result, virtualName)
-		}
-	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resources := make([]client.Object, len(tt.virtualConfigMaps))
 			for i, cm := range tt.virtualConfigMaps {
 				resources[i] = cm
 			}
-			testResourceSync(t, resources, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
+			testResourceSyncHelper(t, scheme, clusterBinding, resources, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
 				return r.syncConfigMaps(ctx, pod)
-			}, tt.virtualPod, tt.expectedResult, tt.expectError)
+			}, tt.expectedResult, tt.expectError)
 		})
 	}
 }
@@ -4300,48 +4346,15 @@ func TestVirtualPodReconciler_SyncSecretsWithProjectedVolumes(t *testing.T) {
 		},
 	}
 
-	// Helper function similar to the one in ConfigMap test
-	testSecretSync := func(t *testing.T, secrets []client.Object, virtualPod *corev1.Pod, expectedResult map[string]string, expectError bool) {
-		ctx := context.Background()
-		virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
-		physicalK8sClient := fake.NewSimpleClientset()
-
-		for _, secret := range secrets {
-			err := virtualClient.Create(ctx, secret)
-			require.NoError(t, err)
-		}
-
-		reconciler := &VirtualPodReconciler{
-			VirtualClient:     virtualClient,
-			PhysicalClient:    physicalClient,
-			PhysicalK8sClient: physicalK8sClient,
-			ClusterBinding:    clusterBinding,
-			Scheme:            scheme,
-			Log:               zap.New(),
-		}
-
-		result, err := reconciler.syncSecrets(ctx, virtualPod)
-
-		if expectError {
-			assert.Error(t, err)
-			return
-		}
-
-		assert.NoError(t, err)
-		assert.Equal(t, len(expectedResult), len(result))
-		for virtualName := range expectedResult {
-			assert.Contains(t, result, virtualName)
-		}
-	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			secrets := make([]client.Object, len(tt.virtualSecrets))
 			for i, s := range tt.virtualSecrets {
 				secrets[i] = s
 			}
-			testSecretSync(t, secrets, tt.virtualPod, tt.expectedResult, tt.expectError)
+			testResourceSyncHelper(t, scheme, clusterBinding, secrets, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
+				return r.syncSecrets(ctx, pod)
+			}, tt.expectedResult, tt.expectError)
 		})
 	}
 }
@@ -5439,7 +5452,7 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing
 			if tt.expectedHostAlias {
 				assert.Len(t, result.HostAliases, 1, "Should have one hostAlias")
 				assert.Equal(t, "10.0.0.1", result.HostAliases[0].IP, "HostAlias IP should match kubernetes-intranet IP")
-				assert.Equal(t, []string{"kubernetes.default.svc"}, result.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
+				assert.Equal(t, []string{"kubernetes.default.svc", "kubernetes.default", "kubernetes", "kubernetes.default.svc.cluster.local"}, result.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
 			}
 
 			// Verify DNS configuration
@@ -5450,9 +5463,9 @@ func TestVirtualPodReconciler_BuildPhysicalPodSpecWithEnvVarInjection(t *testing
 				assert.Equal(t, "10.0.0.2", result.DNSConfig.Nameservers[0], "Nameserver should match kube-dns-intranet IP")
 				assert.Len(t, result.DNSConfig.Options, 1, "Should have one DNS option")
 				assert.Equal(t, "ndots", result.DNSConfig.Options[0].Name, "DNS option name should be ndots")
-				assert.Equal(t, "3", *result.DNSConfig.Options[0].Value, "DNS option value should be 3")
+				assert.Equal(t, "5", *result.DNSConfig.Options[0].Value, "DNS option value should be 5")
 				assert.Len(t, result.DNSConfig.Searches, 3, "Should have three search domains")
-				assert.Equal(t, []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"}, result.DNSConfig.Searches, "Search domains should be correct")
+				assert.Equal(t, []string{"test-ns.svc.cluster.local", "svc.cluster.local", "cluster.local"}, result.DNSConfig.Searches, "Search domains should be correct")
 			}
 
 			// Verify environment variable injection
@@ -5903,7 +5916,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{"test-secret": "test-secret-physical"},
 			PVCs:                    map[string]string{"test-pvc": "test-pvc-physical"},
-			ServiceAccountTokenName: "test-sa-token-physical",
+			ServiceAccountTokenName: map[string]string{"kube-api-access-xyz": "test-sa-token-physical"},
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -5934,7 +5947,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "", // No ServiceAccountToken
+			ServiceAccountTokenName: nil, // No ServiceAccountToken
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -5957,7 +5970,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "",
+			ServiceAccountTokenName: nil,
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -5985,7 +5998,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "",
+			ServiceAccountTokenName: nil,
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -6029,7 +6042,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"test-config": "test-config-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "",
+			ServiceAccountTokenName: nil,
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -6062,7 +6075,7 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			ConfigMaps:              map[string]string{"config1": "config1-physical"},
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
-			ServiceAccountTokenName: "",
+			ServiceAccountTokenName: nil,
 		}
 
 		// This should timeout, but we can verify the resource was checked multiple times
@@ -6325,7 +6338,7 @@ func TestVirtualPodReconciler_AddHostAliasesAndEnvVars(t *testing.T) {
 			if tt.expectedHostAlias {
 				assert.Len(t, podSpec.HostAliases, 1, "Should have one hostAlias")
 				assert.Equal(t, "10.0.0.1", podSpec.HostAliases[0].IP, "HostAlias IP should match kubernetes-intranet IP")
-				assert.Equal(t, []string{"kubernetes.default.svc"}, podSpec.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
+				assert.Equal(t, []string{"kubernetes.default.svc", "kubernetes.default", "kubernetes", "kubernetes.default.svc.cluster.local"}, podSpec.HostAliases[0].Hostnames, "HostAlias hostnames should be correct")
 			}
 
 			// Verify environment variable injection in containers
@@ -6880,6 +6893,7 @@ func TestVirtualPodReconciler_ShouldCreatePhysicalPod(t *testing.T) {
 	tests := []struct {
 		name               string
 		virtualPod         *corev1.Pod
+		setupReconciler    func() *VirtualPodReconciler
 		expectedShouldSync bool
 	}{
 		{
@@ -7071,11 +7085,153 @@ func TestVirtualPodReconciler_ShouldCreatePhysicalPod(t *testing.T) {
 			},
 			expectedShouldSync: false, // System pods should never sync regardless of annotations
 		},
+		{
+			name: "daemonset pod without annotation but RunningDaemonsetByDefault=true should sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-default-enabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: true,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedShouldSync: true,
+		},
+		{
+			name: "daemonset pod without annotation and RunningDaemonsetByDefault=false should not sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-default-disabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: false,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedShouldSync: false,
+		},
+		{
+			name: "daemonset pod with annotation and RunningDaemonsetByDefault=true should sync",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-with-annotation-default-enabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationRunningDaemonSet: cloudv1beta1.LabelValueTrue,
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: true,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedShouldSync: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := reconciler.shouldCreatePhysicalPod(tt.virtualPod)
+			testReconciler := reconciler
+			if tt.setupReconciler != nil {
+				testReconciler = tt.setupReconciler()
+			}
+			result := testReconciler.shouldCreatePhysicalPod(tt.virtualPod)
 			assert.Equal(t, tt.expectedShouldSync, result, "shouldCreatePhysicalPod result mismatch for test: %s", tt.name)
 		})
 	}
@@ -7084,9 +7240,10 @@ func TestVirtualPodReconciler_ShouldCreatePhysicalPod(t *testing.T) {
 // TestVirtualPodReconciler_EventFilterPredicate tests the event filter predicate for DaemonSet pods
 func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
 	tests := []struct {
-		name           string
-		pod            *corev1.Pod
-		expectedFilter bool
+		name            string
+		pod             *corev1.Pod
+		setupReconciler func() *VirtualPodReconciler
+		expectedFilter  bool
 	}{
 		{
 			name:           "nil pod should be filtered",
@@ -7229,10 +7386,104 @@ func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
 			},
 			expectedFilter: true, // Deletion should override DaemonSet filtering
 		},
+		{
+			name: "daemonset pod without annotation but RunningDaemonsetByDefault=true should not be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-default-enabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: true,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedFilter: true,
+		},
+		{
+			name: "daemonset pod without annotation and RunningDaemonsetByDefault=false should be filtered",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "daemonset-pod-default-disabled",
+					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "DaemonSet",
+							Name: "test-daemonset",
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "node-1",
+				},
+			},
+			setupReconciler: func() *VirtualPodReconciler {
+				clusterBinding := &cloudv1beta1.ClusterBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-binding",
+					},
+					Spec: cloudv1beta1.ClusterBindingSpec{
+						ClusterID:                 "test-cluster-id",
+						RunningDaemonsetByDefault: false,
+						SecretRef: corev1.SecretReference{
+							Name:      "test-secret",
+							Namespace: "default",
+						},
+					},
+				}
+				scheme := runtime.NewScheme()
+				_ = cloudv1beta1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				virtualClient := fakeclient.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(clusterBinding).
+					Build()
+				return &VirtualPodReconciler{
+					VirtualClient:  virtualClient,
+					ClusterBinding: clusterBinding,
+				}
+			},
+			expectedFilter: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{}
+			if tt.setupReconciler != nil {
+				reconciler = tt.setupReconciler()
+			}
 			// Simulate the filter predicate logic from SetupWithManager
 			var result bool
 			if tt.pod == nil {
@@ -7251,13 +7502,24 @@ func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
 						if utils.IsSystemPod(pod) {
 							result = false
 						} else {
-							// Skip DaemonSet pods unless they have the running annotation
+							// Skip DaemonSet pods unless RunningDaemonsetByDefault is true or they have the running annotation
 							if utils.IsDaemonSetPod(pod) {
-								// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
-								if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
-									result = false
+								clusterBindingName := ""
+								if reconciler.ClusterBinding != nil {
+									clusterBindingName = reconciler.ClusterBinding.Name
+								}
+								// If RunningDaemonsetByDefault is true, allow DaemonSet pods to run by default
+								runningds, _ := utils.IsRunningDaemonsetByDefault(context.TODO(), reconciler.VirtualClient, clusterBindingName)
+								if !runningds {
+									// Check if the pod has the kubeocean.io/running-daemonset:"true" annotation
+									if pod.Annotations == nil || pod.Annotations[cloudv1beta1.AnnotationRunningDaemonSet] != cloudv1beta1.LabelValueTrue {
+										result = false
+									} else {
+										// Allow DaemonSet pods with the running annotation to be synced
+										result = true
+									}
 								} else {
-									// Allow DaemonSet pods with the running annotation to be synced
+									// Allow DaemonSet pods to be synced when RunningDaemonsetByDefault is true
 									result = true
 								}
 							} else {
@@ -7269,6 +7531,1719 @@ func TestVirtualPodReconciler_EventFilterPredicate(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.expectedFilter, result, "Event filter result mismatch for test: %s", tt.name)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_SyncConfigMapsWithEnvFrom tests syncConfigMaps with EnvFrom field
+func TestVirtualPodReconciler_SyncConfigMapsWithEnvFrom(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name              string
+		virtualPod        *corev1.Pod
+		virtualConfigMaps []*corev1.ConfigMap
+		expectedResult    map[string]string
+		expectError       bool
+	}{
+		{
+			name: "pod with envFrom configMapRef in container",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "app-config",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "app-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"APP_ENV":   "production",
+						"LOG_LEVEL": "info",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"app-config": "app-config-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with envFrom configMapRef in init container",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-container",
+							Image: "busybox:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "init-config",
+										},
+									},
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "init-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"INIT_FLAG": "true",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"init-config": "init-config-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with multiple envFrom configMapRef",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "app-config",
+										},
+									},
+								},
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "db-config",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "app-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"APP_ENV": "production",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "db-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"DB_HOST": "localhost",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"app-config": "app-config-physical",
+				"db-config":  "db-config-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with mixed configmap sources (envFrom, env, volume)",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Volumes: []corev1.Volume{
+						{
+							Name: "config-volume",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "volume-config",
+									},
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "envfrom-config",
+										},
+									},
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "SINGLE_VAR",
+									ValueFrom: &corev1.EnvVarSource{
+										ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: "env-config",
+											},
+											Key: "key1",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualConfigMaps: []*corev1.ConfigMap{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "volume-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"config.yaml": "key: value",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "envfrom-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"APP_ENV": "production",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "env-config",
+						Namespace: "test-ns",
+					},
+					Data: map[string]string{
+						"key1": "value1",
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"volume-config":  "volume-config-physical",
+				"envfrom-config": "envfrom-config-physical",
+				"env-config":     "env-config-physical",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := make([]client.Object, len(tt.virtualConfigMaps))
+			for i, cm := range tt.virtualConfigMaps {
+				resources[i] = cm
+			}
+			testResourceSyncHelper(t, scheme, clusterBinding, resources, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
+				return r.syncConfigMaps(ctx, pod)
+			}, tt.expectedResult, tt.expectError)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_SyncSecretsWithEnvFrom tests syncSecrets with EnvFrom field
+func TestVirtualPodReconciler_SyncSecretsWithEnvFrom(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-cluster",
+		},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+
+	tests := []struct {
+		name           string
+		virtualPod     *corev1.Pod
+		virtualSecrets []*corev1.Secret
+		expectedResult map[string]string
+		expectError    bool
+	}{
+		{
+			name: "pod with envFrom secretRef in container",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "app-secret",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualSecrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "app-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"API_KEY":     []byte("secret-api-key"),
+						"DB_PASSWORD": []byte("secret-password"),
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"app-secret": "app-secret-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with envFrom secretRef in init container",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-container",
+							Image: "busybox:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "init-secret",
+										},
+									},
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+						},
+					},
+				},
+			},
+			virtualSecrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "init-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"INIT_TOKEN": []byte("init-token-value"),
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"init-secret": "init-secret-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with multiple envFrom secretRef",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "app-secret",
+										},
+									},
+								},
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "db-secret",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualSecrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "app-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"API_KEY": []byte("app-api-key"),
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "db-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"DB_PASSWORD": []byte("db-password"),
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"app-secret": "app-secret-physical",
+				"db-secret":  "db-secret-physical",
+			},
+			expectError: false,
+		},
+		{
+			name: "pod with mixed secret sources (envFrom, env, volume, imagePullSecrets)",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-pod",
+					Namespace: "test-ns",
+				},
+				Spec: corev1.PodSpec{
+					ImagePullSecrets: []corev1.LocalObjectReference{
+						{Name: "registry-secret"},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "secret-volume",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: "volume-secret",
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:  "app-container",
+							Image: "nginx:latest",
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "envfrom-secret",
+										},
+									},
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "SINGLE_SECRET",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: "env-secret",
+											},
+											Key: "secret-key",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			virtualSecrets: []*corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "registry-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeDockerConfigJson,
+					Data: map[string][]byte{
+						".dockerconfigjson": []byte(`{"auths":{}}`),
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "volume-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"cert.pem": []byte("certificate-content"),
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "envfrom-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"API_KEY": []byte("api-key-value"),
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "env-secret",
+						Namespace: "test-ns",
+					},
+					Type: corev1.SecretTypeOpaque,
+					Data: map[string][]byte{
+						"secret-key": []byte("secret-value"),
+					},
+				},
+			},
+			expectedResult: map[string]string{
+				"registry-secret": "registry-secret-physical",
+				"volume-secret":   "volume-secret-physical",
+				"envfrom-secret":  "envfrom-secret-physical",
+				"env-secret":      "env-secret-physical",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resources := make([]client.Object, len(tt.virtualSecrets))
+			for i, secret := range tt.virtualSecrets {
+				resources[i] = secret
+			}
+			testResourceSyncHelper(t, scheme, clusterBinding, resources, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
+				return r.syncSecrets(ctx, pod)
+			}, tt.expectedResult, tt.expectError)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_filterVirtualPodAnnotations tests filtering virtual pod annotations
+func TestVirtualPodReconciler_filterVirtualPodAnnotations(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		expected    map[string]string
+	}{
+		{
+			name: "should filter kubeocean internal annotations",
+			annotations: map[string]string{
+				"custom-annotation":                         "value1",
+				cloudv1beta1.AnnotationLastSyncTime:         "2024-01-01",
+				cloudv1beta1.AnnotationPhysicalPodName:      "physical-pod",
+				cloudv1beta1.AnnotationPhysicalPodNamespace: "physical-ns",
+				cloudv1beta1.AnnotationPhysicalPodUID:       "uid-123",
+				"another-custom":                            "value2",
+			},
+			expected: map[string]string{
+				"custom-annotation": "value1",
+				"another-custom":    "value2",
+			},
+		},
+		{
+			name:        "should return empty map for nil input",
+			annotations: nil,
+			expected:    map[string]string{},
+		},
+		{
+			name:        "should return empty map for empty input",
+			annotations: map[string]string{},
+			expected:    map[string]string{},
+		},
+		{
+			name: "should keep all annotations when no kubeocean annotations present",
+			annotations: map[string]string{
+				"custom-1": "value1",
+				"custom-2": "value2",
+			},
+			expected: map[string]string{
+				"custom-1": "value1",
+				"custom-2": "value2",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			result := reconciler.filterVirtualPodAnnotations(tt.annotations)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_filterVirtualPodLabels tests filtering virtual pod labels
+func TestVirtualPodReconciler_filterVirtualPodLabels(t *testing.T) {
+	tests := []struct {
+		name     string
+		labels   map[string]string
+		expected map[string]string
+	}{
+		{
+			name: "should filter kubeocean managed-by label",
+			labels: map[string]string{
+				"custom-label":              "value1",
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				"another-custom":            "value2",
+			},
+			expected: map[string]string{
+				"custom-label":   "value1",
+				"another-custom": "value2",
+			},
+		},
+		{
+			name:     "should return empty map for nil input",
+			labels:   nil,
+			expected: map[string]string{},
+		},
+		{
+			name:     "should return empty map for empty input",
+			labels:   map[string]string{},
+			expected: map[string]string{},
+		},
+		{
+			name: "should keep all labels when no managed-by label present",
+			labels: map[string]string{
+				"custom-1": "value1",
+				"custom-2": "value2",
+			},
+			expected: map[string]string{
+				"custom-1": "value1",
+				"custom-2": "value2",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			result := reconciler.filterVirtualPodLabels(tt.labels)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_outputExpectedPodMetadataToAnnotation tests outputting expected metadata
+func TestVirtualPodReconciler_outputExpectedPodMetadataToAnnotation(t *testing.T) {
+	tests := []struct {
+		name         string
+		metadata     *ExpectedPodMetadata
+		expectError  bool
+		validateFunc func(t *testing.T, result string)
+	}{
+		{
+			name: "should encode metadata successfully",
+			metadata: &ExpectedPodMetadata{
+				Labels: map[string]string{
+					"label1": "value1",
+					"label2": "value2",
+				},
+				Annotations: map[string]string{
+					"annotation1": "value1",
+					"annotation2": "value2",
+				},
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, result string) {
+				assert.NotEmpty(t, result)
+				// Decode and verify
+				decoded, err := base64.StdEncoding.DecodeString(result)
+				assert.NoError(t, err)
+				var metadata ExpectedPodMetadata
+				err = json.Unmarshal(decoded, &metadata)
+				assert.NoError(t, err)
+				assert.Equal(t, 2, len(metadata.Labels))
+				assert.Equal(t, 2, len(metadata.Annotations))
+			},
+		},
+		{
+			name: "should handle empty metadata",
+			metadata: &ExpectedPodMetadata{
+				Labels:      map[string]string{},
+				Annotations: map[string]string{},
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, result string) {
+				assert.NotEmpty(t, result)
+			},
+		},
+		{
+			name: "should handle nil maps in metadata",
+			metadata: &ExpectedPodMetadata{
+				Labels:      nil,
+				Annotations: nil,
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, result string) {
+				assert.NotEmpty(t, result)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			result, err := reconciler.outputExpectedPodMetadataToAnnotation(tt.metadata)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, result)
+				}
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_getExpectedPodMetadataFromAnnotation tests getting expected metadata from annotation
+func TestVirtualPodReconciler_getExpectedPodMetadataFromAnnotation(t *testing.T) {
+	// Helper to create encoded metadata
+	createEncodedMetadata := func(metadata *ExpectedPodMetadata) string {
+		bytes, _ := json.Marshal(metadata)
+		return base64.StdEncoding.EncodeToString(bytes)
+	}
+
+	tests := []struct {
+		name        string
+		pod         *corev1.Pod
+		expected    *ExpectedPodMetadata
+		expectError bool
+	}{
+		{
+			name: "should decode metadata successfully",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedMetadata(&ExpectedPodMetadata{
+							Labels: map[string]string{
+								"label1": "value1",
+							},
+							Annotations: map[string]string{
+								"annotation1": "value1",
+							},
+						}),
+					},
+				},
+			},
+			expected: &ExpectedPodMetadata{
+				Labels: map[string]string{
+					"label1": "value1",
+				},
+				Annotations: map[string]string{
+					"annotation1": "value1",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "should return empty metadata when annotation is missing",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"other-annotation": "value",
+					},
+				},
+			},
+			expected:    &ExpectedPodMetadata{},
+			expectError: false,
+		},
+		{
+			name: "should return empty metadata when annotations map is nil",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: nil,
+				},
+			},
+			expected:    &ExpectedPodMetadata{},
+			expectError: false,
+		},
+		{
+			name: "should return empty metadata when annotation is empty",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: "",
+					},
+				},
+			},
+			expected:    &ExpectedPodMetadata{},
+			expectError: false,
+		},
+		{
+			name: "should return error for invalid base64",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: "invalid-base64!@#",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "should return error for invalid json",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: base64.StdEncoding.EncodeToString([]byte("invalid json")),
+					},
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			result, err := reconciler.getExpectedPodMetadataFromAnnotation(tt.pod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_syncMetadata tests the generic metadata sync function
+func TestVirtualPodReconciler_syncMetadata(t *testing.T) {
+	tests := []struct {
+		name             string
+		target           map[string]string
+		previousExpected map[string]string
+		current          map[string]string
+		metadataType     string
+		expectedTarget   map[string]string
+		expectedUpdated  bool
+	}{
+		{
+			name: "should add new metadata",
+			target: map[string]string{
+				"existing": "value",
+			},
+			previousExpected: map[string]string{},
+			current: map[string]string{
+				"existing": "value",
+				"new-key":  "new-value",
+			},
+			metadataType: "label",
+			expectedTarget: map[string]string{
+				"existing": "value",
+				"new-key":  "new-value",
+			},
+			expectedUpdated: true,
+		},
+		{
+			name: "should update changed metadata",
+			target: map[string]string{
+				"key1": "old-value",
+			},
+			previousExpected: map[string]string{
+				"key1": "old-value",
+			},
+			current: map[string]string{
+				"key1": "new-value",
+			},
+			metadataType: "annotation",
+			expectedTarget: map[string]string{
+				"key1": "new-value",
+			},
+			expectedUpdated: true,
+		},
+		{
+			name: "should remove deleted metadata",
+			target: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+			previousExpected: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+			current: map[string]string{
+				"key1": "value1",
+			},
+			metadataType: "label",
+			expectedTarget: map[string]string{
+				"key1": "value1",
+			},
+			expectedUpdated: true,
+		},
+		{
+			name: "should not update when no changes",
+			target: map[string]string{
+				"key1": "value1",
+			},
+			previousExpected: map[string]string{
+				"key1": "value1",
+			},
+			current: map[string]string{
+				"key1": "value1",
+			},
+			metadataType: "annotation",
+			expectedTarget: map[string]string{
+				"key1": "value1",
+			},
+			expectedUpdated: false,
+		},
+		{
+			name:             "should handle empty maps",
+			target:           map[string]string{},
+			previousExpected: map[string]string{},
+			current:          map[string]string{},
+			metadataType:     "label",
+			expectedTarget:   map[string]string{},
+			expectedUpdated:  false,
+		},
+		{
+			name: "should handle complex scenario with add, update, and delete",
+			target: map[string]string{
+				"keep":   "value",
+				"update": "old-value",
+				"delete": "value",
+			},
+			previousExpected: map[string]string{
+				"keep":   "value",
+				"update": "old-value",
+				"delete": "value",
+			},
+			current: map[string]string{
+				"keep":   "value",
+				"update": "new-value",
+				"add":    "new",
+			},
+			metadataType: "annotation",
+			expectedTarget: map[string]string{
+				"keep":   "value",
+				"update": "new-value",
+				"add":    "new",
+			},
+			expectedUpdated: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reconciler := &VirtualPodReconciler{
+				Log: ctrl.Log.WithName("test"),
+			}
+
+			updated := reconciler.syncMetadata(tt.target, tt.previousExpected, tt.current, tt.metadataType, reconciler.Log)
+
+			assert.Equal(t, tt.expectedUpdated, updated)
+			assert.Equal(t, tt.expectedTarget, tt.target)
+		})
+	}
+}
+
+// TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod tests syncing virtual pod metadata and spec to physical pod
+func TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod(t *testing.T) {
+	tests := []struct {
+		name         string
+		virtualPod   *corev1.Pod
+		physicalPod  *corev1.Pod
+		setupClient  func() client.Client
+		expectError  bool
+		validateFunc func(t *testing.T, client client.Client)
+	}{
+		{
+			name: "should skip sync when physical pod has no expected-metadata annotation",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					Labels: map[string]string{
+						"app": "test",
+					},
+					Annotations: map[string]string{
+						"custom": "value",
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationVirtualPodName: "virtual-pod",
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				return fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				// No update should happen
+			},
+		},
+		{
+			name: "should sync new annotations and labels to physical pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					Labels: map[string]string{
+						"app":                       "test",
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+					},
+					Annotations: map[string]string{
+						"custom":                              "value",
+						cloudv1beta1.AnnotationPhysicalPodUID: "uid-123",
+						cloudv1beta1.AnnotationLastSyncTime:   "2024-01-01",
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Labels:    map[string]string{},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Labels:    map[string]string{},
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.Equal(t, "test", pod.Labels["app"])
+				assert.Equal(t, "value", pod.Annotations["custom"])
+			},
+		},
+		{
+			name: "should remove deleted annotations and labels from physical pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					Labels: map[string]string{
+						"keep-label": "value",
+					},
+					Annotations: map[string]string{
+						"keep-annotation": "value",
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Labels: map[string]string{
+						"keep-label":   "value",
+						"delete-label": "value",
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(
+							map[string]string{"keep-annotation": "value", "delete-annotation": "value"},
+							map[string]string{"keep-label": "value", "delete-label": "value"},
+						),
+						"keep-annotation":   "value",
+						"delete-annotation": "value",
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Labels: map[string]string{
+							"keep-label":   "value",
+							"delete-label": "value",
+						},
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(
+								map[string]string{"keep-annotation": "value", "delete-annotation": "value"},
+								map[string]string{"keep-label": "value", "delete-label": "value"},
+							),
+							"keep-annotation":   "value",
+							"delete-annotation": "value",
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.Equal(t, "value", pod.Labels["keep-label"])
+				assert.NotContains(t, pod.Labels, "delete-label")
+				assert.Equal(t, "value", pod.Annotations["keep-annotation"])
+				assert.NotContains(t, pod.Annotations, "delete-annotation")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient: tt.setupClient(),
+				Log:            ctrl.Log.WithName("test"),
+			}
+
+			err := reconciler.syncVirtualPodMetadataAndSpecToPhysicalPod(ctx, tt.virtualPod, tt.physicalPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, reconciler.PhysicalClient)
+				}
+			}
+		})
+	}
+}
+
+// Helper function to create encoded expected metadata
+func createEncodedExpectedMetadata(annotations, labels map[string]string) string {
+	metadata := &ExpectedPodMetadata{
+		Annotations: annotations,
+		Labels:      labels,
+	}
+	bytes, _ := json.Marshal(metadata)
+	return base64.StdEncoding.EncodeToString(bytes)
+}
+
+// TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_ActiveDeadlineSeconds tests ActiveDeadlineSeconds sync
+func TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_ActiveDeadlineSeconds(t *testing.T) {
+	tests := []struct {
+		name         string
+		virtualPod   *corev1.Pod
+		physicalPod  *corev1.Pod
+		setupClient  func() client.Client
+		expectError  bool
+		validateFunc func(t *testing.T, client client.Client)
+	}{
+		{
+			name: "should sync ActiveDeadlineSeconds from virtual pod to physical pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: ptr.To(int64(3600)),
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: nil,
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						ActiveDeadlineSeconds: nil,
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.ActiveDeadlineSeconds)
+				assert.Equal(t, int64(3600), *pod.Spec.ActiveDeadlineSeconds)
+			},
+		},
+		{
+			name: "should update ActiveDeadlineSeconds when value changes",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: ptr.To(int64(7200)),
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: ptr.To(int64(3600)),
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						ActiveDeadlineSeconds: ptr.To(int64(3600)),
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.ActiveDeadlineSeconds)
+				assert.Equal(t, int64(7200), *pod.Spec.ActiveDeadlineSeconds)
+			},
+		},
+		{
+			name: "should handle nil ActiveDeadlineSeconds in virtual pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: nil,
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					ActiveDeadlineSeconds: ptr.To(int64(3600)),
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						ActiveDeadlineSeconds: ptr.To(int64(3600)),
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.Nil(t, pod.Spec.ActiveDeadlineSeconds)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient: tt.setupClient(),
+				Log:            ctrl.Log.WithName("test"),
+			}
+
+			err := reconciler.syncVirtualPodMetadataAndSpecToPhysicalPod(ctx, tt.virtualPod, tt.physicalPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, reconciler.PhysicalClient)
+				}
+			}
+		})
+	}
+}
+
+// TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_EphemeralContainers tests EphemeralContainers sync
+func TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_EphemeralContainers(t *testing.T) {
+	tests := []struct {
+		name         string
+		virtualPod   *corev1.Pod
+		physicalPod  *corev1.Pod
+		setupClient  func() client.Client
+		expectError  bool
+		validateFunc func(t *testing.T, client client.Client)
+	}{
+		{
+			name: "should sync EphemeralContainers from virtual pod to physical pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						EphemeralContainers: []corev1.EphemeralContainer{},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.EphemeralContainers)
+				assert.Len(t, pod.Spec.EphemeralContainers, 1)
+				assert.Equal(t, "debug-container", pod.Spec.EphemeralContainers[0].Name)
+				assert.Equal(t, "busybox:latest", pod.Spec.EphemeralContainers[0].Image)
+			},
+		},
+		{
+			name: "should update EphemeralContainers when value changes",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container-2",
+								Image: "alpine:latest",
+							},
+						},
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						EphemeralContainers: []corev1.EphemeralContainer{
+							{
+								EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+									Name:  "debug-container",
+									Image: "busybox:latest",
+								},
+							},
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.EphemeralContainers)
+				assert.Len(t, pod.Spec.EphemeralContainers, 2)
+				assert.Equal(t, "debug-container", pod.Spec.EphemeralContainers[0].Name)
+				assert.Equal(t, "busybox:latest", pod.Spec.EphemeralContainers[0].Image)
+				assert.Equal(t, "debug-container-2", pod.Spec.EphemeralContainers[1].Name)
+				assert.Equal(t, "alpine:latest", pod.Spec.EphemeralContainers[1].Image)
+			},
+		},
+		{
+			name: "should handle nil EphemeralContainers in virtual pod",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: nil,
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						EphemeralContainers: []corev1.EphemeralContainer{
+							{
+								EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+									Name:  "debug-container",
+									Image: "busybox:latest",
+								},
+							},
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.Nil(t, pod.Spec.EphemeralContainers)
+			},
+		},
+		{
+			name: "should not update when EphemeralContainers are the same",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+					},
+				},
+				Spec: corev1.PodSpec{
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:  "debug-container",
+								Image: "busybox:latest",
+							},
+						},
+					},
+				},
+			},
+			setupClient: func() client.Client {
+				scheme := runtime.NewScheme()
+				_ = corev1.AddToScheme(scheme)
+				_ = cloudv1beta1.AddToScheme(scheme)
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "physical-pod",
+						Namespace: "physical-ns",
+						Annotations: map[string]string{
+							cloudv1beta1.AnnotationExpectedMetadata: createEncodedExpectedMetadata(map[string]string{}, map[string]string{}),
+						},
+					},
+					Spec: corev1.PodSpec{
+						EphemeralContainers: []corev1.EphemeralContainer{
+							{
+								EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+									Name:  "debug-container",
+									Image: "busybox:latest",
+								},
+							},
+						},
+					},
+				}
+				return fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalPod).Build()
+			},
+			expectError: false,
+			validateFunc: func(t *testing.T, client client.Client) {
+				pod := &corev1.Pod{}
+				err := client.Get(context.Background(), types.NamespacedName{
+					Namespace: "physical-ns",
+					Name:      "physical-pod",
+				}, pod)
+				assert.NoError(t, err)
+				assert.NotNil(t, pod.Spec.EphemeralContainers)
+				assert.Len(t, pod.Spec.EphemeralContainers, 1)
+				assert.Equal(t, "debug-container", pod.Spec.EphemeralContainers[0].Name)
+				assert.Equal(t, "busybox:latest", pod.Spec.EphemeralContainers[0].Image)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient: tt.setupClient(),
+				Log:            ctrl.Log.WithName("test"),
+			}
+
+			err := reconciler.syncVirtualPodMetadataAndSpecToPhysicalPod(ctx, tt.virtualPod, tt.physicalPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if tt.validateFunc != nil {
+					tt.validateFunc(t, reconciler.PhysicalClient)
+				}
+			}
 		})
 	}
 }

@@ -17,9 +17,12 @@ limitations under the License.
 package utils
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -186,4 +189,178 @@ func TestIsDaemonSetPod(t *testing.T) {
 			assert.Equal(t, tt.isDaemonSet, result)
 		})
 	}
+}
+
+func TestTruncateHostnameIfNeeded(t *testing.T) {
+	logger := logr.Discard() // Use a no-op logger for testing
+
+	tests := []struct {
+		name            string
+		hostname        string
+		expectedResult  string
+		expectedError   bool
+		errorContains   string
+		validateTrimmed bool // If true, verify no trailing '-' or '.'
+	}{
+		{
+			name:           "short hostname - no truncation needed",
+			hostname:       "simple-hostname",
+			expectedResult: "simple-hostname",
+			expectedError:  false,
+		},
+		{
+			name:           "exactly 63 chars - no truncation needed",
+			hostname:       strings.Repeat("a", 63),
+			expectedResult: strings.Repeat("a", 63),
+			expectedError:  false,
+		},
+		{
+			name:           "empty hostname",
+			hostname:       "",
+			expectedResult: "",
+			expectedError:  false,
+		},
+		{
+			name:           "single character",
+			hostname:       "a",
+			expectedResult: "a",
+			expectedError:  false,
+		},
+		{
+			name:            "64 chars - truncate to 63",
+			hostname:        strings.Repeat("a", 64),
+			expectedResult:  strings.Repeat("a", 63),
+			expectedError:   false,
+			validateTrimmed: true,
+		},
+		{
+			name:            "100 chars - truncate to 63",
+			hostname:        strings.Repeat("x", 100),
+			expectedResult:  strings.Repeat("x", 63),
+			expectedError:   false,
+			validateTrimmed: true,
+		},
+		{
+			name:            "64 chars ending with dash - truncate and trim dash",
+			hostname:        strings.Repeat("a", 63) + "-",
+			expectedResult:  strings.Repeat("a", 63),
+			expectedError:   false,
+			validateTrimmed: true,
+		},
+		{
+			name:            "64 chars ending with dot - truncate and trim dot",
+			hostname:        strings.Repeat("b", 63) + ".",
+			expectedResult:  strings.Repeat("b", 63),
+			expectedError:   false,
+			validateTrimmed: true,
+		},
+		{
+			name:            "65 chars ending with dash - truncate and trim",
+			hostname:        strings.Repeat("c", 62) + "--",
+			expectedResult:  strings.Repeat("c", 62),
+			expectedError:   false,
+			validateTrimmed: true,
+		},
+		{
+			name:            "70 chars with multiple trailing dashes and dots",
+			hostname:        strings.Repeat("d", 60) + "---...----",
+			expectedResult:  strings.Repeat("d", 60),
+			expectedError:   false,
+			validateTrimmed: true,
+		},
+		{
+			name:            "long hostname with mixed characters ending with dash",
+			hostname:        "my-very-long-hostname-that-exceeds-the-63-characters-limit-abcdefg-", // 67 chars
+			expectedResult:  "my-very-long-hostname-that-exceeds-the-63-characters-limit-abcd",     // 63 chars (truncated, no trim needed)
+			expectedError:   false,
+			validateTrimmed: true,
+		},
+		{
+			name:            "long hostname with valid ending after truncation",
+			hostname:        "my-super-duper-long-hostname-that-definitely-exceeds-the-limit123", // 69 chars
+			expectedResult:  "my-super-duper-long-hostname-that-definitely-exceeds-the-limit1",   // 63 chars
+			expectedError:   false,
+			validateTrimmed: true,
+		},
+		{
+			name:           "64 chars all dashes and dots - should error",
+			hostname:       strings.Repeat("-.", 32),
+			expectedResult: "",
+			expectedError:  true,
+			errorContains:  "hostname was invalid",
+		},
+		{
+			name:            "normal hostname that needs truncation",
+			hostname:        "pod-name-with-very-long-suffix-0123456789abcdef0123456789abcdef0123456789", // 81 chars
+			expectedResult:  "pod-name-with-very-long-suffix-0123456789abcdef0123456789abcdef",           // 68 chars (first 63 of input)
+			expectedError:   false,
+			validateTrimmed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := TruncateHostnameIfNeeded(logger, tt.hostname)
+
+			if tt.expectedError {
+				require.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expectedResult, result)
+
+				// Verify length constraint
+				assert.LessOrEqual(t, len(result), 63, "Result should not exceed 63 characters")
+
+				// Verify no trailing dashes or dots if validateTrimmed is set
+				if tt.validateTrimmed && len(result) > 0 {
+					lastChar := result[len(result)-1]
+					assert.NotEqual(t, byte('-'), lastChar, "Result should not end with '-'")
+					assert.NotEqual(t, byte('.'), lastChar, "Result should not end with '.'")
+				}
+			}
+		})
+	}
+}
+
+// TestTruncateHostnameIfNeeded_EdgeCases tests additional edge cases
+func TestTruncateHostnameIfNeeded_EdgeCases(t *testing.T) {
+	logger := logr.Discard()
+
+	t.Run("hostname with unicode characters", func(t *testing.T) {
+		// Even though DNS hostnames shouldn't have unicode, test that truncation works
+		hostname := "pod-名字-" + strings.Repeat("a", 60)
+		result, err := TruncateHostnameIfNeeded(logger, hostname)
+		require.NoError(t, err)
+		// Length is counted in bytes, not runes
+		assert.LessOrEqual(t, len(result), 63)
+	})
+
+	t.Run("hostname exactly at boundary with valid ending", func(t *testing.T) {
+		hostname := strings.Repeat("a", 62) + "z"
+		result, err := TruncateHostnameIfNeeded(logger, hostname)
+		require.NoError(t, err)
+		assert.Equal(t, hostname, result)
+		assert.Equal(t, 63, len(result))
+	})
+
+	t.Run("hostname with dots in middle but not at end", func(t *testing.T) {
+		hostname := "my.pod.name." + strings.Repeat("x", 60)
+		result, err := TruncateHostnameIfNeeded(logger, hostname)
+		require.NoError(t, err)
+		assert.LessOrEqual(t, len(result), 63)
+		// Should preserve dots in the middle
+		assert.Contains(t, result, ".")
+	})
+
+	t.Run("hostname with dashes in middle but not at end", func(t *testing.T) {
+		hostname := "my-pod-name-" + strings.Repeat("y", 60)
+		result, err := TruncateHostnameIfNeeded(logger, hostname)
+		require.NoError(t, err)
+		assert.LessOrEqual(t, len(result), 63)
+		// Should preserve dashes in the middle
+		assert.Contains(t, result, "-")
+	})
 }

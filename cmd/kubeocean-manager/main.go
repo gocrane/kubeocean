@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -86,6 +87,11 @@ func main() {
 	if kubeClientBurst > 0 {
 		cfg.Burst = kubeClientBurst
 	}
+	k8sClient, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		setupLog.Error(err, "unable to create kubernetes client")
+		os.Exit(1)
+	}
 
 	// Setup manager options with enhanced leader election configuration
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
@@ -136,6 +142,7 @@ func main() {
 	// Setup ClusterBinding controller to manage ClusterBinding lifecycle and create Proxier/Syncer components.
 	if err = controller.NewClusterBindingReconciler(
 		mgr.GetClient(),
+		k8sClient,
 		mgr.GetScheme(),
 		ctrl.Log.WithName("controllers").WithName("ClusterBinding"),
 		mgr.GetEventRecorderFor("clusterbinding-controller"),

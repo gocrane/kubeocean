@@ -197,6 +197,12 @@ func (p *proxy) validateContainerExists(ctx context.Context, mappingInfo *PodMap
 		}
 	}
 
+	for _, container := range physicalPod.Spec.EphemeralContainers {
+		if container.Name == containerName {
+			return nil
+		}
+	}
+
 	return fmt.Errorf("container %s not found in physical pod", containerName)
 }
 

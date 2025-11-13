@@ -28,6 +28,9 @@ const (
 	testMountNamespace  = "default"
 	// testClusterIDValue is the value used for cluster ID labels in tests
 	testClusterIDValue = "true"
+	// Test metadata sync constants
+	testAnnotationValue1 = "value-1"
+	testLabelValue1      = "label-value-1"
 )
 
 // verifyPhysicalPodNodeAffinity verifies that the physical pod has the correct node affinity
@@ -295,6 +298,185 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 				}
 				return true
 			}, 3*time.Second, testPollingInterval).Should(gomega.BeTrue())
+		}, ginkgo.SpecTimeout(testTimeout))
+	})
+
+	ginkgo.Describe("Virtual Pod Metadata Synchronization to Physical Pod", func() {
+		ginkgo.It("should sync virtual pod metadata changes to physical pod", func(ctx context.Context) {
+			// Wait for virtual node to be ready before creating pods
+			waitForVirtualNodeReady(ctx, virtualNodeName)
+
+			ginkgo.By("Creating a virtual pod in the virtual cluster")
+			virtualPod := createTestVirtualPod("test-pod-metadata-sync", testPodNamespace, virtualNodeName)
+			gomega.Expect(k8sVirtual.Create(ctx, virtualPod)).To(gomega.Succeed())
+
+			ginkgo.By("Waiting for physical pod to be created")
+			var physicalPod *corev1.Pod
+			gomega.Eventually(func() bool {
+				pods := &corev1.PodList{}
+				err := k8sPhysical.List(ctx, pods, client.InNamespace(testMountNamespace))
+				if err != nil {
+					return false
+				}
+
+				for i := range pods.Items {
+					pod := &pods.Items[i]
+					if pod.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+						if pod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] == virtualPod.Namespace &&
+							pod.Annotations[cloudv1beta1.AnnotationVirtualPodName] == virtualPod.Name {
+							physicalPod = pod
+							return true
+						}
+					}
+				}
+				return false
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying physical pod was created successfully")
+			gomega.Expect(physicalPod).NotTo(gomega.BeNil())
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationExpectedMetadata]).NotTo(gomega.BeEmpty(),
+				"Physical pod should have expected-metadata annotation")
+
+			physicalPodName := physicalPod.Name
+			physicalPodNamespace := physicalPod.Namespace
+
+			ginkgo.By("Adding 2 annotations and 2 labels to virtual pod")
+			updatedVirtualPod := &corev1.Pod{}
+			gomega.Eventually(func() error {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{
+					Name: virtualPod.Name, Namespace: virtualPod.Namespace,
+				}, updatedVirtualPod)
+				if err != nil {
+					return err
+				}
+
+				// Add annotations
+				if updatedVirtualPod.Annotations == nil {
+					updatedVirtualPod.Annotations = make(map[string]string)
+				}
+				updatedVirtualPod.Annotations["custom-annotation-1"] = testAnnotationValue1
+				updatedVirtualPod.Annotations["custom-annotation-2"] = "value-2"
+
+				// Add labels
+				if updatedVirtualPod.Labels == nil {
+					updatedVirtualPod.Labels = make(map[string]string)
+				}
+				updatedVirtualPod.Labels["custom-label-1"] = testLabelValue1
+				updatedVirtualPod.Labels["custom-label-2"] = "label-value-2"
+
+				return k8sVirtual.Update(ctx, updatedVirtualPod)
+			}, testTimeout, testPollingInterval).Should(gomega.Succeed())
+
+			ginkgo.By("Verifying physical pod has the new annotations and labels")
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{
+					Name: physicalPodName, Namespace: physicalPodNamespace,
+				}, physicalPod)
+				if err != nil {
+					return false
+				}
+
+				// Check annotations
+				if physicalPod.Annotations["custom-annotation-1"] != testAnnotationValue1 {
+					return false
+				}
+				if physicalPod.Annotations["custom-annotation-2"] != "value-2" {
+					return false
+				}
+
+				// Check labels
+				if physicalPod.Labels["custom-label-1"] != testLabelValue1 {
+					return false
+				}
+				if physicalPod.Labels["custom-label-2"] != "label-value-2" {
+					return false
+				}
+
+				// Verify expected-metadata annotation is updated
+				if physicalPod.Annotations[cloudv1beta1.AnnotationExpectedMetadata] == "" {
+					return false
+				}
+
+				return true
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Removing 1 annotation and 1 label from virtual pod")
+			gomega.Eventually(func() error {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{
+					Name: virtualPod.Name, Namespace: virtualPod.Namespace,
+				}, updatedVirtualPod)
+				if err != nil {
+					return err
+				}
+
+				// Remove one annotation
+				delete(updatedVirtualPod.Annotations, "custom-annotation-2")
+
+				// Remove one label
+				delete(updatedVirtualPod.Labels, "custom-label-2")
+
+				return k8sVirtual.Update(ctx, updatedVirtualPod)
+			}, testTimeout, testPollingInterval).Should(gomega.Succeed())
+
+			ginkgo.By("Verifying physical pod has removed the annotations and labels")
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{
+					Name: physicalPodName, Namespace: physicalPodNamespace,
+				}, physicalPod)
+				if err != nil {
+					return false
+				}
+
+				// Verify custom-annotation-1 still exists
+				if physicalPod.Annotations["custom-annotation-1"] != testAnnotationValue1 {
+					return false
+				}
+
+				// Verify custom-annotation-2 is removed
+				if _, exists := physicalPod.Annotations["custom-annotation-2"]; exists {
+					return false
+				}
+
+				// Verify custom-label-1 still exists
+				if physicalPod.Labels["custom-label-1"] != testLabelValue1 {
+					return false
+				}
+
+				// Verify custom-label-2 is removed
+				if _, exists := physicalPod.Labels["custom-label-2"]; exists {
+					return false
+				}
+
+				return true
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying internal kubeocean annotations are preserved on physical pod")
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace]).To(gomega.Equal(virtualPod.Namespace))
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName]).To(gomega.Equal(virtualPod.Name))
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]).NotTo(gomega.BeEmpty())
+			gomega.Expect(physicalPod.Annotations[cloudv1beta1.AnnotationExpectedMetadata]).NotTo(gomega.BeEmpty())
+
+			ginkgo.By("Verifying managed-by label is preserved on physical pod")
+			gomega.Expect(physicalPod.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
+
+			ginkgo.By("Cleaning up virtual pod")
+			gomega.Expect(k8sVirtual.Delete(ctx, updatedVirtualPod)).To(gomega.Succeed())
+
+			ginkgo.By("Verifying physical pod is deleted")
+			gomega.Eventually(func() bool {
+				err := k8sPhysical.Get(ctx, types.NamespacedName{
+					Name: physicalPodName, Namespace: physicalPodNamespace,
+				}, physicalPod)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("Verifying virtual pod is deleted")
+			gomega.Eventually(func() bool {
+				err := k8sVirtual.Get(ctx, types.NamespacedName{
+					Name: virtualPod.Name, Namespace: virtualPod.Namespace,
+				}, updatedVirtualPod)
+				return apierrors.IsNotFound(err)
+			}, testTimeout, testPollingInterval).Should(gomega.BeTrue())
 		}, ginkgo.SpecTimeout(testTimeout))
 	})
 
@@ -893,9 +1075,9 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(physicalPod.Spec.DNSConfig.Nameservers).To(gomega.ContainElement("10.0.0.2")) // kube-dns-intranet IP
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options).To(gomega.HaveLen(1))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options[0].Name).To(gomega.Equal("ndots"))
-			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("3"))
+			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("5"))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Searches).To(gomega.Equal([]string{
-				"default.svc.cluster.local",
+				"pod-sync-test.svc.cluster.local",
 				"svc.cluster.local",
 				"cluster.local",
 			}))
@@ -1436,9 +1618,9 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(physicalPod.Spec.DNSConfig.Nameservers).To(gomega.ContainElement("10.0.0.2")) // kube-dns-intranet IP
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options).To(gomega.HaveLen(1))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options[0].Name).To(gomega.Equal("ndots"))
-			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("3"))
+			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("5"))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Searches).To(gomega.Equal([]string{
-				"default.svc.cluster.local",
+				"pod-sync-test.svc.cluster.local",
 				"svc.cluster.local",
 				"cluster.local",
 			}))
@@ -1789,9 +1971,9 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(physicalPod.Spec.DNSConfig.Nameservers).To(gomega.ContainElement("10.0.0.2")) // kube-dns-intranet IP
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options).To(gomega.HaveLen(1))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Options[0].Name).To(gomega.Equal("ndots"))
-			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("3"))
+			gomega.Expect(*physicalPod.Spec.DNSConfig.Options[0].Value).To(gomega.Equal("5"))
 			gomega.Expect(physicalPod.Spec.DNSConfig.Searches).To(gomega.Equal([]string{
-				"default.svc.cluster.local",
+				"pod-sync-test.svc.cluster.local",
 				"svc.cluster.local",
 				"cluster.local",
 			}))
@@ -1809,12 +1991,13 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			}
 			gomega.Expect(kubeApiAccessVolumes).ToNot(gomega.BeEmpty())
 
-			// Calculate expected physical secret name using the same logic as the controller
-			expectedSecretKey := fmt.Sprintf("%s-%s", virtualPod.Name, virtualPod.UID)
-			expectedSecretName := generatePhysicalName(expectedSecretKey, virtualPod.Namespace)
-
 			// Verify each kube-api-access volume has corresponding physical resources
 			for _, volume := range kubeApiAccessVolumes {
+				// Calculate expected physical secret name using the same logic as the controller
+				// Format: podName-volumeName-podUID
+				expectedSecretKey := fmt.Sprintf("%s-%s-%s", virtualPod.Name, volume.Name, virtualPod.UID)
+				expectedSecretName := generatePhysicalName(expectedSecretKey, virtualPod.Namespace)
+
 				if volume.Projected != nil {
 					for _, source := range volume.Projected.Sources {
 						// 1. Verify ServiceAccountToken is nil in physical pod
