@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 func TestIsSystemPod(t *testing.T) {
@@ -363,4 +364,66 @@ func TestTruncateHostnameIfNeeded_EdgeCases(t *testing.T) {
 		// Should preserve dashes in the middle
 		assert.Contains(t, result, "-")
 	})
+}
+
+func TestExtractPodFromDeleteEvent(t *testing.T) {
+	logger := logr.Discard()
+
+	testPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+			UID:       "test-uid-123",
+		},
+	}
+
+	tests := []struct {
+		name        string
+		obj         interface{}
+		expectedPod *corev1.Pod
+		expectOk    bool
+	}{
+		{
+			name:        "normal pod delete event",
+			obj:         testPod,
+			expectedPod: testPod,
+			expectOk:    true,
+		},
+		{
+			name: "DeletedFinalStateUnknown with pod",
+			obj: cache.DeletedFinalStateUnknown{
+				Key: "default/test-pod",
+				Obj: testPod,
+			},
+			expectedPod: testPod,
+			expectOk:    true,
+		},
+		{
+			name: "DeletedFinalStateUnknown with wrong type",
+			obj: cache.DeletedFinalStateUnknown{
+				Key: "default/test-service",
+				Obj: &corev1.Service{},
+			},
+			expectOk: false,
+		},
+		{
+			name:     "unexpected object type",
+			obj:      &corev1.Service{},
+			expectOk: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod, ok := ExtractPodFromDeleteEvent(tt.obj, logger)
+			assert.Equal(t, tt.expectOk, ok)
+			if tt.expectOk {
+				require.NotNil(t, pod)
+				assert.Equal(t, tt.expectedPod.Name, pod.Name)
+				assert.Equal(t, tt.expectedPod.Namespace, pod.Namespace)
+			} else {
+				assert.Nil(t, pod)
+			}
+		})
+	}
 }

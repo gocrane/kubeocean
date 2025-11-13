@@ -1214,7 +1214,10 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		// 暂时只关心 delete event，确保删除时，virtual pod 也能被删除
 		DeleteFunc: func(obj interface{}) {
-			pod := obj.(*corev1.Pod)
+			pod, ok := utils.ExtractPodFromDeleteEvent(obj, r.Log)
+			if !ok {
+				return
+			}
 			r.handlePhysicalPodEvent(pod, "DELETE")
 		},
 	})
