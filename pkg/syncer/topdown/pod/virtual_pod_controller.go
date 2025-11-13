@@ -85,13 +85,13 @@ type VirtualPodReconciler struct {
 func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualPod", req.NamespacedName)
 
-	// 1. Get the virtual pod, if not exists, do nothing
+	// 1. Get the virtual pod, if not exists, handle cleanup
 	virtualPod := &corev1.Pod{}
 	err := r.VirtualClient.Get(ctx, req.NamespacedName, virtualPod)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.V(1).Info("Virtual pod not found, doing nothing")
-			return ctrl.Result{}, nil
+			logger.V(1).Info("Virtual pod not found, checking for orphaned physical pod")
+			return r.handleVirtualPodNotFound(ctx, req.NamespacedName)
 		}
 		logger.Error(err, "Failed to get virtual pod")
 		return ctrl.Result{}, err
@@ -307,18 +307,57 @@ func (r *VirtualPodReconciler) handleVirtualPodDeletion(ctx context.Context, vir
 	}
 
 	// Physical pod exists, delete it
-	logger.Info("Deleting physical pod", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
+	logger.Info("Physical pod exists, deleting it", "physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+	return r.deletePhysicalPod(ctx, logger, physicalPod)
+}
+
+// handleVirtualPodNotFound handles the case when virtual pod is not found
+// It checks if there's an orphaned physical pod and deletes it
+func (r *VirtualPodReconciler) handleVirtualPodNotFound(ctx context.Context, namespacedName types.NamespacedName) (ctrl.Result, error) {
+	logger := r.Log.WithValues("virtualPod", namespacedName)
+
+	// Generate physical pod namespace and name according to default rules
+	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
+	if physicalNamespace == "" {
+		logger.V(1).Info("ClusterBinding MountNamespace is empty, skipping orphaned pod check")
+		return ctrl.Result{}, nil
+	}
+
+	physicalName := r.generatePhysicalPodName(namespacedName.Name, namespacedName.Namespace)
+
+	// Check if physical pod exists using fallback method
+	physicalPod, err := r.getPhysicalPodWithFallback(ctx, physicalNamespace, physicalName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("No orphaned physical pod found")
+			return ctrl.Result{}, nil
+		}
+		logger.Error(err, "Failed to get physical pod during orphaned pod check")
+		return ctrl.Result{}, err
+	}
+
+	// Physical pod exists, delete it
+	logger.Info("Found orphaned physical pod, deleting it", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
+	return r.deletePhysicalPod(ctx, logger, physicalPod)
+}
+
+// deletePhysicalPod deletes the physical pod
+func (r *VirtualPodReconciler) deletePhysicalPod(ctx context.Context, logger logr.Logger, physicalPod *corev1.Pod) (ctrl.Result, error) {
+	logger = logger.WithValues("physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+
+	logger.Info("Deleting physical pod")
 	if physicalPod.DeletionTimestamp != nil {
 		logger.Info("Physical pod is being deleted, waiting for deletion to complete")
 		return ctrl.Result{}, nil
 	}
-	err = r.PhysicalClient.Delete(ctx, physicalPod)
+
+	err := r.PhysicalClient.Delete(ctx, physicalPod)
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Error(err, "Failed to delete physical pod")
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully triggered virtual and physical pod deletion")
+	logger.Info("Successfully triggered physical pod deletion")
 	return ctrl.Result{}, nil
 }
 

@@ -9254,10 +9254,10 @@ func TestVirtualPodReconciler_DeleteMismatchedPhysicalPodIfNeeded(t *testing.T) 
 	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
 
 	tests := []struct {
-		name        string
-		virtualPod  *corev1.Pod
-		physicalPod *corev1.Pod
-		expectError bool
+		name         string
+		virtualPod   *corev1.Pod
+		physicalPod  *corev1.Pod
+		expectError  bool
 		expectDelete bool
 	}{
 		{
@@ -9269,8 +9269,8 @@ func TestVirtualPodReconciler_DeleteMismatchedPhysicalPodIfNeeded(t *testing.T) 
 					UID:       "virtual-uid-123",
 				},
 			},
-			physicalPod: nil,
-			expectError: true,
+			physicalPod:  nil,
+			expectError:  true,
 			expectDelete: false,
 		},
 		{
@@ -9293,7 +9293,7 @@ func TestVirtualPodReconciler_DeleteMismatchedPhysicalPodIfNeeded(t *testing.T) 
 					},
 				},
 			},
-			expectError: false,
+			expectError:  false,
 			expectDelete: false,
 		},
 		{
@@ -9316,7 +9316,7 @@ func TestVirtualPodReconciler_DeleteMismatchedPhysicalPodIfNeeded(t *testing.T) 
 					},
 				},
 			},
-			expectError: false,
+			expectError:  false,
 			expectDelete: false,
 		},
 		{
@@ -9339,7 +9339,7 @@ func TestVirtualPodReconciler_DeleteMismatchedPhysicalPodIfNeeded(t *testing.T) 
 					},
 				},
 			},
-			expectError: true,
+			expectError:  true,
 			expectDelete: true,
 		},
 	}
@@ -9374,6 +9374,131 @@ func TestVirtualPodReconciler_DeleteMismatchedPhysicalPodIfNeeded(t *testing.T) 
 					Namespace: tt.physicalPod.Namespace,
 				}, pod)
 				assert.True(t, apierrors.IsNotFound(err), "pod should be deleted")
+			}
+		})
+	}
+}
+
+func TestVirtualPodReconciler_HandleVirtualPodNotFound(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	// Create fake k8s clientset for direct API access
+	fakeClientset := fake.NewSimpleClientset()
+
+	tests := []struct {
+		name           string
+		clusterBinding *cloudv1beta1.ClusterBinding
+		namespacedName types.NamespacedName
+		setupPhysical  bool
+		expectError    bool
+		expectDelete   bool
+	}{
+		{
+			name: "MountNamespace is empty - should skip",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-binding",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID:      "test-cluster",
+					MountNamespace: "", // Empty
+				},
+			},
+			namespacedName: types.NamespacedName{
+				Namespace: "virtual-ns",
+				Name:      "virtual-pod",
+			},
+			setupPhysical: false,
+			expectError:   false,
+			expectDelete:  false,
+		},
+		{
+			name: "physical pod does not exist - should return success",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-binding",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID:      "test-cluster",
+					MountNamespace: "physical-ns",
+				},
+			},
+			namespacedName: types.NamespacedName{
+				Namespace: "virtual-ns",
+				Name:      "virtual-pod",
+			},
+			setupPhysical: false,
+			expectError:   false,
+			expectDelete:  false,
+		},
+		{
+			name: "orphaned physical pod exists - should delete it",
+			clusterBinding: &cloudv1beta1.ClusterBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-binding",
+				},
+				Spec: cloudv1beta1.ClusterBindingSpec{
+					ClusterID:      "test-cluster",
+					MountNamespace: "physical-ns",
+				},
+			},
+			namespacedName: types.NamespacedName{
+				Namespace: "virtual-ns",
+				Name:      "virtual-pod",
+			},
+			setupPhysical: true,
+			expectError:   false,
+			expectDelete:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary reconciler to generate physical pod name
+			tempReconciler := &VirtualPodReconciler{
+				ClusterBinding: tt.clusterBinding,
+			}
+			physicalName := tempReconciler.generatePhysicalPodName(tt.namespacedName.Name, tt.namespacedName.Namespace)
+
+			var physicalObjs []client.Object
+			if tt.setupPhysical {
+				physicalPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      physicalName,
+						Namespace: tt.clusterBinding.Spec.MountNamespace,
+					},
+				}
+				physicalObjs = append(physicalObjs, physicalPod)
+			}
+			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalObjs...).Build()
+
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient:    physicalClient,
+				PhysicalK8sClient: fakeClientset,
+				VirtualClient:     fakeclient.NewClientBuilder().WithScheme(scheme).Build(),
+				ClusterBinding:    tt.clusterBinding,
+				Log:               ctrl.Log.WithName("test"),
+			}
+
+			ctx := context.Background()
+			_, err := reconciler.handleVirtualPodNotFound(ctx, tt.namespacedName)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			// Check if pod was deleted
+			if tt.setupPhysical && tt.expectDelete {
+				pod := &corev1.Pod{}
+				err := physicalClient.Get(ctx, types.NamespacedName{
+					Name:      physicalName,
+					Namespace: tt.clusterBinding.Spec.MountNamespace,
+				}, pod)
+				assert.True(t, apierrors.IsNotFound(err), "orphaned pod should be deleted")
 			}
 		})
 	}
