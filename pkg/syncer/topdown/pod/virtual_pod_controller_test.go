@@ -9247,3 +9247,134 @@ func TestVirtualPodReconciler_syncVirtualPodMetadataAndSpecToPhysicalPod_Ephemer
 		})
 	}
 }
+
+func TestVirtualPodReconciler_DeleteMismatchedPhysicalPodIfNeeded(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	tests := []struct {
+		name        string
+		virtualPod  *corev1.Pod
+		physicalPod *corev1.Pod
+		expectError bool
+		expectDelete bool
+	}{
+		{
+			name: "physical pod is nil - should return error",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					UID:       "virtual-uid-123",
+				},
+			},
+			physicalPod: nil,
+			expectError: true,
+			expectDelete: false,
+		},
+		{
+			name: "physical pod does not belong to virtual pod - should skip",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					UID:       "virtual-uid-123",
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationVirtualPodNamespace: "other-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "other-pod",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid-123",
+					},
+				},
+			},
+			expectError: false,
+			expectDelete: false,
+		},
+		{
+			name: "UID matches - should not delete",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					UID:       "virtual-uid-123",
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+						cloudv1beta1.AnnotationVirtualPodUID:       "virtual-uid-123",
+					},
+				},
+			},
+			expectError: false,
+			expectDelete: false,
+		},
+		{
+			name: "UID mismatched - should delete and return error",
+			virtualPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "virtual-pod",
+					Namespace: "virtual-ns",
+					UID:       "virtual-uid-123",
+				},
+			},
+			physicalPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "physical-pod",
+					Namespace: "physical-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationVirtualPodNamespace: "virtual-ns",
+						cloudv1beta1.AnnotationVirtualPodName:      "virtual-pod",
+						cloudv1beta1.AnnotationVirtualPodUID:       "old-virtual-uid",
+					},
+				},
+			},
+			expectError: true,
+			expectDelete: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var physicalObjs []client.Object
+			if tt.physicalPod != nil {
+				physicalObjs = append(physicalObjs, tt.physicalPod)
+			}
+			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalObjs...).Build()
+
+			reconciler := &VirtualPodReconciler{
+				PhysicalClient: physicalClient,
+				Log:            ctrl.Log.WithName("test"),
+			}
+
+			ctx := context.Background()
+			err := reconciler.deleteMismatchedPhysicalPodIfNeeded(ctx, tt.virtualPod, tt.physicalPod)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			// Check if pod was deleted
+			if tt.physicalPod != nil && tt.expectDelete {
+				pod := &corev1.Pod{}
+				err := physicalClient.Get(ctx, types.NamespacedName{
+					Name:      tt.physicalPod.Name,
+					Namespace: tt.physicalPod.Namespace,
+				}, pod)
+				assert.True(t, apierrors.IsNotFound(err), "pod should be deleted")
+			}
+		})
+	}
+}

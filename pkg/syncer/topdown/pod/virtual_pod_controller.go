@@ -132,6 +132,13 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	// 5.1. If physical pod exists, check if it's stale data and delete if necessary
+	if physicalPodExists && physicalPod != nil {
+		if err := r.deleteMismatchedPhysicalPodIfNeeded(ctx, virtualPod, physicalPod); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// 6. If physical pod doesn't exist, enter creation flow
 	if !physicalPodExists {
 		logger.Info("Physical pod doesn't exist, entering creation flow")
@@ -289,9 +296,14 @@ func (r *VirtualPodReconciler) handleVirtualPodDeletion(ctx context.Context, vir
 	}
 
 	// If physical pod is not owned by virtual pod, force delete virtual pod
-	if !r.isPhysicalPodOwnedByVirtualPod(physicalPod, virtualPod) {
+	if physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] != virtualPod.Namespace || physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName] != virtualPod.Name {
 		logger.Info("Physical pod is not owned by virtual pod, allowing virtual pod deletion")
 		return r.forceDeleteVirtualPod(ctx, virtualPod)
+	} else if physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID] != string(virtualPod.UID) {
+		logger.Info("Physical pod has mismatched virtual pod UID, deleting mismatched physical pod",
+			"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+			"physicalPodVirtualUID", physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID],
+			"expectedVirtualUID", string(virtualPod.UID))
 	}
 
 	// Physical pod exists, delete it
@@ -425,6 +437,45 @@ func (r *VirtualPodReconciler) checkPhysicalPodExists(ctx context.Context, virtu
 	return true, physicalPod, nil
 }
 
+// deleteMismatchedPhysicalPodIfNeeded checks if physical pod has mismatched virtual pod UID and deletes it if needed
+func (r *VirtualPodReconciler) deleteMismatchedPhysicalPodIfNeeded(ctx context.Context, virtualPod, physicalPod *corev1.Pod) error {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	if physicalPod == nil {
+		return fmt.Errorf("physical pod is nil")
+	}
+	if physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] != virtualPod.Namespace || physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName] != virtualPod.Name {
+		logger.Info("physical pod does not belong to virtual pod, skip deleting", "physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+		return nil
+	}
+
+	// Check if physical pod's AnnotationVirtualPodUID matches virtual pod's UID
+	physicalPodVirtualUID := ""
+	if physicalPod.Annotations != nil {
+		physicalPodVirtualUID = physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]
+	}
+
+	expectedVirtualUID := string(virtualPod.UID)
+	if physicalPodVirtualUID != "" && physicalPodVirtualUID != expectedVirtualUID {
+		// Physical pod is stale data, need to delete it
+		logger.Info("Physical pod has mismatched virtual pod UID, deleting mismatched physical pod",
+			"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+			"physicalPodVirtualUID", physicalPodVirtualUID,
+			"expectedVirtualUID", expectedVirtualUID)
+
+		err := r.PhysicalClient.Delete(ctx, physicalPod)
+		if err != nil && !apierrors.IsNotFound(err) {
+			logger.Error(err, "Failed to delete mismatched physical pod")
+			return err
+		}
+
+		return fmt.Errorf("physical pod has mismatched virtual pod UID, physicalPod %s/%s, physicalPodVirtualUID %s, expectedVirtualUID %s",
+			physicalPod.Namespace, physicalPod.Name, physicalPodVirtualUID, expectedVirtualUID)
+	}
+
+	return nil
+}
+
 // handlePhysicalPodCreation handles the creation flow for physical pod
 func (r *VirtualPodReconciler) handlePhysicalPodCreation(ctx context.Context, virtualPod *corev1.Pod, physicalNodeName string) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
@@ -486,6 +537,9 @@ func (r *VirtualPodReconciler) generatePhysicalPodMapping(ctx context.Context, v
 			logger.Info("Found existing physical pod that belongs to current virtual pod", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
 			return r.recordPhysicalPodMapping(ctx, virtualPod, existingPod)
 		} else {
+			if err := r.deleteMismatchedPhysicalPodIfNeeded(ctx, virtualPod, existingPod); err != nil {
+				return ctrl.Result{}, err
+			}
 			// Physical pod exists but belongs to different virtual pod - name conflict
 			logger.Error(nil, "Physical pod name conflict: pod exists but belongs to different virtual pod", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
 			return ctrl.Result{}, fmt.Errorf("physical pod name conflict")
