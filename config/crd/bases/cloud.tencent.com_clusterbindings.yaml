@@ -55,6 +55,12 @@ spec:
                 maxLength: 24
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                 type: string
+              directScheduling:
+                description: |-
+                  DirectScheduling controls whether to use direct scheduling for physical pods
+                  If true, physical pods will be created with spec.nodeName directly set, without nodeAffinity
+                  If false or not set, physical pods will use nodeAffinity for scheduling (current behavior)
+                type: boolean
               disableNodeDefaultTaint:
                 description: |-
                   DisableNodeDefaultTaint controls whether to add the default kubeocean.io/vnode taint to virtual nodes

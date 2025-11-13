@@ -817,35 +817,43 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	// Deep copy the spec to avoid modifying the original
 	spec := *virtualPod.Spec.DeepCopy()
 
-	// Set node affinity to force scheduling to the specific physical node
-	spec.Affinity = &corev1.Affinity{
-		NodeAffinity: &corev1.NodeAffinity{
-			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-				NodeSelectorTerms: []corev1.NodeSelectorTerm{
-					{
-						MatchFields: []corev1.NodeSelectorRequirement{
-							{
-								Key:      "metadata.name",
-								Operator: corev1.NodeSelectorOpIn,
-								Values:   []string{physicalNodeName},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	spec.NodeSelector = nil
-	spec.SchedulerName = ""
-	//preemptNever := corev1.PreemptNever
-	//spec.PreemptionPolicy = &preemptNever
-
 	// Get ClusterBinding
 	cb := &cloudv1beta1.ClusterBinding{}
 	if err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: r.ClusterBinding.Name}, cb); err != nil {
 		return spec, fmt.Errorf("failed to get cluster binding: %w", err)
 	}
 	r.ClusterBinding = cb
+
+	// Configure node scheduling based on DirectScheduling setting
+	if r.ClusterBinding.Spec.DirectScheduling {
+		// Direct scheduling: set spec.nodeName directly without nodeAffinity
+		spec.NodeName = physicalNodeName
+		spec.Affinity = nil
+	} else {
+		// Double scheduling: use nodeAffinity to allow scheduler to schedule the pod
+		spec.NodeName = ""
+		spec.Affinity = &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{
+						{
+							MatchFields: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "metadata.name",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{physicalNodeName},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	spec.NodeSelector = nil
+	spec.SchedulerName = ""
+	//preemptNever := corev1.PreemptNever
+	//spec.PreemptionPolicy = &preemptNever
 
 	// Set PriorityClassName based on ClusterBinding configuration
 	priorityClassName := r.ClusterBinding.Spec.PodPriorityClassName
@@ -864,7 +872,6 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	// cleanup service account related fields
 	spec.ServiceAccountName = ""
 	spec.DeprecatedServiceAccount = ""
-	spec.NodeName = ""
 
 	// set hostname to virtual pod name if not set
 	if spec.Hostname == "" {

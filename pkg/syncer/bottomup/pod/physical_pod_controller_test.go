@@ -1065,3 +1065,145 @@ func TestPhysicalPodReconciler_DeleteServiceAccountTokenSecretsFromSpec(t *testi
 		})
 	}
 }
+
+func TestPhysicalPodReconciler_MergeConditions(t *testing.T) {
+	reconciler := &PhysicalPodReconciler{
+		Log: ctrl.Log.WithName("test"),
+	}
+
+	now := metav1.Now()
+
+	tests := []struct {
+		name               string
+		virtualConditions  []corev1.PodCondition
+		physicalConditions []corev1.PodCondition
+		expectedConditions []corev1.PodCondition
+	}{
+		{
+			name: "preserve virtual PodScheduled and add physical conditions",
+			virtualConditions: []corev1.PodCondition{
+				{
+					Type:               corev1.PodScheduled,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "VirtualScheduled",
+					Message:            "Scheduled by virtual scheduler",
+				},
+			},
+			physicalConditions: []corev1.PodCondition{
+				{
+					Type:               corev1.PodReady,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "Ready",
+				},
+				{
+					Type:               corev1.ContainersReady,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "ContainersReady",
+				},
+			},
+			expectedConditions: []corev1.PodCondition{
+				{
+					Type:               corev1.PodScheduled,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "VirtualScheduled",
+					Message:            "Scheduled by virtual scheduler",
+				},
+				{
+					Type:               corev1.PodReady,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "Ready",
+				},
+				{
+					Type:               corev1.ContainersReady,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "ContainersReady",
+				},
+			},
+		},
+		{
+			name: "use virtual PodScheduled and ignore physical PodScheduled",
+			virtualConditions: []corev1.PodCondition{
+				{
+					Type:               corev1.PodScheduled,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "VirtualScheduled",
+					Message:            "Scheduled by virtual scheduler",
+				},
+			},
+			physicalConditions: []corev1.PodCondition{
+				{
+					Type:               corev1.PodScheduled,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "PhysicalScheduled",
+					Message:            "Should be ignored",
+				},
+				{
+					Type:               corev1.PodReady,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "Ready",
+				},
+			},
+			expectedConditions: []corev1.PodCondition{
+				{
+					Type:               corev1.PodScheduled,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "VirtualScheduled",
+					Message:            "Scheduled by virtual scheduler",
+				},
+				{
+					Type:               corev1.PodReady,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: now,
+					Reason:             "Ready",
+				},
+			},
+		},
+		{
+			name:               "empty conditions on both sides",
+			virtualConditions:  []corev1.PodCondition{},
+			physicalConditions: []corev1.PodCondition{},
+			expectedConditions: []corev1.PodCondition{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := reconciler.mergeConditions(tt.virtualConditions, tt.physicalConditions)
+
+			assert.Equal(t, len(tt.expectedConditions), len(result),
+				"expected %d conditions, got %d", len(tt.expectedConditions), len(result))
+
+			// Convert to maps for easier comparison
+			expectedMap := make(map[corev1.PodConditionType]corev1.PodCondition)
+			for _, cond := range tt.expectedConditions {
+				expectedMap[cond.Type] = cond
+			}
+
+			resultMap := make(map[corev1.PodConditionType]corev1.PodCondition)
+			for _, cond := range result {
+				resultMap[cond.Type] = cond
+			}
+
+			// Check each condition
+			for condType, expectedCond := range expectedMap {
+				resultCond, exists := resultMap[condType]
+				assert.True(t, exists, "expected condition type %s not found", condType)
+				if exists {
+					assert.Equal(t, expectedCond.Status, resultCond.Status, "condition %s status mismatch", condType)
+					assert.Equal(t, expectedCond.Reason, resultCond.Reason, "condition %s reason mismatch", condType)
+					assert.Equal(t, expectedCond.Message, resultCond.Message, "condition %s message mismatch", condType)
+				}
+			}
+		})
+	}
+}
