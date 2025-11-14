@@ -126,22 +126,6 @@ func (tds *TopDownSyncer) setupControllers() error {
 		return fmt.Errorf("cluster binding mount namespace is empty")
 	}
 
-	// Setup Virtual Pod Controller
-	tds.virtualPodController = &toppod.VirtualPodReconciler{
-		VirtualClient:     tds.virtualManager.GetClient(),
-		PhysicalClient:    tds.physicalManager.GetClient(),
-		PhysicalK8sClient: physicalK8sClient,
-		Scheme:            tds.Scheme,
-		ClusterBinding:    tds.ClusterBinding,
-		ClusterID:         tds.ClusterBinding.Spec.ClusterID,
-		Log:               tds.Log.WithName("virtual-pod-controller"),
-		TokenManager:      token.NewManager(virtualK8sClient, tds.Log.WithName("token-manager")),
-	}
-
-	if err := tds.virtualPodController.SetupWithManager(tds.virtualManager, tds.physicalManager); err != nil {
-		return fmt.Errorf("failed to setup virtual pod controller: %w", err)
-	}
-
 	// Setup Virtual ConfigMap Controller
 	tds.virtualConfigMapController = &configmap.VirtualConfigMapReconciler{
 		VirtualClient:     tds.virtualManager.GetClient(),
@@ -200,6 +184,25 @@ func (tds *TopDownSyncer) setupControllers() error {
 
 	if err := tds.virtualPVController.SetupWithManager(tds.virtualManager, tds.physicalManager); err != nil {
 		return fmt.Errorf("failed to setup virtual pv controller: %w", err)
+	}
+
+	// Setup Virtual Pod Controller
+	tds.virtualPodController = &toppod.VirtualPodReconciler{
+		VirtualClient:     tds.virtualManager.GetClient(),
+		PhysicalClient:    tds.physicalManager.GetClient(),
+		PhysicalK8sClient: physicalK8sClient,
+		Scheme:            tds.Scheme,
+		ClusterBinding:    tds.ClusterBinding,
+		ClusterID:         tds.ClusterBinding.Spec.ClusterID,
+		Log:               tds.Log.WithName("virtual-pod-controller"),
+		TokenManager:      token.NewManager(virtualK8sClient, tds.Log.WithName("token-manager")),
+
+		ConfigmapController: tds.virtualConfigMapController,
+		SecretController:    tds.virtualSecretController,
+	}
+
+	if err := tds.virtualPodController.SetupWithManager(tds.virtualManager, tds.physicalManager); err != nil {
+		return fmt.Errorf("failed to setup virtual pod controller: %w", err)
 	}
 
 	// Setup Virtual LogConfig Controller

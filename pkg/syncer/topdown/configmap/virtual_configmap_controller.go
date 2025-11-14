@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -13,6 +14,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
@@ -28,6 +30,11 @@ type VirtualConfigMapReconciler struct {
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
 	ClusterID         string // Cached cluster ID for performance
+
+	// Cached configmaps synced, key is virtual configmap namespace/name, value is pod namespace/name that use it
+	configmapsNeedsSynced     map[string]map[string]struct{}
+	configmapsNeedsSyncedLock sync.RWMutex
+	podConfigmapsRefs         map[string]map[string]bool
 }
 
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
@@ -41,7 +48,10 @@ func (r *VirtualConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	err := r.VirtualClient.Get(ctx, req.NamespacedName, virtualConfigMap)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.V(1).Info("Virtual ConfigMap not found, doing nothing")
+			logger.V(1).Info("Virtual ConfigMap not found, removing from needs synced list")
+			// if some pods need this configmap, the pods needs to be recreated to sync the configmap
+			// TODO: consider deleting the physical configmap if it is not used by any other pods
+			r.UnsetConfigmapNeedsSynced(req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get virtual ConfigMap")
@@ -49,15 +59,19 @@ func (r *VirtualConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// 2. Check if configmap is managed by Kubeocean
-	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		logger.V(1).Info("ConfigMap not managed by Kubeocean, skipping")
+	if r.shouldSkipSync(virtualConfigMap, logger) {
+		logger.V(1).Info("ConfigMap not managed by Kubeocean or not managed by this cluster, skipping")
 		return ctrl.Result{}, nil
 	}
 
-	// 2.5. Check if configmap belongs to this cluster
-	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
-	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
-		logger.V(1).Info("ConfigMap not managed by this cluster, skipping", "ClusterID", r.ClusterID)
+	// 2.5. Update virtual resource labels and annotations if needed
+	updated, err := r.updateVirtualConfigMapLabelsAndAnnotations(ctx, virtualConfigMap, logger)
+	if err != nil {
+		logger.Error(err, "Failed to update virtual resource labels and annotations")
+		return ctrl.Result{}, err
+	}
+	if updated {
+		logger.Info("Update virtual resource labels and annotations, wait for it updated")
 		return ctrl.Result{}, nil
 	}
 
@@ -107,9 +121,105 @@ func (r *VirtualConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return r.updatePhysicalConfigMapIfNeeded(ctx, virtualConfigMap, physicalConfigMap, physicalName)
 }
 
+func (r *VirtualConfigMapReconciler) shouldSkipSync(virtualConfigMap *corev1.ConfigMap, logger logr.Logger) bool {
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
+	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue || virtualConfigMap.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
+		if !r.IsConfigmapNeedsSynced(virtualConfigMap.Namespace, virtualConfigMap.Name) {
+			return true
+		}
+		logger.Info("ConfigMap lacks managed labels, but still needs to be synced, syncing")
+	}
+	logger.V(1).Info("ConfigMap is managed by Kubeocean and managed by this cluster, syncing")
+	return false
+}
+
+func (r *VirtualConfigMapReconciler) updateVirtualConfigMapLabelsAndAnnotations(ctx context.Context, virtualConfigMap *corev1.ConfigMap, logger logr.Logger) (bool, error) {
+
+	if !r.IsConfigmapNeedsSynced(virtualConfigMap.Namespace, virtualConfigMap.Name) {
+		logger.V(1).Info("Configmap does not need to be synced, skipping update")
+		return false, nil
+	}
+
+	clusterSpecificFinalizer := topcommon.GetClusterSpecificFinalizer(r.ClusterID)
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
+	if virtualConfigMap.Labels == nil || virtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue || virtualConfigMap.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue ||
+		virtualConfigMap.Annotations == nil || virtualConfigMap.Annotations[cloudv1beta1.AnnotationPhysicalName] == "" ||
+		len(virtualConfigMap.Finalizers) == 0 || !controllerutil.ContainsFinalizer(virtualConfigMap, clusterSpecificFinalizer) {
+		logger.Info("ConfigMap lacks managed labels, annotations, finalizer or physical name, updating labels and annotations")
+		// generate physical name and namespace
+		physicalName := topcommon.GeneratePhysicalResourceName(virtualConfigMap.Name, virtualConfigMap.Namespace)
+		physicalNamespace := r.ClusterBinding.Spec.MountNamespace
+		err := topcommon.UpdateVirtualResourceLabelsAndAnnotations(ctx, r.VirtualClient, r.Log, r.ClusterID, virtualConfigMap, physicalName, physicalNamespace, nil)
+		if err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (r *VirtualConfigMapReconciler) shouldConfigmapNeedsSynced(configmap *corev1.ConfigMap) bool {
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
+	if configmap.Labels == nil || configmap.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue || configmap.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
+		if !r.IsConfigmapNeedsSynced(configmap.Namespace, configmap.Name) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *VirtualConfigMapReconciler) IsConfigmapNeedsSynced(namespace, name string) bool {
+	r.configmapsNeedsSyncedLock.RLock()
+	defer r.configmapsNeedsSyncedLock.RUnlock()
+	_, ok := r.configmapsNeedsSynced[fmt.Sprintf("%s/%s", namespace, name)]
+	return ok
+}
+
+func (r *VirtualConfigMapReconciler) AddConfigmapsNeedsSynced(namespace string, names map[string]bool, podNamespace, podName string) {
+	r.configmapsNeedsSyncedLock.Lock()
+	defer r.configmapsNeedsSyncedLock.Unlock()
+	if len(names) == 0 {
+		return
+	}
+	podKey := fmt.Sprintf("%s/%s", podNamespace, podName)
+	for name := range names {
+		key := fmt.Sprintf("%s/%s", namespace, name)
+		if _, ok := r.configmapsNeedsSynced[key]; !ok {
+			r.configmapsNeedsSynced[key] = make(map[string]struct{})
+		}
+		r.configmapsNeedsSynced[key][podKey] = struct{}{}
+	}
+	r.podConfigmapsRefs[podKey] = names
+}
+
+func (r *VirtualConfigMapReconciler) DeleteConfigmapsNeedsSynced(podNamespace, podName string) {
+	r.configmapsNeedsSyncedLock.Lock()
+	defer r.configmapsNeedsSyncedLock.Unlock()
+	podKey := fmt.Sprintf("%s/%s", podNamespace, podName)
+	names := r.podConfigmapsRefs[podKey]
+	for name := range names {
+		delete(r.configmapsNeedsSynced[fmt.Sprintf("%s/%s", podNamespace, name)], podKey)
+		// TODO: consider deleting the physical configmap if it is not used by any other pods
+		// if len(r.configmapsNeedsSynced[fmt.Sprintf("%s/%s", namespace, name)]) == 0 {
+		//	 delete(r.configmapsNeedsSynced, fmt.Sprintf("%s/%s", namespace, name))
+		// }
+	}
+	delete(r.podConfigmapsRefs, podKey)
+}
+
+func (r *VirtualConfigMapReconciler) UnsetConfigmapNeedsSynced(namespace, name string) {
+	r.configmapsNeedsSyncedLock.Lock()
+	defer r.configmapsNeedsSyncedLock.Unlock()
+	delete(r.configmapsNeedsSynced, fmt.Sprintf("%s/%s", namespace, name))
+}
+
 // handleVirtualConfigMapDeletion handles deletion of virtual configmap
 func (r *VirtualConfigMapReconciler) handleVirtualConfigMapDeletion(ctx context.Context, virtualConfigMap *corev1.ConfigMap, physicalName string, physicalConfigMapExists bool, physicalConfigMap *corev1.ConfigMap) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualConfigMap", fmt.Sprintf("%s/%s", virtualConfigMap.Namespace, virtualConfigMap.Name))
+
+	logger.V(1).Info("Unset configmap needs synced")
+	r.UnsetConfigmapNeedsSynced(virtualConfigMap.Namespace, virtualConfigMap.Name)
 
 	if !physicalConfigMapExists {
 		logger.V(1).Info("Physical ConfigMap doesn't exist, nothing to delete")
@@ -220,6 +330,9 @@ func (r *VirtualConfigMapReconciler) SetupWithManager(virtualManager, physicalMa
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualconfigmap-%s", r.ClusterBinding.Name)
 
+	r.configmapsNeedsSynced = make(map[string]map[string]struct{})
+	r.podConfigmapsRefs = make(map[string]map[string]bool)
+
 	return ctrl.NewControllerManagedBy(virtualManager).
 		For(&corev1.ConfigMap{}).
 		Named(controllerName).
@@ -228,20 +341,11 @@ func (r *VirtualConfigMapReconciler) SetupWithManager(virtualManager, physicalMa
 		}).
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 			configMap := obj.(*corev1.ConfigMap)
-
-			// Only sync configmaps managed by Kubeocean
-			if configMap.Labels == nil || configMap.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
+			if configMap == nil {
 				return false
 			}
 
-			// Only sync configmaps with physical name label
-			if configMap.Annotations == nil || configMap.Annotations[cloudv1beta1.AnnotationPhysicalName] == "" {
-				return false
-			}
-
-			// Only sync configmaps managed by this cluster
-			managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
-			return configMap.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
+			return r.shouldConfigmapNeedsSynced(configMap)
 		})).
 		Complete(r)
 }

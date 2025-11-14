@@ -23,10 +23,12 @@ import (
 )
 
 const (
-	// testClusterIDValue is the value used for cluster ID labels in tests
-	testClusterIDValue = "true"
-	// testVirtualNamespace is the virtual namespace used in tests
-	testVirtualNamespace = "virtual-ns"
+	testClusterIDValue           = "true"
+	testVirtualNamespace         = "virtual-ns"
+	testClusterID                = "test-cluster-id"
+	testPhysicalNamespace        = "physical-ns"
+	testClusterSpecificFinalizer = "kubeocean.io/finalizer-test-cluster-id"
+	testManagedByClusterIDLabel  = "kubeocean.io/synced-by-test-cluster-id"
 )
 
 func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
@@ -36,42 +38,46 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 
 	clusterBinding := &cloudv1beta1.ClusterBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster"},
-		Spec: cloudv1beta1.ClusterBindingSpec{
-			ClusterID:      "test-cluster-id",
-			MountNamespace: "physical-ns",
-		},
+		Spec:       cloudv1beta1.ClusterBindingSpec{ClusterID: testClusterID, MountNamespace: testPhysicalNamespace},
 	}
 
-	// Helper function to add ClusterID label to virtual Secret
-	addClusterIDLabel := func(secret *corev1.Secret) {
-		if secret != nil && secret.Labels != nil {
-			secret.Labels["kubeocean.io/synced-by-test-cluster-id"] = testClusterIDValue
-		}
-	}
+	testSecretPhysicalName := topcommon.GeneratePhysicalResourceName("test-secret", testVirtualNamespace)
 
-	// Helper function to create a test Secret
-	// For virtual Secret: otherName is the physical name
-	// For physical Secret: otherName is the virtual name
-	createTestSecret := func(name, namespace, otherName, otherNamespace string, data map[string][]byte, isVirtual bool) *corev1.Secret {
-		secret := &corev1.Secret{
+	// Helper: create virtual secret with full metadata
+	createVirtualSecret := func(name string, data map[string][]byte, withClusterLabels bool, deletionTS *metav1.Time) *corev1.Secret {
+		s := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-				Labels: map[string]string{
-					cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				Name:              name,
+				Namespace:         testVirtualNamespace,
+				DeletionTimestamp: deletionTS,
+				Labels:            map[string]string{cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue},
+				Annotations: map[string]string{
+					cloudv1beta1.AnnotationPhysicalName:      topcommon.GeneratePhysicalResourceName(name, testVirtualNamespace),
+					cloudv1beta1.AnnotationPhysicalNamespace: testPhysicalNamespace,
 				},
-				Annotations: make(map[string]string),
 			},
 			Type: corev1.SecretTypeOpaque,
 			Data: data,
 		}
-		if isVirtual {
-			secret.Annotations[cloudv1beta1.AnnotationPhysicalName] = otherName
-			secret.Annotations[cloudv1beta1.AnnotationPhysicalNamespace] = otherNamespace
-		} else {
-			secret.Annotations[cloudv1beta1.AnnotationVirtualName] = otherName
+		if withClusterLabels {
+			s.Finalizers = []string{testClusterSpecificFinalizer}
+			s.Labels[testManagedByClusterIDLabel] = testClusterIDValue
 		}
-		return secret
+		return s
+	}
+
+	// Helper: create physical secret
+	createPhysicalSecret := func(physicalName, virtualName string, data map[string][]byte) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        physicalName,
+				Namespace:   testPhysicalNamespace,
+				Labels:      map[string]string{cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue},
+				Annotations: map[string]string{cloudv1beta1.AnnotationVirtualName: virtualName},
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: data,
+		}
 	}
 
 	tests := []struct {
@@ -109,8 +115,9 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			name: "virtual secret not managed by this cluster",
 			virtualSecret: &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-secret",
-					Namespace: testVirtualNamespace,
+					Name:       "test-secret",
+					Namespace:  testVirtualNamespace,
+					Finalizers: []string{"kubeocean.io/finalizer-other-cluster-id"},
 					Labels: map[string]string{
 						cloudv1beta1.LabelManagedBy:               cloudv1beta1.LabelManagedByValue,
 						"kubeocean.io/synced-by-other-cluster-id": testClusterIDValue,
@@ -147,76 +154,25 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name: "virtual secret being deleted",
-			virtualSecret: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:              "test-secret",
-					Namespace:         testVirtualNamespace,
-					DeletionTimestamp: &metav1.Time{Time: metav1.Now().Time},
-					Finalizers:        []string{"test-finalizer"},
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
-						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
-					},
-				},
-				Type: corev1.SecretTypeOpaque,
-				Data: map[string][]byte{
-					"key": []byte("value"),
-				},
-			},
-			physicalSecret: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "physical-secret",
-					Namespace: "physical-ns",
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationVirtualName: "test-secret",
-					},
-				},
-			},
+			name:           "virtual secret being deleted",
+			virtualSecret:  createVirtualSecret("test-secret", map[string][]byte{"key": []byte("value")}, true, &metav1.Time{Time: metav1.Now().Time}),
+			physicalSecret: createPhysicalSecret(testSecretPhysicalName, "test-secret", nil),
 			expectedResult: ctrl.Result{},
 			expectError:    false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
-				// Physical secret should be deleted
 				secret := &corev1.Secret{}
-				err := physicalClient.Get(context.TODO(), types.NamespacedName{
-					Name: "physical-secret", Namespace: "physical-ns",
-				}, secret)
+				err := physicalClient.Get(context.TODO(), types.NamespacedName{Name: testSecretPhysicalName, Namespace: testPhysicalNamespace}, secret)
 				assert.True(t, apierrors.IsNotFound(err))
 			},
 		},
 		{
-			name: "virtual secret exists but physical secret doesn't exist",
-			virtualSecret: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-secret",
-					Namespace: testVirtualNamespace,
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName:      "physical-secret",
-						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
-					},
-				},
-				Type: corev1.SecretTypeOpaque,
-				Data: map[string][]byte{
-					"key": []byte("value"),
-				},
-			},
+			name:           "virtual secret exists but physical secret doesn't exist",
+			virtualSecret:  createVirtualSecret("test-secret", map[string][]byte{"key": []byte("value")}, true, nil),
 			expectedResult: ctrl.Result{},
 			expectError:    false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
-				// Physical secret should be created
 				secret := &corev1.Secret{}
-				err := physicalClient.Get(context.TODO(), types.NamespacedName{
-					Name: "physical-secret", Namespace: "physical-ns",
-				}, secret)
+				err := physicalClient.Get(context.TODO(), types.NamespacedName{Name: testSecretPhysicalName, Namespace: testPhysicalNamespace}, secret)
 				require.NoError(t, err)
 				assert.Equal(t, []byte("value"), secret.Data["key"])
 				assert.Equal(t, corev1.SecretTypeOpaque, secret.Type)
@@ -225,32 +181,26 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 		},
 		{
 			name:           "virtual secret and physical secret both exist and are in sync",
-			virtualSecret:  createTestSecret("test-secret", testVirtualNamespace, "physical-secret", "physical-ns", map[string][]byte{"key": []byte("value")}, true),
-			physicalSecret: createTestSecret("physical-secret", "physical-ns", "test-secret", testVirtualNamespace, map[string][]byte{"key": []byte("value")}, false),
+			virtualSecret:  createVirtualSecret("test-secret", map[string][]byte{"key": []byte("value")}, true, nil),
+			physicalSecret: createPhysicalSecret(testSecretPhysicalName, "test-secret", map[string][]byte{"key": []byte("value")}),
 			expectedResult: ctrl.Result{},
 			expectError:    false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
-				// Physical secret should remain unchanged
 				secret := &corev1.Secret{}
-				err := physicalClient.Get(context.TODO(), types.NamespacedName{
-					Name: "physical-secret", Namespace: "physical-ns",
-				}, secret)
+				err := physicalClient.Get(context.TODO(), types.NamespacedName{Name: testSecretPhysicalName, Namespace: testPhysicalNamespace}, secret)
 				require.NoError(t, err)
 				assert.Equal(t, []byte("value"), secret.Data["key"])
 			},
 		},
 		{
 			name:           "virtual secret and physical secret both exist but need update",
-			virtualSecret:  createTestSecret("test-secret", testVirtualNamespace, "physical-secret", "physical-ns", map[string][]byte{"key": []byte("new-value")}, true),
-			physicalSecret: createTestSecret("physical-secret", "physical-ns", "test-secret", testVirtualNamespace, map[string][]byte{"key": []byte("old-value")}, false),
+			virtualSecret:  createVirtualSecret("test-secret", map[string][]byte{"key": []byte("new-value")}, true, nil),
+			physicalSecret: createPhysicalSecret(testSecretPhysicalName, "test-secret", map[string][]byte{"key": []byte("old-value")}),
 			expectedResult: ctrl.Result{},
 			expectError:    false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
-				// Physical secret should be updated
 				secret := &corev1.Secret{}
-				err := physicalClient.Get(context.TODO(), types.NamespacedName{
-					Name: "physical-secret", Namespace: "physical-ns",
-				}, secret)
+				err := physicalClient.Get(context.TODO(), types.NamespacedName{Name: testSecretPhysicalName, Namespace: testPhysicalNamespace}, secret)
 				require.NoError(t, err)
 				assert.Equal(t, []byte("new-value"), secret.Data["key"])
 			},
@@ -259,16 +209,7 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Add ClusterID label to virtual Secret if it exists and has managed-by label
-			if tt.virtualSecret != nil && tt.virtualSecret.Labels != nil &&
-				tt.virtualSecret.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
-				addClusterIDLabel(tt.virtualSecret)
-			}
-
-			// Setup clients
-			var virtualObjects []client.Object
-			var physicalObjects []client.Object
-
+			var virtualObjects, physicalObjects []client.Object
 			if tt.virtualSecret != nil {
 				virtualObjects = append(virtualObjects, tt.virtualSecret)
 			}
@@ -278,21 +219,17 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 
 			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualObjects...).Build()
 			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalObjects...).Build()
-			physicalK8sClient := fake.NewSimpleClientset()
 
-			// Create reconciler
 			reconciler := &VirtualSecretReconciler{
 				VirtualClient:     virtualClient,
 				PhysicalClient:    physicalClient,
-				PhysicalK8sClient: physicalK8sClient,
+				PhysicalK8sClient: fake.NewSimpleClientset(),
 				Scheme:            scheme,
 				ClusterBinding:    clusterBinding,
+				ClusterID:         testClusterID,
 				Log:               zap.New(),
 			}
-			// Set ClusterID manually for testing
-			reconciler.ClusterID = clusterBinding.Spec.ClusterID
 
-			// Create request
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name: func() string {
@@ -310,19 +247,15 @@ func TestVirtualSecretReconciler_Reconcile(t *testing.T) {
 				},
 			}
 
-			// Run reconcile
 			result, err := reconciler.Reconcile(context.TODO(), req)
 
-			// Verify results
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 			}
-
 			assert.Equal(t, tt.expectedResult, result)
 
-			// Run validation if provided
 			if tt.validateFunc != nil {
 				tt.validateFunc(t, virtualClient, physicalClient)
 			}

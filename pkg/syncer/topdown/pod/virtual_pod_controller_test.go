@@ -28,6 +28,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -3596,15 +3597,15 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 		assert.Equal(t, cloudv1beta1.LabelManagedByValue, updatedPod.Labels[cloudv1beta1.LabelManagedBy])
 
 		// Test ClusterID finalizer methods
-		assert.False(t, reconciler.hasSyncedResourceFinalizer(virtualPod))
+		clusterSpecificFinalizer := topcommon.GetClusterSpecificFinalizer(reconciler.ClusterID)
+		assert.False(t, controllerutil.ContainsFinalizer(virtualPod, clusterSpecificFinalizer))
 
-		reconciler.addSyncedResourceFinalizer(virtualPod)
-		expectedFinalizer := "kubeocean.io/finalizer-test-cluster-id"
-		assert.True(t, reconciler.hasSyncedResourceFinalizer(virtualPod))
+		controllerutil.AddFinalizer(virtualPod, clusterSpecificFinalizer)
+		assert.True(t, controllerutil.ContainsFinalizer(virtualPod, clusterSpecificFinalizer))
 
 		// Verify the finalizer is actually added
 		finalizers := virtualPod.GetFinalizers()
-		assert.Contains(t, finalizers, expectedFinalizer)
+		assert.Contains(t, finalizers, clusterSpecificFinalizer)
 	})
 }
 

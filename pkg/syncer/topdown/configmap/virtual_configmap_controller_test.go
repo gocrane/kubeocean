@@ -22,6 +22,14 @@ import (
 	topcommon "github.com/gocrane/kubeocean/pkg/syncer/topdown/common"
 )
 
+const (
+	testVirtualNamespace         = "virtual-ns"
+	testClusterID                = "test-cluster-id"
+	testPhysicalNamespace        = "physical-ns"
+	testClusterSpecificFinalizer = "kubeocean.io/finalizer-test-cluster-id"
+	testManagedByClusterIDLabel  = "kubeocean.io/synced-by-test-cluster-id"
+)
+
 func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -29,40 +37,44 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 
 	clusterBinding := &cloudv1beta1.ClusterBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster"},
-		Spec: cloudv1beta1.ClusterBindingSpec{
-			ClusterID:      "test-cluster-id",
-			MountNamespace: "physical-ns",
-		},
+		Spec:       cloudv1beta1.ClusterBindingSpec{ClusterID: testClusterID, MountNamespace: testPhysicalNamespace},
 	}
 
-	// Helper function to add ClusterID label to virtual ConfigMap
-	addClusterIDLabel := func(configMap *corev1.ConfigMap) {
-		if configMap != nil && configMap.Labels != nil {
-			configMap.Labels["kubeocean.io/synced-by-test-cluster-id"] = cloudv1beta1.LabelValueTrue
-		}
-	}
+	testConfigPhysicalName := topcommon.GeneratePhysicalResourceName("test-config", testVirtualNamespace)
 
-	// Helper function to create a test ConfigMap
-	// For virtual ConfigMap: otherName is the physical name
-	// For physical ConfigMap: otherName is the virtual name
-	createTestConfigMap := func(name, namespace, otherName string, data map[string]string, isVirtual bool) *corev1.ConfigMap {
+	// Helper: create virtual configmap with full metadata
+	createVirtualConfigMap := func(name string, data map[string]string, withClusterLabels bool, deletionTS *metav1.Time) *corev1.ConfigMap {
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-				Labels: map[string]string{
-					cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				Name:              name,
+				Namespace:         testVirtualNamespace,
+				DeletionTimestamp: deletionTS,
+				Labels:            map[string]string{cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue},
+				Annotations: map[string]string{
+					cloudv1beta1.AnnotationPhysicalName:      topcommon.GeneratePhysicalResourceName(name, testVirtualNamespace),
+					cloudv1beta1.AnnotationPhysicalNamespace: testPhysicalNamespace,
 				},
-				Annotations: make(map[string]string),
 			},
 			Data: data,
 		}
-		if isVirtual {
-			cm.Annotations[cloudv1beta1.AnnotationPhysicalName] = otherName
-		} else {
-			cm.Annotations[cloudv1beta1.AnnotationVirtualName] = otherName
+		if withClusterLabels {
+			cm.Finalizers = []string{testClusterSpecificFinalizer}
+			cm.Labels[testManagedByClusterIDLabel] = cloudv1beta1.LabelValueTrue
 		}
 		return cm
+	}
+
+	// Helper: create physical configmap
+	createPhysicalConfigMap := func(physicalName, virtualName string, data map[string]string) *corev1.ConfigMap {
+		return &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        physicalName,
+				Namespace:   testPhysicalNamespace,
+				Labels:      map[string]string{cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue},
+				Annotations: map[string]string{cloudv1beta1.AnnotationVirtualName: virtualName},
+			},
+			Data: data,
+		}
 	}
 
 	tests := []struct {
@@ -99,14 +111,16 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 			name: "virtual configmap not managed by this cluster",
 			virtualConfigMap: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-config",
-					Namespace: "virtual-ns",
+					Name:       "test-config",
+					Namespace:  "virtual-ns",
+					Finalizers: []string{"kubeocean.io/finalizer-other-cluster-id"},
 					Labels: map[string]string{
 						cloudv1beta1.LabelManagedBy:               cloudv1beta1.LabelManagedByValue,
 						"kubeocean.io/synced-by-other-cluster-id": cloudv1beta1.LabelValueTrue,
 					},
 					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName: "physical-config",
+						cloudv1beta1.AnnotationPhysicalName:      "physical-config",
+						cloudv1beta1.AnnotationPhysicalNamespace: "physical-ns",
 					},
 				},
 				Data: map[string]string{
@@ -134,72 +148,25 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name: "virtual configmap being deleted",
-			virtualConfigMap: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:              "test-config",
-					Namespace:         "virtual-ns",
-					DeletionTimestamp: &metav1.Time{Time: metav1.Now().Time},
-					Finalizers:        []string{"test-finalizer"},
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName: "physical-config",
-					},
-				},
-				Data: map[string]string{
-					"key": "value",
-				},
-			},
-			physicalConfigMap: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "physical-config",
-					Namespace: "physical-ns",
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationVirtualName: "test-config",
-					},
-				},
-			},
-			expectedResult: ctrl.Result{},
-			expectError:    false,
+			name:              "virtual configmap being deleted",
+			virtualConfigMap:  createVirtualConfigMap("test-config", map[string]string{"key": "value"}, true, &metav1.Time{Time: metav1.Now().Time}),
+			physicalConfigMap: createPhysicalConfigMap(testConfigPhysicalName, "test-config", nil),
+			expectedResult:    ctrl.Result{},
+			expectError:       false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
-				// Physical configmap should be deleted
 				configMap := &corev1.ConfigMap{}
-				err := physicalClient.Get(context.TODO(), types.NamespacedName{
-					Name: "physical-config", Namespace: "physical-ns",
-				}, configMap)
+				err := physicalClient.Get(context.TODO(), types.NamespacedName{Name: testConfigPhysicalName, Namespace: testPhysicalNamespace}, configMap)
 				assert.True(t, apierrors.IsNotFound(err))
 			},
 		},
 		{
-			name: "virtual configmap exists but physical configmap doesn't exist",
-			virtualConfigMap: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-config",
-					Namespace: "virtual-ns",
-					Labels: map[string]string{
-						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
-					},
-					Annotations: map[string]string{
-						cloudv1beta1.AnnotationPhysicalName: "physical-config",
-					},
-				},
-				Data: map[string]string{
-					"key": "value",
-				},
-			},
-			expectedResult: ctrl.Result{},
-			expectError:    false,
+			name:             "virtual configmap exists but physical configmap doesn't exist",
+			virtualConfigMap: createVirtualConfigMap("test-config", map[string]string{"key": "value"}, true, nil),
+			expectedResult:   ctrl.Result{},
+			expectError:      false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
-				// Physical configmap should be created
 				configMap := &corev1.ConfigMap{}
-				err := physicalClient.Get(context.TODO(), types.NamespacedName{
-					Name: "physical-config", Namespace: "physical-ns",
-				}, configMap)
+				err := physicalClient.Get(context.TODO(), types.NamespacedName{Name: testConfigPhysicalName, Namespace: testPhysicalNamespace}, configMap)
 				require.NoError(t, err)
 				assert.Equal(t, "value", configMap.Data["key"])
 				assert.Equal(t, cloudv1beta1.LabelManagedByValue, configMap.Labels[cloudv1beta1.LabelManagedBy])
@@ -207,32 +174,26 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 		},
 		{
 			name:              "virtual configmap and physical configmap both exist and are in sync",
-			virtualConfigMap:  createTestConfigMap("test-config", "virtual-ns", "physical-config", map[string]string{"key": "value"}, true),
-			physicalConfigMap: createTestConfigMap("physical-config", "physical-ns", "test-config", map[string]string{"key": "value"}, false),
+			virtualConfigMap:  createVirtualConfigMap("test-config", map[string]string{"key": "value"}, true, nil),
+			physicalConfigMap: createPhysicalConfigMap(testConfigPhysicalName, "test-config", map[string]string{"key": "value"}),
 			expectedResult:    ctrl.Result{},
 			expectError:       false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
-				// Physical configmap should remain unchanged
 				configMap := &corev1.ConfigMap{}
-				err := physicalClient.Get(context.TODO(), types.NamespacedName{
-					Name: "physical-config", Namespace: "physical-ns",
-				}, configMap)
+				err := physicalClient.Get(context.TODO(), types.NamespacedName{Name: testConfigPhysicalName, Namespace: testPhysicalNamespace}, configMap)
 				require.NoError(t, err)
 				assert.Equal(t, "value", configMap.Data["key"])
 			},
 		},
 		{
 			name:              "virtual configmap and physical configmap both exist but need update",
-			virtualConfigMap:  createTestConfigMap("test-config", "virtual-ns", "physical-config", map[string]string{"key": "new-value"}, true),
-			physicalConfigMap: createTestConfigMap("physical-config", "physical-ns", "test-config", map[string]string{"key": "old-value"}, false),
+			virtualConfigMap:  createVirtualConfigMap("test-config", map[string]string{"key": "new-value"}, true, nil),
+			physicalConfigMap: createPhysicalConfigMap(testConfigPhysicalName, "test-config", map[string]string{"key": "old-value"}),
 			expectedResult:    ctrl.Result{},
 			expectError:       false,
 			validateFunc: func(t *testing.T, virtualClient, physicalClient client.Client) {
-				// Physical configmap should be updated
 				configMap := &corev1.ConfigMap{}
-				err := physicalClient.Get(context.TODO(), types.NamespacedName{
-					Name: "physical-config", Namespace: "physical-ns",
-				}, configMap)
+				err := physicalClient.Get(context.TODO(), types.NamespacedName{Name: testConfigPhysicalName, Namespace: testPhysicalNamespace}, configMap)
 				require.NoError(t, err)
 				assert.Equal(t, "new-value", configMap.Data["key"])
 			},
@@ -241,16 +202,7 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Add ClusterID label to virtual ConfigMap if it exists and has managed-by label
-			if tt.virtualConfigMap != nil && tt.virtualConfigMap.Labels != nil &&
-				tt.virtualConfigMap.Labels[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
-				addClusterIDLabel(tt.virtualConfigMap)
-			}
-
-			// Setup clients
-			var virtualObjects []client.Object
-			var physicalObjects []client.Object
-
+			var virtualObjects, physicalObjects []client.Object
 			if tt.virtualConfigMap != nil {
 				virtualObjects = append(virtualObjects, tt.virtualConfigMap)
 			}
@@ -260,21 +212,17 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 
 			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(virtualObjects...).Build()
 			physicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(physicalObjects...).Build()
-			physicalK8sClient := fake.NewSimpleClientset()
 
-			// Create reconciler
 			reconciler := &VirtualConfigMapReconciler{
 				VirtualClient:     virtualClient,
 				PhysicalClient:    physicalClient,
-				PhysicalK8sClient: physicalK8sClient,
+				PhysicalK8sClient: fake.NewSimpleClientset(),
 				Scheme:            scheme,
 				ClusterBinding:    clusterBinding,
+				ClusterID:         testClusterID,
 				Log:               zap.New(),
 			}
-			// Set ClusterID manually for testing
-			reconciler.ClusterID = clusterBinding.Spec.ClusterID
 
-			// Create request
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name: func() string {
@@ -287,24 +235,20 @@ func TestVirtualConfigMapReconciler_Reconcile(t *testing.T) {
 						if tt.virtualConfigMap != nil {
 							return tt.virtualConfigMap.Namespace
 						}
-						return "virtual-ns"
+						return testVirtualNamespace
 					}(),
 				},
 			}
 
-			// Run reconcile
 			result, err := reconciler.Reconcile(context.TODO(), req)
 
-			// Verify results
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 			}
-
 			assert.Equal(t, tt.expectedResult, result)
 
-			// Run validation if provided
 			if tt.validateFunc != nil {
 				tt.validateFunc(t, virtualClient, physicalClient)
 			}

@@ -2,6 +2,7 @@ package topcommon
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"strings"
 
@@ -520,4 +521,92 @@ func AddClusterBindingDeletingAnnotation(ctx context.Context, obj client.Object,
 
 	logger.Info("Successfully added clusterbinding-deleting annotation", "clusterID", clusterID, "clusterBindingName", clusterBindingName)
 	return nil
+}
+
+func UpdateVirtualResourceLabelsAndAnnotations(ctx context.Context, virtualClient client.Client, logger logr.Logger, clusterID string, obj client.Object, physicalName, physicalNamespace string, syncResourceOpt *SyncResourceOpt) error {
+	// Create logger with appropriate resource path
+	resourcePath := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
+	logger = logger.WithValues("resourceKind", obj.GetObjectKind().GroupVersionKind().Kind, "resource", resourcePath)
+
+	// Check if annotation already exists and matches
+	if obj.GetAnnotations() != nil && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] == physicalName &&
+		obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalNamespace] == physicalNamespace &&
+		obj.GetLabels() != nil && obj.GetLabels()[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
+		logger.V(1).Info("Physical name and namespace annotation, managed-by label already exists and matches, skipping update",
+			"physicalName", physicalName,
+			"physicalNamespace", physicalNamespace)
+		return nil
+	}
+
+	// Check if annotation already exists but doesn't match (should not happen in normal flow)
+	if obj.GetAnnotations() != nil && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] != "" && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] != physicalName {
+		logger.V(1).Info("Physical name annotation already exists but doesn't match, skipping update",
+			"existingPhysicalName", obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName],
+			"newPhysicalName", physicalName)
+		return fmt.Errorf("physical name annotation already exists but doesn't match, physicalName: %s, newPhysicalName: %s",
+			obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName], physicalName)
+	}
+
+	// Update resource
+	updatedObj := obj.DeepCopyObject().(client.Object)
+
+	// Update labels
+	if updatedObj.GetLabels() == nil {
+		updatedObj.SetLabels(make(map[string]string))
+	}
+	updatedObj.GetLabels()[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
+
+	// Add cluster-specific managed-by label
+	managedByClusterIDLabel := GetManagedByClusterIDLabel(clusterID)
+	updatedObj.GetLabels()[managedByClusterIDLabel] = "true"
+
+	if syncResourceOpt != nil && syncResourceOpt.IsPVRefSecret {
+		updatedObj.GetLabels()[cloudv1beta1.LabelUsedByPV] = "true"
+	}
+
+	// Update annotations
+	if updatedObj.GetAnnotations() == nil {
+		updatedObj.SetAnnotations(make(map[string]string))
+	}
+	updatedObj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] = physicalName
+	updatedObj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalNamespace] = physicalNamespace
+
+	// Add finalizer if not present
+	clusterSpecificFinalizer := GetClusterSpecificFinalizer(clusterID)
+	if !controllerutil.ContainsFinalizer(updatedObj, clusterSpecificFinalizer) {
+		controllerutil.AddFinalizer(updatedObj, clusterSpecificFinalizer)
+		logger.V(1).Info("Added synced-resource finalizer")
+	}
+
+	// Update the resource
+	if err := virtualClient.Update(ctx, updatedObj); err != nil {
+		logger.Error(err, "Failed to update virtual resource annotations and labels")
+		return err
+	}
+
+	logger.Info("Updated virtual resource annotations and labels", "physicalName", physicalName)
+	return nil
+}
+
+// GeneratePhysicalResourceName generates physical name using MD5 hash
+// Format: name(前30字符)-md5(namespace+"/"+name)
+func GeneratePhysicalResourceName(name, namespace string) string {
+	// Truncate name to first 30 characters
+	truncatedName := name
+	if len(name) > 30 {
+		truncatedName = name[:30]
+	}
+
+	// Generate MD5 hash of "namespace/name"
+	input := fmt.Sprintf("%s/%s", namespace, name)
+	hash := md5.Sum([]byte(input))
+	hashString := fmt.Sprintf("%x", hash)
+
+	// Return format: truncatedName-hashString
+	return fmt.Sprintf("%s-%s", truncatedName, hashString)
+}
+
+// GetClusterSpecificFinalizer returns the cluster-specific finalizer
+func GetClusterSpecificFinalizer(clusterID string) string {
+	return fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, clusterID)
 }
