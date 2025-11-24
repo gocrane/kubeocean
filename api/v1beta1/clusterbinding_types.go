@@ -44,6 +44,12 @@ type ClusterBindingSpec struct {
 	// If false or not set, DaemonSet pods require the kubeocean.io/running-daemonset="true" annotation to run
 	// +optional
 	RunningDaemonsetByDefault bool `json:"runningDaemonsetByDefault,omitempty"`
+
+	// DirectScheduling controls whether to use direct scheduling for physical pods
+	// If true, physical pods will be created with spec.nodeName directly set, without nodeAffinity
+	// If false or not set, physical pods will use nodeAffinity for scheduling (current behavior)
+	// +optional
+	DirectScheduling bool `json:"directScheduling,omitempty"`
 }
 
 // ClusterBindingStatus defines the observed state of ClusterBinding

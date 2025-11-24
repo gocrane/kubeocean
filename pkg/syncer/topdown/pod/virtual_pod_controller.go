@@ -85,13 +85,13 @@ type VirtualPodReconciler struct {
 func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualPod", req.NamespacedName)
 
-	// 1. Get the virtual pod, if not exists, do nothing
+	// 1. Get the virtual pod, if not exists, handle cleanup
 	virtualPod := &corev1.Pod{}
 	err := r.VirtualClient.Get(ctx, req.NamespacedName, virtualPod)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.V(1).Info("Virtual pod not found, doing nothing")
-			return ctrl.Result{}, nil
+			logger.V(1).Info("Virtual pod not found, checking for orphaned physical pod")
+			return r.handleVirtualPodNotFound(ctx, req.NamespacedName)
 		}
 		logger.Error(err, "Failed to get virtual pod")
 		return ctrl.Result{}, err
@@ -130,6 +130,13 @@ func (r *VirtualPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		logger.Error(err, "Failed to check physical pod existence")
 		return ctrl.Result{}, err
+	}
+
+	// 5.1. If physical pod exists, check if it's stale data and delete if necessary
+	if physicalPodExists && physicalPod != nil {
+		if err := r.deleteMismatchedPhysicalPodIfNeeded(ctx, virtualPod, physicalPod); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// 6. If physical pod doesn't exist, enter creation flow
@@ -289,24 +296,68 @@ func (r *VirtualPodReconciler) handleVirtualPodDeletion(ctx context.Context, vir
 	}
 
 	// If physical pod is not owned by virtual pod, force delete virtual pod
-	if !r.isPhysicalPodOwnedByVirtualPod(physicalPod, virtualPod) {
+	if physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] != virtualPod.Namespace || physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName] != virtualPod.Name {
 		logger.Info("Physical pod is not owned by virtual pod, allowing virtual pod deletion")
 		return r.forceDeleteVirtualPod(ctx, virtualPod)
+	} else if physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID] != string(virtualPod.UID) {
+		logger.Info("Physical pod has mismatched virtual pod UID, deleting mismatched physical pod",
+			"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+			"physicalPodVirtualUID", physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID],
+			"expectedVirtualUID", string(virtualPod.UID))
 	}
 
 	// Physical pod exists, delete it
-	logger.Info("Deleting physical pod", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
+	logger.Info("Physical pod exists, deleting it", "physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+	return r.deletePhysicalPod(ctx, logger, physicalPod)
+}
+
+// handleVirtualPodNotFound handles the case when virtual pod is not found
+// It checks if there's an orphaned physical pod and deletes it
+func (r *VirtualPodReconciler) handleVirtualPodNotFound(ctx context.Context, namespacedName types.NamespacedName) (ctrl.Result, error) {
+	logger := r.Log.WithValues("virtualPod", namespacedName)
+
+	// Generate physical pod namespace and name according to default rules
+	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
+	if physicalNamespace == "" {
+		logger.V(1).Info("ClusterBinding MountNamespace is empty, skipping orphaned pod check")
+		return ctrl.Result{}, nil
+	}
+
+	physicalName := r.generatePhysicalPodName(namespacedName.Name, namespacedName.Namespace)
+
+	// Check if physical pod exists using fallback method
+	physicalPod, err := r.getPhysicalPodWithFallback(ctx, physicalNamespace, physicalName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("No orphaned physical pod found")
+			return ctrl.Result{}, nil
+		}
+		logger.Error(err, "Failed to get physical pod during orphaned pod check")
+		return ctrl.Result{}, err
+	}
+
+	// Physical pod exists, delete it
+	logger.Info("Found orphaned physical pod, deleting it", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
+	return r.deletePhysicalPod(ctx, logger, physicalPod)
+}
+
+// deletePhysicalPod deletes the physical pod
+func (r *VirtualPodReconciler) deletePhysicalPod(ctx context.Context, logger logr.Logger, physicalPod *corev1.Pod) (ctrl.Result, error) {
+	logger = logger.WithValues("physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+
+	logger.Info("Deleting physical pod")
 	if physicalPod.DeletionTimestamp != nil {
 		logger.Info("Physical pod is being deleted, waiting for deletion to complete")
 		return ctrl.Result{}, nil
 	}
-	err = r.PhysicalClient.Delete(ctx, physicalPod)
+
+	err := r.PhysicalClient.Delete(ctx, physicalPod)
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Error(err, "Failed to delete physical pod")
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully triggered virtual and physical pod deletion")
+	logger.Info("Successfully triggered physical pod deletion")
 	return ctrl.Result{}, nil
 }
 
@@ -425,6 +476,45 @@ func (r *VirtualPodReconciler) checkPhysicalPodExists(ctx context.Context, virtu
 	return true, physicalPod, nil
 }
 
+// deleteMismatchedPhysicalPodIfNeeded checks if physical pod has mismatched virtual pod UID and deletes it if needed
+func (r *VirtualPodReconciler) deleteMismatchedPhysicalPodIfNeeded(ctx context.Context, virtualPod, physicalPod *corev1.Pod) error {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	if physicalPod == nil {
+		return fmt.Errorf("physical pod is nil")
+	}
+	if physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodNamespace] != virtualPod.Namespace || physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodName] != virtualPod.Name {
+		logger.Info("physical pod does not belong to virtual pod, skip deleting", "physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name))
+		return nil
+	}
+
+	// Check if physical pod's AnnotationVirtualPodUID matches virtual pod's UID
+	physicalPodVirtualUID := ""
+	if physicalPod.Annotations != nil {
+		physicalPodVirtualUID = physicalPod.Annotations[cloudv1beta1.AnnotationVirtualPodUID]
+	}
+
+	expectedVirtualUID := string(virtualPod.UID)
+	if physicalPodVirtualUID != "" && physicalPodVirtualUID != expectedVirtualUID {
+		// Physical pod is stale data, need to delete it
+		logger.Info("Physical pod has mismatched virtual pod UID, deleting mismatched physical pod",
+			"physicalPod", fmt.Sprintf("%s/%s", physicalPod.Namespace, physicalPod.Name),
+			"physicalPodVirtualUID", physicalPodVirtualUID,
+			"expectedVirtualUID", expectedVirtualUID)
+
+		err := r.PhysicalClient.Delete(ctx, physicalPod)
+		if err != nil && !apierrors.IsNotFound(err) {
+			logger.Error(err, "Failed to delete mismatched physical pod")
+			return err
+		}
+
+		return fmt.Errorf("physical pod has mismatched virtual pod UID, physicalPod %s/%s, physicalPodVirtualUID %s, expectedVirtualUID %s",
+			physicalPod.Namespace, physicalPod.Name, physicalPodVirtualUID, expectedVirtualUID)
+	}
+
+	return nil
+}
+
 // handlePhysicalPodCreation handles the creation flow for physical pod
 func (r *VirtualPodReconciler) handlePhysicalPodCreation(ctx context.Context, virtualPod *corev1.Pod, physicalNodeName string) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
@@ -486,6 +576,9 @@ func (r *VirtualPodReconciler) generatePhysicalPodMapping(ctx context.Context, v
 			logger.Info("Found existing physical pod that belongs to current virtual pod", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
 			return r.recordPhysicalPodMapping(ctx, virtualPod, existingPod)
 		} else {
+			if err := r.deleteMismatchedPhysicalPodIfNeeded(ctx, virtualPod, existingPod); err != nil {
+				return ctrl.Result{}, err
+			}
 			// Physical pod exists but belongs to different virtual pod - name conflict
 			logger.Error(nil, "Physical pod name conflict: pod exists but belongs to different virtual pod", "physicalPod", fmt.Sprintf("%s/%s", physicalNamespace, physicalName))
 			return ctrl.Result{}, fmt.Errorf("physical pod name conflict")
@@ -817,35 +910,43 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	// Deep copy the spec to avoid modifying the original
 	spec := *virtualPod.Spec.DeepCopy()
 
-	// Set node affinity to force scheduling to the specific physical node
-	spec.Affinity = &corev1.Affinity{
-		NodeAffinity: &corev1.NodeAffinity{
-			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-				NodeSelectorTerms: []corev1.NodeSelectorTerm{
-					{
-						MatchFields: []corev1.NodeSelectorRequirement{
-							{
-								Key:      "metadata.name",
-								Operator: corev1.NodeSelectorOpIn,
-								Values:   []string{physicalNodeName},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	spec.NodeSelector = nil
-	spec.SchedulerName = ""
-	//preemptNever := corev1.PreemptNever
-	//spec.PreemptionPolicy = &preemptNever
-
 	// Get ClusterBinding
 	cb := &cloudv1beta1.ClusterBinding{}
 	if err := r.VirtualClient.Get(ctx, client.ObjectKey{Name: r.ClusterBinding.Name}, cb); err != nil {
 		return spec, fmt.Errorf("failed to get cluster binding: %w", err)
 	}
 	r.ClusterBinding = cb
+
+	// Configure node scheduling based on DirectScheduling setting
+	if r.ClusterBinding.Spec.DirectScheduling {
+		// Direct scheduling: set spec.nodeName directly without nodeAffinity
+		spec.NodeName = physicalNodeName
+		spec.Affinity = nil
+	} else {
+		// Double scheduling: use nodeAffinity to allow scheduler to schedule the pod
+		spec.NodeName = ""
+		spec.Affinity = &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{
+						{
+							MatchFields: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "metadata.name",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{physicalNodeName},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	spec.NodeSelector = nil
+	spec.SchedulerName = ""
+	//preemptNever := corev1.PreemptNever
+	//spec.PreemptionPolicy = &preemptNever
 
 	// Set PriorityClassName based on ClusterBinding configuration
 	priorityClassName := r.ClusterBinding.Spec.PodPriorityClassName
@@ -864,7 +965,6 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	// cleanup service account related fields
 	spec.ServiceAccountName = ""
 	spec.DeprecatedServiceAccount = ""
-	spec.NodeName = ""
 
 	// set hostname to virtual pod name if not set
 	if spec.Hostname == "" {
@@ -1207,7 +1307,10 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		// 暂时只关心 delete event，确保删除时，virtual pod 也能被删除
 		DeleteFunc: func(obj interface{}) {
-			pod := obj.(*corev1.Pod)
+			pod, ok := utils.ExtractPodFromDeleteEvent(obj, r.Log)
+			if !ok {
+				return
+			}
 			r.handlePhysicalPodEvent(pod, "DELETE")
 		},
 	})

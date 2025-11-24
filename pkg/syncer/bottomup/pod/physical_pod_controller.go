@@ -333,7 +333,10 @@ func (r *PhysicalPodReconciler) buildSyncPod(physicalPod, virtualPod *corev1.Pod
 
 	// Update status fields from physical pod
 	syncPod.Status.Phase = physicalPod.Status.Phase
-	syncPod.Status.Conditions = physicalPod.Status.Conditions
+
+	// Preserve original PodScheduled condition from virtual pod, update other conditions from physical pod
+	syncPod.Status.Conditions = r.mergeConditions(virtualPod.Status.Conditions, physicalPod.Status.Conditions)
+
 	syncPod.Status.Message = physicalPod.Status.Message
 	syncPod.Status.Reason = physicalPod.Status.Reason
 	syncPod.Status.HostIP = physicalPod.Status.HostIP
@@ -345,6 +348,34 @@ func (r *PhysicalPodReconciler) buildSyncPod(physicalPod, virtualPod *corev1.Pod
 	syncPod.Status.EphemeralContainerStatuses = physicalPod.Status.EphemeralContainerStatuses
 
 	return syncPod
+}
+
+// mergeConditions merges conditions from physical pod with virtual pod's PodScheduled condition
+// It preserves the PodScheduled condition from virtual pod and takes all other conditions from physical pod
+func (r *PhysicalPodReconciler) mergeConditions(virtualConditions, physicalConditions []corev1.PodCondition) []corev1.PodCondition {
+	// Find PodScheduled condition from virtual pod
+	var virtualPodScheduled *corev1.PodCondition
+	for i := range virtualConditions {
+		if virtualConditions[i].Type == corev1.PodScheduled {
+			virtualPodScheduled = &virtualConditions[i]
+			break
+		}
+	}
+
+	// Start with physical pod conditions, excluding PodScheduled
+	result := make([]corev1.PodCondition, 0, len(physicalConditions))
+	// Add back virtual pod's PodScheduled condition if it exists
+	if virtualPodScheduled != nil {
+		result = append(result, *virtualPodScheduled)
+	}
+	for _, condition := range physicalConditions {
+		if condition.Type != corev1.PodScheduled {
+			result = append(result, condition)
+		} else if virtualPodScheduled == nil {
+			result = append(result, condition)
+		}
+	}
+	return result
 }
 
 // isPodsEqual compares two pods using reflect.DeepEqual for status, annotations, and labels
