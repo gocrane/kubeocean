@@ -2,7 +2,6 @@ package toppod
 
 import (
 	"context"
-	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -27,13 +26,14 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 	syncermetrics "github.com/gocrane/kubeocean/pkg/syncer/metrics"
 	topcommon "github.com/gocrane/kubeocean/pkg/syncer/topdown/common"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown/configmap"
+	"github.com/gocrane/kubeocean/pkg/syncer/topdown/secret"
 	"github.com/gocrane/kubeocean/pkg/syncer/topdown/token"
 	"github.com/gocrane/kubeocean/pkg/utils"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -74,6 +74,9 @@ type VirtualPodReconciler struct {
 	kubernetesIntranetIP   string // Cached kubernetes-intranet loadbalancer IP
 	kubernetesIntranetPort string // Cached kubernetes-intranet service port
 	kubeDnsIntranetIP      string // Cached kube-dns-intranet loadbalancer IP
+
+	ConfigmapController *configmap.VirtualConfigMapReconciler
+	SecretController    *secret.VirtualSecretReconciler
 }
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
@@ -315,6 +318,14 @@ func (r *VirtualPodReconciler) handleVirtualPodDeletion(ctx context.Context, vir
 // It checks if there's an orphaned physical pod and deletes it
 func (r *VirtualPodReconciler) handleVirtualPodNotFound(ctx context.Context, namespacedName types.NamespacedName) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualPod", namespacedName)
+
+	logger.V(1).Info("Deleting configmaps and secrets needs synced for virtual pod")
+	if r.ConfigmapController != nil {
+		r.ConfigmapController.DeleteConfigmapsNeedsSynced(namespacedName.Namespace, namespacedName.Name)
+	}
+	if r.SecretController != nil {
+		r.SecretController.DeleteSecretsNeedsSynced(namespacedName.Namespace, namespacedName.Name)
+	}
 
 	// Generate physical pod namespace and name according to default rules
 	physicalNamespace := r.ClusterBinding.Spec.MountNamespace
@@ -1293,6 +1304,11 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualpod-%s", r.ClusterBinding.Name)
 
+	// Init pod configmaps and secrets
+	if err := r.InitPodConfigmapsAndSecrets(); err != nil {
+		return fmt.Errorf("failed to init pod configmaps and secrets: %w", err)
+	}
+
 	rateLimiter := workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, 5*time.Minute)
 	r.workQueue = workqueue.NewTypedRateLimitingQueueWithConfig(rateLimiter, workqueue.TypedRateLimitingQueueConfig[reconcile.Request]{
 		Name: controllerName,
@@ -1361,6 +1377,45 @@ func (r *VirtualPodReconciler) SetupWithManager(virtualManager, physicalManager 
 		Complete(r)
 }
 
+func (r *VirtualPodReconciler) InitPodConfigmapsAndSecrets() error {
+	logger := r.Log.WithValues("operation", "InitPodConfigmapsAndSecrets")
+
+	podList := corev1.PodList{}
+	err := r.VirtualClient.List(context.TODO(), &podList, &client.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list pods: %w", err)
+	}
+	for idx := range podList.Items {
+		pod := &podList.Items[idx]
+		if !r.shouldCreatePhysicalPod(pod) {
+			logger.V(1).Info("Physical pod should not be created, skip init pod configmaps and secrets",
+				"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+			continue
+		}
+		shouldManage, _, err := r.shouldManageVirtualPod(context.TODO(), pod)
+		if err != nil {
+			logger.Error(err, "Failed to check if virtual pod should be managed", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+			return err
+		}
+		if !shouldManage {
+			logger.V(1).Info("Virtual pod not managed by this cluster binding, skip init pod configmaps and secrets",
+				"virtualNodeName", pod.Spec.NodeName, "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+			continue
+		}
+
+		configMapRefs := r.CollectConfigMapRefs(pod)
+		secretRefs := r.CollectSecretRefs(pod)
+		logger.V(1).Info("Collecting configmaps and secrets needs synced for virtual pod", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name), "configMapRefs", configMapRefs, "secretRefs", secretRefs)
+		if len(configMapRefs) > 0 && r.ConfigmapController != nil {
+			r.ConfigmapController.AddConfigmapsNeedsSynced(pod.Namespace, configMapRefs, pod.Namespace, pod.Name)
+		}
+		if len(secretRefs) > 0 && r.SecretController != nil {
+			r.SecretController.AddSecretsNeedsSynced(pod.Namespace, secretRefs, pod.Namespace, pod.Name)
+		}
+	}
+	return nil
+}
+
 // handlePhysicalPodEvent handles physical pod create/update/delete events
 // and enqueues the corresponding virtual pod for reconciliation
 func (r *VirtualPodReconciler) handlePhysicalPodEvent(pod *corev1.Pod, eventType string) {
@@ -1412,19 +1467,7 @@ func (r *VirtualPodReconciler) handlePhysicalPodEvent(pod *corev1.Pod, eventType
 // generatePhysicalName generates physical name using MD5 hash
 // Format: name(前30字符)-md5(namespace+"/"+name)
 func (r *VirtualPodReconciler) generatePhysicalName(name, namespace string) string {
-	// Truncate name to first 30 characters
-	truncatedName := name
-	if len(name) > 30 {
-		truncatedName = name[:30]
-	}
-
-	// Generate MD5 hash of "namespace/name"
-	input := fmt.Sprintf("%s/%s", namespace, name)
-	hash := md5.Sum([]byte(input))
-	hashString := fmt.Sprintf("%x", hash)
-
-	// Return format: truncatedName-hashString
-	return fmt.Sprintf("%s-%s", truncatedName, hashString)
+	return topcommon.GeneratePhysicalResourceName(name, namespace)
 }
 
 // generatePhysicalPodName generates physical pod name using MD5 hash
@@ -1517,14 +1560,14 @@ func (r *VirtualPodReconciler) syncDependentResources(ctx context.Context, virtu
 	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
 
 	// 1. Sync ConfigMaps
-	configMapMappings, err := r.syncConfigMaps(ctx, virtualPod)
+	configMapMappings, ConfigMapsRequired, err := r.syncConfigMaps(ctx, virtualPod)
 	if err != nil {
 		logger.Error(err, "Failed to sync ConfigMaps")
 		return nil, err
 	}
 
 	// 2. Sync Secrets
-	secretMappings, err := r.syncSecrets(ctx, virtualPod)
+	secretMappings, SecretsRequired, err := r.syncSecrets(ctx, virtualPod)
 	if err != nil {
 		logger.Error(err, "Failed to sync Secrets")
 		return nil, err
@@ -1553,6 +1596,8 @@ func (r *VirtualPodReconciler) syncDependentResources(ctx context.Context, virtu
 		Secrets:                 secretMappings,
 		PVCs:                    pvcMappings,
 		ServiceAccountTokenName: serviceAccountTokenNames,
+		ConfigMapsRequired:      ConfigMapsRequired,
+		SecretsRequired:         SecretsRequired,
 	}
 
 	// 5. Poll to verify all resources are created in physical cluster
@@ -1584,6 +1629,11 @@ func (r *VirtualPodReconciler) pollPhysicalResources(ctx context.Context, resour
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
 		// Check all ConfigMaps
 		for virtualName, physicalName := range resourceMapping.ConfigMaps {
+			if !resourceMapping.ConfigMapsRequired[virtualName] {
+				// If the ConfigMap is optional, skip polling
+				logger.V(1).Info("ConfigMap is optional, skip polling", "virtualName", virtualName, "physicalName", physicalName)
+				continue
+			}
 			var configMap corev1.ConfigMap
 			err := r.PhysicalClient.Get(ctx, types.NamespacedName{Namespace: physicalNamespace, Name: physicalName}, &configMap)
 			if err != nil {
@@ -1604,6 +1654,11 @@ func (r *VirtualPodReconciler) pollPhysicalResources(ctx context.Context, resour
 
 		// Check all Secrets
 		for virtualName, physicalName := range resourceMapping.Secrets {
+			if !resourceMapping.SecretsRequired[virtualName] {
+				// If the Secret is optional, skip polling
+				logger.V(1).Info("Secret is optional, skip polling", "virtualName", virtualName, "physicalName", physicalName)
+				continue
+			}
 			var secret corev1.Secret
 			err := r.PhysicalClient.Get(ctx, types.NamespacedName{Namespace: physicalNamespace, Name: physicalName}, &secret)
 			if err != nil {
@@ -1675,23 +1730,22 @@ func (r *VirtualPodReconciler) pollPhysicalResources(ctx context.Context, resour
 	return nil
 }
 
-// syncConfigMaps syncs ConfigMaps referenced by the virtual pod and returns the mapping
-func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *corev1.Pod) (map[string]string, error) {
-	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
-
+// CollectConfigMapRefs collects all ConfigMap references from the virtual pod spec
+// configmapRefs, key is configmap name, value is true if the configmap is required by the pod, false if the configmap is optional
+func (r *VirtualPodReconciler) CollectConfigMapRefs(virtualPod *corev1.Pod) map[string]bool {
 	// Collect all ConfigMap references from pod spec
 	configMapRefs := make(map[string]bool)
 
 	// From volumes
 	for _, volume := range virtualPod.Spec.Volumes {
 		if volume.ConfigMap != nil {
-			configMapRefs[volume.ConfigMap.Name] = true
+			configMapRefs[volume.ConfigMap.Name] = !ptr.Deref(volume.ConfigMap.Optional, false)
 		}
 		// From projected volumes
 		if volume.Projected != nil {
 			for _, source := range volume.Projected.Sources {
 				if source.ConfigMap != nil {
-					configMapRefs[source.ConfigMap.Name] = true
+					configMapRefs[source.ConfigMap.Name] = !ptr.Deref(source.ConfigMap.Optional, false)
 				}
 			}
 		}
@@ -1701,12 +1755,12 @@ func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *c
 	for _, container := range virtualPod.Spec.Containers {
 		for _, envVar := range container.Env {
 			if envVar.ValueFrom != nil && envVar.ValueFrom.ConfigMapKeyRef != nil {
-				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = true
+				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = !ptr.Deref(envVar.ValueFrom.ConfigMapKeyRef.Optional, false)
 			}
 		}
 		for _, envFrom := range container.EnvFrom {
 			if envFrom.ConfigMapRef != nil {
-				configMapRefs[envFrom.ConfigMapRef.Name] = true
+				configMapRefs[envFrom.ConfigMapRef.Name] = !ptr.Deref(envFrom.ConfigMapRef.Optional, false)
 			}
 		}
 	}
@@ -1715,34 +1769,54 @@ func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *c
 	for _, container := range virtualPod.Spec.InitContainers {
 		for _, envVar := range container.Env {
 			if envVar.ValueFrom != nil && envVar.ValueFrom.ConfigMapKeyRef != nil {
-				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = true
+				configMapRefs[envVar.ValueFrom.ConfigMapKeyRef.Name] = !ptr.Deref(envVar.ValueFrom.ConfigMapKeyRef.Optional, false)
 			}
 		}
 		for _, envFrom := range container.EnvFrom {
 			if envFrom.ConfigMapRef != nil {
-				configMapRefs[envFrom.ConfigMapRef.Name] = true
+				configMapRefs[envFrom.ConfigMapRef.Name] = !ptr.Deref(envFrom.ConfigMapRef.Optional, false)
 			}
 		}
 	}
 
+	return configMapRefs
+}
+
+// syncConfigMaps syncs ConfigMaps referenced by the virtual pod and returns the mapping
+//
+//nolint:dupl
+func (r *VirtualPodReconciler) syncConfigMaps(ctx context.Context, virtualPod *corev1.Pod) (map[string]string, map[string]bool, error) {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	configMapRefs := r.CollectConfigMapRefs(virtualPod)
+
+	if len(configMapRefs) > 0 && r.ConfigmapController != nil {
+		logger.V(1).Info("Adding configmaps needs synced for virtual pod", "configMapRefs", configMapRefs, "pod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+		r.ConfigmapController.AddConfigmapsNeedsSynced(virtualPod.Namespace, configMapRefs, virtualPod.Namespace, virtualPod.Name)
+	}
+
 	// Sync each ConfigMap and collect mappings
 	configMapMappings := make(map[string]string)
-	for configMapName := range configMapRefs {
+	for configMapName, required := range configMapRefs {
 		physicalName, err := r.syncConfigMap(ctx, virtualPod.Namespace, configMapName)
 		if err != nil {
+			if !required && strings.Contains(err.Error(), "virtual resource not found") {
+				logger.V(1).Info("ConfigMap not found and not required, skipping sync", "configMapName", configMapName)
+				configMapMappings[configMapName] = r.generatePhysicalResourceName(configMapName, virtualPod.Namespace)
+				continue
+			}
 			logger.Error(err, "Failed to sync ConfigMap", "configMapName", configMapName)
-			return nil, err
+			return nil, nil, err
 		}
 		configMapMappings[configMapName] = physicalName
 	}
 
-	return configMapMappings, nil
+	return configMapMappings, configMapRefs, nil
 }
 
-// syncSecrets syncs Secrets referenced by the virtual pod and returns the mapping
-func (r *VirtualPodReconciler) syncSecrets(ctx context.Context, virtualPod *corev1.Pod) (map[string]string, error) {
-	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
-
+// CollectSecretRefs collects all Secret references from the virtual pod spec
+// secretRefs, key is secret name, value is true if the secret is required by the pod, false if the secret is optional
+func (r *VirtualPodReconciler) CollectSecretRefs(virtualPod *corev1.Pod) map[string]bool {
 	// Collect all Secret references from pod spec
 	secretRefs := make(map[string]bool)
 
@@ -1752,31 +1826,52 @@ func (r *VirtualPodReconciler) syncSecrets(ctx context.Context, virtualPod *core
 	r.collectSecretsFromContainers(virtualPod.Spec.InitContainers, secretRefs)
 	r.collectSecretsFromImagePullSecrets(virtualPod.Spec.ImagePullSecrets, secretRefs)
 
+	return secretRefs
+}
+
+// syncSecrets syncs Secrets referenced by the virtual pod and returns the mapping
+//
+//nolint:dupl
+func (r *VirtualPodReconciler) syncSecrets(ctx context.Context, virtualPod *corev1.Pod) (map[string]string, map[string]bool, error) {
+	logger := r.Log.WithValues("virtualPod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+
+	secretRefs := r.CollectSecretRefs(virtualPod)
+
+	if len(secretRefs) > 0 && r.SecretController != nil {
+		logger.V(1).Info("Adding secrets needs synced for virtual pod", "secretRefs", secretRefs, "pod", fmt.Sprintf("%s/%s", virtualPod.Namespace, virtualPod.Name))
+		r.SecretController.AddSecretsNeedsSynced(virtualPod.Namespace, secretRefs, virtualPod.Namespace, virtualPod.Name)
+	}
+
 	// Sync each Secret and collect mappings
 	secretMappings := make(map[string]string)
-	for secretName := range secretRefs {
+	for secretName, required := range secretRefs {
 		physicalName, err := r.syncSecret(ctx, virtualPod.Namespace, secretName)
 		if err != nil {
+			if !required && strings.Contains(err.Error(), "virtual resource not found") {
+				logger.V(1).Info("Secret not found and not required, skipping sync", "secretName", secretName)
+				secretMappings[secretName] = r.generatePhysicalResourceName(secretName, virtualPod.Namespace)
+				continue
+			}
 			logger.Error(err, "Failed to sync Secret", "secretName", secretName)
-			return nil, err
+			return nil, nil, err
 		}
 		secretMappings[secretName] = physicalName
 	}
 
-	return secretMappings, nil
+	return secretMappings, secretRefs, nil
 }
 
 // collectSecretsFromVolumes collects secret references from volumes
 func (r *VirtualPodReconciler) collectSecretsFromVolumes(volumes []corev1.Volume, secretRefs map[string]bool) {
 	for _, volume := range volumes {
 		if volume.Secret != nil {
-			secretRefs[volume.Secret.SecretName] = true
+			secretRefs[volume.Secret.SecretName] = !ptr.Deref(volume.Secret.Optional, false)
 		}
 		// From projected volumes
 		if volume.Projected != nil {
 			for _, source := range volume.Projected.Sources {
 				if source.Secret != nil {
-					secretRefs[source.Secret.Name] = true
+					secretRefs[source.Secret.Name] = !ptr.Deref(source.Secret.Optional, false)
 				}
 			}
 		}
@@ -1788,12 +1883,12 @@ func (r *VirtualPodReconciler) collectSecretsFromContainers(containers []corev1.
 	for _, container := range containers {
 		for _, envVar := range container.Env {
 			if envVar.ValueFrom != nil && envVar.ValueFrom.SecretKeyRef != nil {
-				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = true
+				secretRefs[envVar.ValueFrom.SecretKeyRef.Name] = !ptr.Deref(envVar.ValueFrom.SecretKeyRef.Optional, false)
 			}
 		}
 		for _, envFrom := range container.EnvFrom {
 			if envFrom.SecretRef != nil {
-				secretRefs[envFrom.SecretRef.Name] = true
+				secretRefs[envFrom.SecretRef.Name] = !ptr.Deref(envFrom.SecretRef.Optional, false)
 			}
 		}
 	}
@@ -1840,6 +1935,8 @@ type ResourceMapping struct {
 	Secrets                 map[string]string // virtual name -> physical name
 	PVCs                    map[string]string // virtual name -> physical name
 	ServiceAccountTokenName map[string]string // volume name -> physical secret name for service account token
+	ConfigMapsRequired      map[string]bool   // virtual name for configmaps that are required
+	SecretsRequired         map[string]bool   // virtual name for secrets that are required
 }
 
 // syncResource syncs a single resource (ConfigMap, Secret, or PVC) and returns the physical resource name
@@ -1850,6 +1947,9 @@ func (r *VirtualPodReconciler) syncResource(ctx context.Context, resourceType to
 	err := r.VirtualClient.Get(ctx, types.NamespacedName{Namespace: virtualNamespace, Name: resourceName}, emptyObj)
 	if err != nil {
 		logger.Error(err, fmt.Sprintf("Failed to get virtual %s %s/%s", resourceType, virtualNamespace, resourceName))
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("virtual resource not found: %v", err)
+		}
 		return "", err
 	}
 	virtualObj := emptyObj
@@ -2195,79 +2295,7 @@ func (r *VirtualPodReconciler) generatePhysicalResourceName(resourceName, resour
 
 // updateVirtualResourceLabelsAndAnnotations updates virtual resource labels and annotations with physical name mapping
 func (r *VirtualPodReconciler) updateVirtualResourceLabelsAndAnnotations(ctx context.Context, obj client.Object, physicalName, physicalNamespace string, syncResourceOpt *topcommon.SyncResourceOpt) error {
-	// Create logger with appropriate resource path
-	resourcePath := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
-	logger := r.Log.WithValues("resourceKind", obj.GetObjectKind().GroupVersionKind().Kind, "resource", resourcePath)
-
-	// Check if annotation already exists and matches
-	if obj.GetAnnotations() != nil && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] == physicalName &&
-		obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalNamespace] == physicalNamespace &&
-		obj.GetLabels() != nil && obj.GetLabels()[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
-		logger.V(1).Info("Physical name and namespace annotation, managed-by label already exists and matches, skipping update",
-			"physicalName", physicalName,
-			"physicalNamespace", physicalNamespace)
-		return nil
-	}
-
-	// Check if annotation already exists but doesn't match (should not happen in normal flow)
-	if obj.GetAnnotations() != nil && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] != "" && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] != physicalName {
-		logger.V(1).Info("Physical name annotation already exists but doesn't match, skipping update",
-			"existingPhysicalName", obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName],
-			"newPhysicalName", physicalName)
-		return fmt.Errorf("physical name annotation already exists but doesn't match, physicalName: %s, newPhysicalName: %s",
-			obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName], physicalName)
-	}
-
-	// Update resource
-	updatedObj := obj.DeepCopyObject().(client.Object)
-
-	// Update labels
-	if updatedObj.GetLabels() == nil {
-		updatedObj.SetLabels(make(map[string]string))
-	}
-	updatedObj.GetLabels()[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
-
-	// Add cluster-specific managed-by label
-	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
-	updatedObj.GetLabels()[managedByClusterIDLabel] = "true"
-
-	if syncResourceOpt != nil && syncResourceOpt.IsPVRefSecret {
-		updatedObj.GetLabels()[cloudv1beta1.LabelUsedByPV] = "true"
-	}
-
-	// Update annotations
-	if updatedObj.GetAnnotations() == nil {
-		updatedObj.SetAnnotations(make(map[string]string))
-	}
-	updatedObj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] = physicalName
-	updatedObj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalNamespace] = physicalNamespace
-
-	// Add finalizer if not present
-	if !r.hasSyncedResourceFinalizer(updatedObj) {
-		r.addSyncedResourceFinalizer(updatedObj)
-		logger.V(1).Info("Added synced-resource finalizer")
-	}
-
-	// Update the resource
-	if err := r.VirtualClient.Update(ctx, updatedObj); err != nil {
-		logger.Error(err, "Failed to update virtual resource annotations and labels")
-		return err
-	}
-
-	logger.Info("Updated virtual resource annotations and labels", "physicalName", physicalName)
-	return nil
-}
-
-// hasSyncedResourceFinalizer checks if the resource has our finalizer
-func (r *VirtualPodReconciler) hasSyncedResourceFinalizer(obj client.Object) bool {
-	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.ClusterID)
-	return controllerutil.ContainsFinalizer(obj, clusterSpecificFinalizer)
-}
-
-// addSyncedResourceFinalizer adds our finalizer to the resource
-func (r *VirtualPodReconciler) addSyncedResourceFinalizer(obj client.Object) {
-	clusterSpecificFinalizer := fmt.Sprintf("%s%s", cloudv1beta1.FinalizerClusterIDPrefix, r.ClusterID)
-	controllerutil.AddFinalizer(obj, clusterSpecificFinalizer)
+	return topcommon.UpdateVirtualResourceLabelsAndAnnotations(ctx, r.VirtualClient, r.Log, r.ClusterID, obj, physicalName, physicalNamespace, syncResourceOpt)
 }
 
 // getKubernetesIntranetIP gets the kubernetes-intranet loadbalancer IP from virtual cluster

@@ -28,6 +28,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -3596,15 +3597,15 @@ func TestVirtualPodReconciler_ClusterIDFunctionality(t *testing.T) {
 		assert.Equal(t, cloudv1beta1.LabelManagedByValue, updatedPod.Labels[cloudv1beta1.LabelManagedBy])
 
 		// Test ClusterID finalizer methods
-		assert.False(t, reconciler.hasSyncedResourceFinalizer(virtualPod))
+		clusterSpecificFinalizer := topcommon.GetClusterSpecificFinalizer(reconciler.ClusterID)
+		assert.False(t, controllerutil.ContainsFinalizer(virtualPod, clusterSpecificFinalizer))
 
-		reconciler.addSyncedResourceFinalizer(virtualPod)
-		expectedFinalizer := "kubeocean.io/finalizer-test-cluster-id"
-		assert.True(t, reconciler.hasSyncedResourceFinalizer(virtualPod))
+		controllerutil.AddFinalizer(virtualPod, clusterSpecificFinalizer)
+		assert.True(t, controllerutil.ContainsFinalizer(virtualPod, clusterSpecificFinalizer))
 
 		// Verify the finalizer is actually added
 		finalizers := virtualPod.GetFinalizers()
-		assert.Contains(t, finalizers, expectedFinalizer)
+		assert.Contains(t, finalizers, clusterSpecificFinalizer)
 	})
 }
 
@@ -4246,7 +4247,8 @@ func TestVirtualPodReconciler_SyncConfigMapsWithProjectedVolumes(t *testing.T) {
 				resources[i] = cm
 			}
 			testResourceSyncHelper(t, scheme, clusterBinding, resources, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
-				return r.syncConfigMaps(ctx, pod)
+				result, _, err := r.syncConfigMaps(ctx, pod)
+				return result, err
 			}, tt.expectedResult, tt.expectError)
 		})
 	}
@@ -4353,7 +4355,8 @@ func TestVirtualPodReconciler_SyncSecretsWithProjectedVolumes(t *testing.T) {
 				secrets[i] = s
 			}
 			testResourceSyncHelper(t, scheme, clusterBinding, secrets, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
-				return r.syncSecrets(ctx, pod)
+				result, _, err := r.syncSecrets(ctx, pod)
+				return result, err
 			}, tt.expectedResult, tt.expectError)
 		})
 	}
@@ -5917,6 +5920,8 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			Secrets:                 map[string]string{"test-secret": "test-secret-physical"},
 			PVCs:                    map[string]string{"test-pvc": "test-pvc-physical"},
 			ServiceAccountTokenName: map[string]string{"kube-api-access-xyz": "test-sa-token-physical"},
+			ConfigMapsRequired:      map[string]bool{"test-config": true},
+			SecretsRequired:         map[string]bool{"test-secret": true},
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -5948,6 +5953,8 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
 			ServiceAccountTokenName: nil, // No ServiceAccountToken
+			ConfigMapsRequired:      map[string]bool{"test-config": true},
+			SecretsRequired:         map[string]bool{},
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -5971,6 +5978,8 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
 			ServiceAccountTokenName: nil,
+			ConfigMapsRequired:      map[string]bool{"test-config": true},
+			SecretsRequired:         map[string]bool{},
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -5999,6 +6008,8 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
 			ServiceAccountTokenName: nil,
+			ConfigMapsRequired:      map[string]bool{"test-config": true},
+			SecretsRequired:         map[string]bool{},
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -6043,6 +6054,8 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
 			ServiceAccountTokenName: nil,
+			ConfigMapsRequired:      map[string]bool{"test-config": true},
+			SecretsRequired:         map[string]bool{},
 		}
 
 		err := reconciler.pollPhysicalResources(ctx, resourceMapping, "virtual-ns", "test-pod")
@@ -6076,6 +6089,8 @@ func TestVirtualPodReconciler_pollPhysicalResources(t *testing.T) {
 			Secrets:                 map[string]string{},
 			PVCs:                    map[string]string{},
 			ServiceAccountTokenName: nil,
+			ConfigMapsRequired:      map[string]bool{"config1": true},
+			SecretsRequired:         map[string]bool{},
 		}
 
 		// This should timeout, but we can verify the resource was checked multiple times
@@ -7800,7 +7815,8 @@ func TestVirtualPodReconciler_SyncConfigMapsWithEnvFrom(t *testing.T) {
 				resources[i] = cm
 			}
 			testResourceSyncHelper(t, scheme, clusterBinding, resources, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
-				return r.syncConfigMaps(ctx, pod)
+				result, _, err := r.syncConfigMaps(ctx, pod)
+				return result, err
 			}, tt.expectedResult, tt.expectError)
 		})
 	}
@@ -8090,7 +8106,8 @@ func TestVirtualPodReconciler_SyncSecretsWithEnvFrom(t *testing.T) {
 				resources[i] = secret
 			}
 			testResourceSyncHelper(t, scheme, clusterBinding, resources, tt.virtualPod, func(r *VirtualPodReconciler, ctx context.Context, pod *corev1.Pod) (map[string]string, error) {
-				return r.syncSecrets(ctx, pod)
+				result, _, err := r.syncSecrets(ctx, pod)
+				return result, err
 			}, tt.expectedResult, tt.expectError)
 		})
 	}

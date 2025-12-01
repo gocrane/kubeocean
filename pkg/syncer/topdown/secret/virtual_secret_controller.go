@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -13,6 +14,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
@@ -28,6 +30,11 @@ type VirtualSecretReconciler struct {
 	ClusterBinding    *cloudv1beta1.ClusterBinding
 	Log               logr.Logger
 	ClusterID         string // Cached cluster ID for performance
+
+	// Cached secrets synced, key is virtual secret namespace/name, value is pod namespace/name that use it
+	secretsNeedsSynced     map[string]map[string]struct{}
+	secretsNeedsSyncedLock sync.RWMutex
+	podSecretsRefs         map[string]map[string]bool
 }
 
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -41,7 +48,10 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	err := r.VirtualClient.Get(ctx, req.NamespacedName, virtualSecret)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.V(1).Info("Virtual Secret not found, doing nothing")
+			logger.V(1).Info("Virtual Secret not found, removing from needs synced list")
+			// if some pods need this secret, the pods needs to be recreated to sync the secret
+			// TODO: consider deleting the physical secret if it is not used by any other pods
+			r.UnsetSecretNeedsSynced(req.Namespace, req.Name)
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get virtual Secret")
@@ -49,15 +59,19 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// 2. Check if secret is managed by Kubeocean
-	if virtualSecret.Labels == nil || virtualSecret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
-		logger.V(1).Info("Secret not managed by Kubeocean, skipping")
+	if r.shouldSkipSync(virtualSecret, logger) {
+		logger.V(1).Info("Secret not managed by Kubeocean or not managed by this cluster, skipping")
 		return ctrl.Result{}, nil
 	}
 
-	// 2.5. Check if secret belongs to this cluster
-	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
-	if virtualSecret.Labels == nil || virtualSecret.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
-		logger.V(1).Info("Secret not managed by this cluster, skipping", "ClusterID", r.ClusterID)
+	// 2.5. Update virtual resource labels and annotations if needed
+	updated, err := r.updateVirtualSecretLabelsAndAnnotations(ctx, virtualSecret, logger)
+	if err != nil {
+		logger.Error(err, "Failed to update virtual resource labels and annotations")
+		return ctrl.Result{}, err
+	}
+	if updated {
+		logger.Info("Update virtual resource labels and annotations, wait for it updated")
 		return ctrl.Result{}, nil
 	}
 
@@ -116,9 +130,108 @@ func (r *VirtualSecretReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return r.updatePhysicalSecretIfNeeded(ctx, virtualSecret, physicalSecret, physicalName)
 }
 
+func (r *VirtualSecretReconciler) shouldSkipSync(virtualSecret *corev1.Secret, logger logr.Logger) bool {
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
+	if virtualSecret.Labels == nil || virtualSecret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue || virtualSecret.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
+		if !r.IsSecretNeedsSynced(virtualSecret.Namespace, virtualSecret.Name) {
+			return true
+		}
+		logger.Info("Secret lacks managed labels, but still needs to be synced, syncing")
+	}
+	logger.V(1).Info("Secret is managed by Kubeocean and managed by this cluster, syncing")
+	return false
+}
+
+func (r *VirtualSecretReconciler) updateVirtualSecretLabelsAndAnnotations(ctx context.Context, virtualSecret *corev1.Secret, logger logr.Logger) (bool, error) {
+	if virtualSecret.Labels != nil && virtualSecret.Labels[cloudv1beta1.LabelUsedByPV] == cloudv1beta1.LabelValueTrue {
+		logger.Info("Secret is used by PV, skipping update of labels and annotations")
+		return false, nil
+	}
+	if !r.IsSecretNeedsSynced(virtualSecret.Namespace, virtualSecret.Name) {
+		logger.V(1).Info("Secret does not need to be synced, skipping update")
+		return false, nil
+	}
+
+	clusterSpecificFinalizer := topcommon.GetClusterSpecificFinalizer(r.ClusterID)
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
+	if virtualSecret.Labels == nil || virtualSecret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue || virtualSecret.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue ||
+		virtualSecret.Annotations == nil || virtualSecret.Annotations[cloudv1beta1.AnnotationPhysicalName] == "" ||
+		len(virtualSecret.Finalizers) == 0 || !controllerutil.ContainsFinalizer(virtualSecret, clusterSpecificFinalizer) {
+		logger.Info("Secret lacks managed labels, annotations, finalizer or physical name, updating labels and annotations")
+		// generate physical name and namespace
+		physicalName := topcommon.GeneratePhysicalResourceName(virtualSecret.Name, virtualSecret.Namespace)
+		physicalNamespace := r.ClusterBinding.Spec.MountNamespace
+		err := topcommon.UpdateVirtualResourceLabelsAndAnnotations(ctx, r.VirtualClient, r.Log, r.ClusterID, virtualSecret, physicalName, physicalNamespace, nil)
+		if err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (r *VirtualSecretReconciler) shouldSecretNeedsSynced(secret *corev1.Secret) bool {
+	managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
+	if secret.Labels == nil || secret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue || secret.Labels[managedByClusterIDLabel] != cloudv1beta1.LabelValueTrue {
+		if !r.IsSecretNeedsSynced(secret.Namespace, secret.Name) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *VirtualSecretReconciler) IsSecretNeedsSynced(namespace, name string) bool {
+	r.secretsNeedsSyncedLock.RLock()
+	defer r.secretsNeedsSyncedLock.RUnlock()
+	_, ok := r.secretsNeedsSynced[fmt.Sprintf("%s/%s", namespace, name)]
+	return ok
+}
+
+func (r *VirtualSecretReconciler) AddSecretsNeedsSynced(namespace string, names map[string]bool, podNamespace, podName string) {
+	r.secretsNeedsSyncedLock.Lock()
+	defer r.secretsNeedsSyncedLock.Unlock()
+	if len(names) == 0 {
+		return
+	}
+	podKey := fmt.Sprintf("%s/%s", podNamespace, podName)
+	for name := range names {
+		key := fmt.Sprintf("%s/%s", namespace, name)
+		if _, ok := r.secretsNeedsSynced[key]; !ok {
+			r.secretsNeedsSynced[key] = make(map[string]struct{})
+		}
+		r.secretsNeedsSynced[key][podKey] = struct{}{}
+	}
+	r.podSecretsRefs[podKey] = names
+}
+
+func (r *VirtualSecretReconciler) DeleteSecretsNeedsSynced(podNamespace, podName string) {
+	r.secretsNeedsSyncedLock.Lock()
+	defer r.secretsNeedsSyncedLock.Unlock()
+	podKey := fmt.Sprintf("%s/%s", podNamespace, podName)
+	names := r.podSecretsRefs[podKey]
+	for name := range names {
+		delete(r.secretsNeedsSynced[fmt.Sprintf("%s/%s", podNamespace, name)], podKey)
+		// TODO: consider deleting the physical secret if it is not used by any other pods
+		// if len(r.secretsNeedsSynced[fmt.Sprintf("%s/%s", namespace, name)]) == 0 {
+		//	 delete(r.secretsNeedsSynced, fmt.Sprintf("%s/%s", namespace, name))
+		// }
+	}
+	delete(r.podSecretsRefs, podKey)
+}
+
+func (r *VirtualSecretReconciler) UnsetSecretNeedsSynced(namespace, name string) {
+	r.secretsNeedsSyncedLock.Lock()
+	defer r.secretsNeedsSyncedLock.Unlock()
+	delete(r.secretsNeedsSynced, fmt.Sprintf("%s/%s", namespace, name))
+}
+
 // handleVirtualSecretDeletion handles deletion of virtual secret
 func (r *VirtualSecretReconciler) handleVirtualSecretDeletion(ctx context.Context, virtualSecret *corev1.Secret, physicalNamespace string, physicalName string, physicalSecretExists bool, physicalSecret *corev1.Secret) (ctrl.Result, error) {
 	logger := r.Log.WithValues("virtualSecret", fmt.Sprintf("%s/%s", virtualSecret.Namespace, virtualSecret.Name))
+
+	logger.V(1).Info("Unset secret needs synced")
+	r.UnsetSecretNeedsSynced(virtualSecret.Namespace, virtualSecret.Name)
 
 	if !physicalSecretExists {
 		logger.V(1).Info("Physical Secret doesn't exist, nothing to delete")
@@ -228,6 +341,9 @@ func (r *VirtualSecretReconciler) SetupWithManager(virtualManager, physicalManag
 	// Generate unique controller name using cluster binding name
 	controllerName := fmt.Sprintf("virtualsecret-%s", r.ClusterBinding.Name)
 
+	r.secretsNeedsSynced = make(map[string]map[string]struct{})
+	r.podSecretsRefs = make(map[string]map[string]bool)
+
 	return ctrl.NewControllerManagedBy(virtualManager).
 		For(&corev1.Secret{}).
 		Named(controllerName).
@@ -236,20 +352,11 @@ func (r *VirtualSecretReconciler) SetupWithManager(virtualManager, physicalManag
 		}).
 		WithEventFilter(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 			secret := obj.(*corev1.Secret)
-
-			// Only sync secrets managed by Kubeocean
-			if secret.Labels == nil || secret.Labels[cloudv1beta1.LabelManagedBy] != cloudv1beta1.LabelManagedByValue {
+			if secret == nil {
 				return false
 			}
 
-			// Only sync secrets with physical name label
-			if secret.Annotations == nil || secret.Annotations[cloudv1beta1.AnnotationPhysicalName] == "" {
-				return false
-			}
-
-			// Only sync secrets managed by this cluster
-			managedByClusterIDLabel := topcommon.GetManagedByClusterIDLabel(r.ClusterID)
-			return secret.Labels[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue
+			return r.shouldSecretNeedsSynced(secret)
 		})).
 		Complete(r)
 }
