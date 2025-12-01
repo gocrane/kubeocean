@@ -79,7 +79,7 @@ kubectl get cb example-cluster
 NAME              CLUSTERID     PHASE
 example-cluster   cls-example   Ready
 ```
-同时，集群绑定后，kubeocean-system namespace 下会同步创建对应的 worker 和 proxier pod，可以通过以下命令查看：
+同时，集群绑定后，kubeocean-system namespace 下会同步创建对应的 syncer 和 proxier pod，可以通过以下命令查看：
 ```
 kubectl -nkubeocean-system get po -owide
 ```
