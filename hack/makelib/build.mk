@@ -21,15 +21,18 @@ run-syncer: manifests generate fmt vet ## Run kubeocean-syncer from your host.
 # More info: https://docs.docker.com/develop/dev-best-practices/
 .PHONY: docker-build.manager
 docker-build.manager: ## Build docker image for manager only.
-	docker build -t ${IMG_MANAGER} -f hack/docker/Dockerfile.manager --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} --build-arg BASEIMAGE=${BASEIMAGE} .
+	$(eval IMG := $(TEST_REGISTRY)/kubeocean-manager:$(IMG_TAG)-$(GOARCH))
+	docker build --platform=linux/$(GOARCH) -t ${IMG} -f hack/docker/Dockerfile.manager --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} --build-arg BASEIMAGE=${BASEIMAGE} --build-arg TARGETARCH=${GOARCH} .
 
 .PHONY: docker-build.syncer
 docker-build.syncer: ## Build docker image for syncer only.
-	docker build -t ${IMG_SYNCER} -f hack/docker/Dockerfile.syncer --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} --build-arg BASEIMAGE=${BASEIMAGE} .
+	$(eval IMG := $(TEST_REGISTRY)/kubeocean-syncer:$(IMG_TAG)-$(GOARCH))
+	docker build --platform=linux/$(GOARCH) -t ${IMG} -f hack/docker/Dockerfile.syncer --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} --build-arg BASEIMAGE=${BASEIMAGE} --build-arg TARGETARCH=${GOARCH} .
 
 .PHONY: docker-build.proxier
 docker-build.proxier: ## Build docker image for proxier only.
-	docker build -t ${IMG_PROXIER} -f hack/docker/Dockerfile.proxier --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} --build-arg BASEIMAGE=${BASEIMAGE} .
+	$(eval IMG := $(TEST_REGISTRY)/kubeocean-proxier:$(IMG_TAG)-$(GOARCH))
+	docker build --platform=linux/$(GOARCH) -t ${IMG} -f hack/docker/Dockerfile.proxier --build-arg LDFLAGS=${LDFLAGS} --build-arg GOPROXY=${GOPROXY} --build-arg BASEIMAGE=${BASEIMAGE} --build-arg TARGETARCH=${GOARCH} .
 
 .PHONY: docker-build
 docker-build: docker-build.manager docker-build.syncer docker-build.proxier ## Build docker images for manager, syncer and proxier.
@@ -42,34 +45,50 @@ docker-push: docker-build ## Push docker images for manager, syncer and proxier.
 
 .PHONY: docker-push.manager
 docker-push.manager: docker-build.manager ## Push docker image for manager only.
-	docker push ${IMG_MANAGER}
+	$(eval IMG := $(TEST_REGISTRY)/kubeocean-manager:$(IMG_TAG)-$(GOARCH))
+	docker push ${IMG}
 
 .PHONY: docker-push.syncer
 docker-push.syncer: docker-build.syncer ## Push docker image for syncer only.
-	docker push ${IMG_SYNCER}
+	$(eval IMG := $(TEST_REGISTRY)/kubeocean-syncer:$(IMG_TAG)-$(GOARCH))
+	docker push ${IMG}
 
 .PHONY: docker-push.proxier
 docker-push.proxier: docker-build.proxier ## Push docker image for proxier only.
-	docker push ${IMG_PROXIER}
+	$(eval IMG := $(TEST_REGISTRY)/kubeocean-proxier:$(IMG_TAG)-$(GOARCH))
+	docker push ${IMG}
 
-# PLATFORMS defines the target platforms for the manager image be build to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
+.PHONY: docker-buildx.manager
+docker-buildx.manager: ## Build and push docker images for the manager for cross-platform support.
+	@GOARCH=amd64 make docker-push.manager
+	@GOARCH=arm64 make docker-push.manager
+	$(eval IMGS := $(TEST_REGISTRY)/kubeocean-manager:$(IMG_TAG)-arm64 $(TEST_REGISTRY)/kubeocean-manager:$(IMG_TAG)-amd64)
+	@echo "===========> push multi-arch image $(IMG_MANAGER)"
+	docker buildx imagetools create -t $(IMG_MANAGER) $(IMGS)
+
+.PHONY: docker-buildx.syncer
+docker-buildx.syncer: ## Build and push docker images for the syncer for cross-platform support.
+	@GOARCH=amd64 make docker-push.syncer
+	@GOARCH=arm64 make docker-push.syncer
+	$(eval IMGS := $(TEST_REGISTRY)/kubeocean-syncer:$(IMG_TAG)-arm64 $(TEST_REGISTRY)/kubeocean-syncer:$(IMG_TAG)-amd64)
+	@echo "===========> push multi-arch image $(IMG_SYNCER)"
+	docker buildx imagetools create -t $(IMG_SYNCER) $(IMGS)
+
+.PHONY: docker-buildx.proxier
+docker-buildx.proxier: ## Build and push docker images for the proxier for cross-platform support.
+	@GOARCH=amd64 make docker-push.proxier
+	@GOARCH=arm64 make docker-push.proxier
+	$(eval IMGS := $(TEST_REGISTRY)/kubeocean-proxier:$(IMG_TAG)-arm64 $(TEST_REGISTRY)/kubeocean-proxier:$(IMG_TAG)-amd64)
+	@echo "===========> push multi-arch image $(IMG_PROXIER)"
+	docker buildx imagetools create -t $(IMG_PROXIER) $(IMGS)
+
+# To use this option you need to:
 # - able to use docker buildx . More info: https://docs.docker.com/build/buildx/
 # - have a multi-arch builder. More info: https://docs.docker.com/build/building/multi-platform/
 # - be able to push the image for your registry (i.e. if you do not inform a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
 # To properly provided solutions that supports more than one platform you should use this option.
-PLATFORMS ?= linux/arm64,linux/amd64
 .PHONY: docker-buildx
-docker-buildx: ## Build and push docker images for the manager and syncer for cross-platform support.
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' hack/docker/Dockerfile.manager > Dockerfile.cross.manager
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' hack/docker/Dockerfile.syncer > Dockerfile.cross.syncer
-	- docker buildx create --name project-v3-builder
-	docker buildx use project-v3-builder
-	- docker buildx build --push --platform=$(PLATFORMS) --tag ${IMG_MANAGER} -f Dockerfile.cross.manager .
-	- docker buildx build --push --platform=$(PLATFORMS) --tag ${IMG_SYNCER} -f Dockerfile.cross.syncer .
-	- docker buildx rm project-v3-builder
-	rm Dockerfile.cross.manager Dockerfile.cross.syncer
+docker-buildx: docker-buildx.manager docker-buildx.syncer docker-buildx.proxier ## Build and push docker images for the manager, syncer and proxier for cross-platform support.
 
 ##@ Build Dependencies
 
