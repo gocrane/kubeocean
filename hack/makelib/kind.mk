@@ -15,6 +15,56 @@ KIND_MANAGER_CLUSTER ?= kubeocean-manager
 KIND_WORKER1_CLUSTER ?= kubeocean-worker1
 KIND_WORKER2_CLUSTER ?= kubeocean-worker2
 
+# Pod CIDR configuration for each cluster (base networks)
+MANAGER_POD_CIDR_BASE := 10.240
+WORKER1_POD_CIDR_BASE := 10.241
+WORKER2_POD_CIDR_BASE := 10.242
+
+# Route information temporary file
+ROUTE_INFO_FILE := /tmp/kubeocean-routes.txt
+
+# Function: collect-route-info
+# Usage: $(call collect-route-info)
+# Description: Collect pod CIDR and node IP information from all clusters
+define collect-route-info
+echo "   📊 Collecting route information from all clusters..."; \
+rm -f $(ROUTE_INFO_FILE); \
+touch $(ROUTE_INFO_FILE); \
+for cluster in $(KIND_MANAGER_CLUSTER) $(KIND_WORKER1_CLUSTER) $(KIND_WORKER2_CLUSTER); do \
+	echo "      🔍 Querying cluster: $$cluster"; \
+	kubectl config use-context kind-$$cluster > /dev/null 2>&1; \
+	kubectl get nodes -o custom-columns=NAME:.metadata.name,CIDR:.spec.podCIDR,IP:.status.addresses[0].address --no-headers 2>/dev/null | grep -v "vnode" | \
+	while read node_name pod_cidr node_ip; do \
+		if [ -n "$$pod_cidr" ] && [ "$$pod_cidr" != "<none>" ] && [ -n "$$node_ip" ]; then \
+			echo "$$cluster|$$node_name|$$pod_cidr|$$node_ip" >> $(ROUTE_INFO_FILE); \
+			echo "         ✓ $$node_name: $$pod_cidr -> $$node_ip"; \
+		fi; \
+	done; \
+done; \
+echo "   ✅ Route information collected: $$(wc -l < $(ROUTE_INFO_FILE)) routes found"
+endef
+
+# Function: add-pod-route
+# Usage: $(call add-pod-route,CONTAINER_ID,CLUSTER_NAME)
+# Description: Add pod network routes to KIND node container based on collected route information
+define add-pod-route
+CLUSTER_NAME=$(2); \
+CONTAINER_ID=$(1); \
+echo "   🔗 Configuring routes for container $$CONTAINER_ID (cluster: $$CLUSTER_NAME)"; \
+if [ ! -f $(ROUTE_INFO_FILE) ]; then \
+	echo "      ❌ Route info file not found. Please run collect-route-info first."; \
+	exit 1; \
+fi; \
+ROUTE_COUNT=0; \
+while IFS='|' read -r cluster node_name pod_cidr node_ip; do \
+	if [ "$$cluster" != "$$CLUSTER_NAME" ]; then \
+		docker exec $$CONTAINER_ID ip route replace $$pod_cidr via $$node_ip dev eth0 2>/dev/null && \
+		ROUTE_COUNT=$$((ROUTE_COUNT + 1)) || true; \
+	fi; \
+done < $(ROUTE_INFO_FILE); \
+echo "      ✅ Configured $$ROUTE_COUNT routes"
+endef
+
 ## Tool Binaries
 KIND ?= $(LOCALBIN)/kind
 
@@ -239,7 +289,7 @@ kind-deploy-pre: kind-create-all ## Pre-deploy kubeocean to all KIND clusters.
 	@echo ""
 	@echo "🚀 Starting kubeocean pre-deployment to all KIND clusters..."
 	@echo ""
-	@echo "🔧 Step 1/2: Creating kubernetes-intranet service in manager cluster..."
+	@echo "🔧 Step 1/3: Creating kubernetes-intranet service in manager cluster..."
 	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER)
 	@# Get apiserver pod IP
 	@APISERVER_IP=$$(kubectl get pod -n kube-system -l component=kube-apiserver -o jsonpath='{.items[0].status.podIP}'); \
@@ -252,7 +302,7 @@ kind-deploy-pre: kind-create-all ## Pre-deploy kubeocean to all KIND clusters.
 	echo "   ✅ Created kubernetes-intranet service in $(KIND_MANAGER_CLUSTER)"
 	@echo ""
 	@# Step 2: Create kube-dns-intranet service in manager cluster
-	@echo "🔧 Step 2/2: Creating kube-dns-intranet service in manager cluster..."
+	@echo "🔧 Step 2/3: Creating kube-dns-intranet service in manager cluster..."
 	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER)
 	@# Patch coredns deployment to add hostPort
 	@kubectl patch deployment coredns -n kube-system --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/ports/0/hostPort","value":53},{"op":"add","path":"/spec/template/spec/containers/0/ports/1/hostPort","value":53}]' || echo "   ⚠️  hostPort may already exist"; \
@@ -263,6 +313,30 @@ kind-deploy-pre: kind-create-all ## Pre-deploy kubeocean to all KIND clusters.
 	echo "   ℹ️  Manager CoreDNS Node IP: $$COREDNS_NODE_IP"; \
 	kubectl patch svc kube-dns-intranet -n kube-system --type=merge --subresource status --patch "{\"status\":{\"loadBalancer\":{\"ingress\":[{\"ip\":\"$$COREDNS_NODE_IP\"}]}}}"; \
 	echo "   ✅ Created kube-dns-intranet service in $(KIND_MANAGER_CLUSTER)"
+	@echo ""
+	@# Step 3: Configure pod network routes for all KIND node containers
+	@echo "🔧 Step 3/3: Configuring pod network routes for all KIND node containers..."
+	@echo ""
+	@# Step 3.1: Collect route information from all clusters
+	@echo "   📡 Phase 1: Collecting route information from all clusters..."
+	@$(call collect-route-info)
+	@echo ""
+	@# Step 3.2: Apply routes to all cluster nodes
+	@echo "   📡 Phase 2: Applying routes to all cluster nodes..."
+	@# Configure routes for manager cluster nodes
+	@for container in $$(docker ps --filter "name=$(KIND_MANAGER_CLUSTER)-" --format "{{.ID}}"); do \
+		$(call add-pod-route,$$container,$(KIND_MANAGER_CLUSTER)); \
+	done
+	@# Configure routes for worker1 cluster nodes
+	@for container in $$(docker ps --filter "name=$(KIND_WORKER1_CLUSTER)-" --format "{{.ID}}"); do \
+		$(call add-pod-route,$$container,$(KIND_WORKER1_CLUSTER)); \
+	done
+	@# Configure routes for worker2 cluster nodes
+	@for container in $$(docker ps --filter "name=$(KIND_WORKER2_CLUSTER)-" --format "{{.ID}}"); do \
+		$(call add-pod-route,$$container,$(KIND_WORKER2_CLUSTER)); \
+	done
+	@echo ""
+	@echo "   ✅ Pod network routes configured for all clusters"
 	@echo ""
 
 .PHONY: kind-deploy

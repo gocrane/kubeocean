@@ -52,9 +52,9 @@ data:
           imagePullSecrets:
             {{- toYaml .Values.global.imagePullSecrets | nindent 12 }}
           {{- end }}
-          {{- if .Values.global.affinity }}
+          {{- if .Values.proxier.affinity }}
           affinity:
-            {{- toYaml .Values.global.affinity | nindent 12 }}
+            {{- toYaml .Values.proxier.affinity | nindent 12 }}
           {{- end }}
           {{- if .Values.global.nodeSelector }}
           nodeSelector:

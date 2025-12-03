@@ -23,9 +23,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.global.affinity }}
+      {{- if .Values.manager.affinity }}
       affinity:
-        {{- toYaml .Values.global.affinity | nindent 8 }}
+        {{- toYaml .Values.manager.affinity | nindent 8 }}
       {{- end }}
       {{- if .Values.global.nodeSelector }}
       nodeSelector:

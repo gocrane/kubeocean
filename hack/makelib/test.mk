@@ -45,8 +45,8 @@ test-int-focus: manifests generate envtest ginkgo ## Run integration tests with 
 K8S_VERSION ?= v1.28.0
 K8S_E2E_BINARY ?= $(LOCALBIN)/e2e.test
 K8S_SOURCE_DIR ?= /tmp/kubernetes-$(subst v,,$(K8S_VERSION))
-E2E_TEST_TIMEOUT ?= 30s
-E2E_FOCUS ?= "Pods should run through the lifecycle of Pods and PodStatus"
+E2E_TEST_TIMEOUT ?= 1h
+E2E_FOCUS ?= (sig-node|sig-storage).+\[NodeConformance\].+\[Conformance\]
 
 .PHONY: k8s-e2e
 k8s-e2e: $(K8S_E2E_BINARY) ## Download Kubernetes source and build E2E test binary.
@@ -68,7 +68,7 @@ test-k8s-e2e: k8s-e2e ## Run Kubernetes E2E tests with minimal test suite (Pod c
 	echo "   • Cluster info: $$(kubectl cluster-info | head -1)"; \
 	echo ""; \
 	$(K8S_E2E_BINARY) \
-		--ginkgo.focus=$(E2E_FOCUS) \
+		--ginkgo.focus="$(E2E_FOCUS)" \
 		--ginkgo.v \
 		--ginkgo.timeout=$(E2E_TEST_TIMEOUT) \
 		-provider=local \
@@ -89,39 +89,44 @@ test-k8s-e2e-focus: k8s-e2e ## Run specific E2E tests with focus filter. Usage: 
 	@echo "🚀 Running focused E2E tests: $(FOCUS)"
 	@KUBECONFIG_PATH=$${KUBECONFIG:-$$HOME/.kube/config}; \
 	$(K8S_E2E_BINARY) \
-		--ginkgo.focus=$(FOCUS) \
+		--ginkgo.focus="$(FOCUS)" \
 		--ginkgo.v \
 		--ginkgo.timeout=$(E2E_TEST_TIMEOUT) \
 		-provider=local \
 		-kubeconfig=$$KUBECONFIG_PATH \
 		-disable-log-dump \
 		-repo-root=$(K8S_SOURCE_DIR) \
+		-allowed-not-ready-nodes=4 \
 		-non-blocking-taints="kubeocean.io/vnode"
 
 $(K8S_E2E_BINARY): $(LOCALBIN)
-	@echo "📦 Downloading Kubernetes $(K8S_VERSION) source code..."
-	@if [ ! -d "$(K8S_SOURCE_DIR)" ]; then \
-		echo "   Downloading https://github.com/kubernetes/kubernetes/archive/refs/tags/$(K8S_VERSION).tar.gz"; \
-		wget -q -O /tmp/kubernetes-$(K8S_VERSION).tar.gz \
-			https://github.com/kubernetes/kubernetes/archive/refs/tags/$(K8S_VERSION).tar.gz; \
-		echo "   Extracting to $(K8S_SOURCE_DIR)..."; \
-		tar -xzf /tmp/kubernetes-$(K8S_VERSION).tar.gz -C /tmp/; \
-		echo "   Cleaning up archive..."; \
-		rm -f /tmp/kubernetes-$(K8S_VERSION).tar.gz; \
-		echo "✅ Kubernetes source downloaded successfully"; \
+	@if [ -f "$(K8S_E2E_BINARY)" ]; then \
+		echo "✅ E2E test binary already exists at $(K8S_E2E_BINARY)"; \
 	else \
-		echo "✅ Kubernetes source already exists at $(K8S_SOURCE_DIR)"; \
-	fi
-	@echo "🔨 Building Kubernetes E2E test binary..."
-	@cd $(K8S_SOURCE_DIR) && \
-		echo "   Setting up build environment..." && \
-		export KUBE_BUILD_PLATFORMS=linux/amd64 && \
-		echo "   Building e2e.test binary..." && \
-		make WHAT=test/e2e/e2e.test && \
-		echo "   Copying binary to $(K8S_E2E_BINARY)..." && \
-		cp _output/bin/e2e.test $(K8S_E2E_BINARY) && \
-		chmod +x $(K8S_E2E_BINARY)
-	@echo "✅ E2E test binary built successfully at $(K8S_E2E_BINARY)"
+		echo "📦 Downloading Kubernetes $(K8S_VERSION) source code..."; \
+		if [ ! -d "$(K8S_SOURCE_DIR)" ]; then \
+			echo "   Downloading https://github.com/kubernetes/kubernetes/archive/refs/tags/$(K8S_VERSION).tar.gz"; \
+			wget -q -O /tmp/kubernetes-$(K8S_VERSION).tar.gz \
+				https://github.com/kubernetes/kubernetes/archive/refs/tags/$(K8S_VERSION).tar.gz; \
+			echo "   Extracting to $(K8S_SOURCE_DIR)..."; \
+			tar -xzf /tmp/kubernetes-$(K8S_VERSION).tar.gz -C /tmp/; \
+			echo "   Cleaning up archive..."; \
+			rm -f /tmp/kubernetes-$(K8S_VERSION).tar.gz; \
+			echo "✅ Kubernetes source downloaded successfully"; \
+		else \
+			echo "✅ Kubernetes source already exists at $(K8S_SOURCE_DIR)"; \
+		fi; \
+		echo "🔨 Building Kubernetes E2E test binary..."; \
+		cd $(K8S_SOURCE_DIR) && \
+			echo "   Setting up build environment..." && \
+			export KUBE_BUILD_PLATFORMS=linux/amd64 && \
+			echo "   Building e2e.test binary..." && \
+			make WHAT=test/e2e/e2e.test && \
+			echo "   Copying binary to $(K8S_E2E_BINARY)..." && \
+			cp _output/bin/e2e.test $(K8S_E2E_BINARY) && \
+			chmod +x $(K8S_E2E_BINARY) && \
+			echo "✅ E2E test binary built successfully at $(K8S_E2E_BINARY)"; \
+	fi;
 
 .PHONY: clean-k8s-e2e
 clean-k8s-e2e: ## Clean up downloaded Kubernetes source and E2E binary.
@@ -131,7 +136,25 @@ clean-k8s-e2e: ## Clean up downloaded Kubernetes source and E2E binary.
 	@echo "✅ Cleanup completed!"
 
 .PHONY: test-kind-k8s-e2e
-test-kind-k8s-e2e: kind-deploy ## Run Kubernetes E2E tests in KIND cluster with full setup.
+test-kind-k8s-e2e: ## Run Kubernetes E2E tests in KIND cluster with full setup.
+	@echo "🔍 Checking if virtual nodes exist in manager cluster..."
+	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER) >/dev/null 2>&1 || (echo "❌ Manager cluster context not found, running kind-deploy..." && $(MAKE) kind-deploy && exit 0)
+	@VNODES_MISSING=0; \
+	for vnode in vnode-cls-worker1-kubeocean-worker1-worker vnode-cls-worker1-kubeocean-worker1-worker2 vnode-cls-worker2-kubeocean-worker2-worker vnode-cls-worker2-kubeocean-worker2-worker2; do \
+		if ! kubectl get node $$vnode >/dev/null 2>&1; then \
+			echo "   ⚠️  Virtual node $$vnode not found"; \
+			VNODES_MISSING=1; \
+		else \
+			echo "   ✅ Virtual node $$vnode exists"; \
+		fi; \
+	done; \
+	if [ $$VNODES_MISSING -eq 1 ]; then \
+		echo ""; \
+		echo "⚙️  Virtual nodes missing, running kind-deploy..."; \
+		$(MAKE) kind-deploy; \
+	else \
+		echo "   ✅ All virtual nodes exist, skipping kind-deploy"; \
+	fi
 	@echo ""
 	@echo "🔧 Step 1: Configuring ClusterBindings in manager cluster..."
 	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER)
@@ -157,7 +180,20 @@ test-kind-k8s-e2e: kind-deploy ## Run Kubernetes E2E tests in KIND cluster with 
 	@kubectl cordon $(KIND_MANAGER_CLUSTER)-worker2 2>/dev/null && echo "   • Cordoned $(KIND_MANAGER_CLUSTER)-worker2" || echo "   ⚠️  Node $(KIND_MANAGER_CLUSTER)-worker2 not found or already cordoned"
 	@echo "   ✅ Manager worker nodes cordoned"
 	@echo ""
-	@echo "🧪 Step 5: Running Kubernetes E2E tests..."
+	@echo "📦 Step 5: Loading E2E test images to all KIND clusters..."
+	@E2E_IMAGE="registry.k8s.io/e2e-test-images/agnhost:2.45"; \
+	echo "   • Pulling image $$E2E_IMAGE..."; \
+	docker pull $$E2E_IMAGE >/dev/null 2>&1 || (echo "   ⚠️  Failed to pull $$E2E_IMAGE" && exit 1); \
+	echo "   ✅ Image pulled successfully"; \
+	echo "   • Loading image to $(KIND_MANAGER_CLUSTER)..."; \
+	$(KIND) load docker-image $$E2E_IMAGE --name $(KIND_MANAGER_CLUSTER) >/dev/null 2>&1 && echo "   ✅ Loaded to $(KIND_MANAGER_CLUSTER)" || echo "   ⚠️  Failed to load to $(KIND_MANAGER_CLUSTER)"; \
+	echo "   • Loading image to $(KIND_WORKER1_CLUSTER)..."; \
+	$(KIND) load docker-image $$E2E_IMAGE --name $(KIND_WORKER1_CLUSTER) >/dev/null 2>&1 && echo "   ✅ Loaded to $(KIND_WORKER1_CLUSTER)" || echo "   ⚠️  Failed to load to $(KIND_WORKER1_CLUSTER)"; \
+	echo "   • Loading image to $(KIND_WORKER2_CLUSTER)..."; \
+	$(KIND) load docker-image $$E2E_IMAGE --name $(KIND_WORKER2_CLUSTER) >/dev/null 2>&1 && echo "   ✅ Loaded to $(KIND_WORKER2_CLUSTER)" || echo "   ⚠️  Failed to load to $(KIND_WORKER2_CLUSTER)"; \
+	echo "   ✅ All E2E test images loaded"
+	@echo ""
+	@echo "🧪 Step 6: Running Kubernetes E2E tests..."
 	@$(MAKE) test-k8s-e2e
 	@echo ""
 	@echo "🎉 KIND E2E test suite completed successfully!"

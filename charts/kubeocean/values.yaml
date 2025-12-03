@@ -14,8 +14,6 @@ global:
   nodeSelector: {}
   # Tolerations
   tolerations: []
-  # Affinity
-  affinity: {}
 
 # Manager configuration
 manager:
@@ -81,6 +79,16 @@ manager:
   podSecurityContext: {}
   # Container security context
   containerSecurityContext: {}
+  # Affinity - avoid scheduling to vnode
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: node.kubernetes.io/instance-type
+            operator: NotIn
+            values:
+            - vnode
   # Volume mounts
   volumeMounts:
     - name: syncer-template
@@ -167,6 +175,16 @@ syncer:
   podSecurityContext: {}
   # Container security context
   containerSecurityContext: {}
+  # Affinity - avoid scheduling to vnode
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: node.kubernetes.io/instance-type
+            operator: NotIn
+            values:
+            - vnode
   # Volume mounts
   volumeMounts:
     - name: tz-config
@@ -242,6 +260,16 @@ proxier:
   podSecurityContext: {}
   # Container security context
   containerSecurityContext: {}
+  # Affinity - avoid scheduling to vnode
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: node.kubernetes.io/instance-type
+            operator: NotIn
+            values:
+            - vnode
   # Volume mounts
   volumeMounts: []
   # Volumes
