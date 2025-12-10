@@ -54,7 +54,7 @@ spec:
   nodeSelector:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: role
+      - key: kubeocean.io/role
         operator: In
         values:
         - worker
@@ -102,7 +102,7 @@ spec:
   nodeSelector:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: role
+      - key: kubeocean.io/role
         operator: In
         values: ["worker"]
   # 策略生效的时间窗，可定义多个时间窗，若列表为空则默认全时生效
@@ -131,6 +131,8 @@ spec:
 ```
 # kubectl 切换到 worker 集群
 kubectl apply -f rlp.yaml
+# 给期望抽取资源的节点添加 label
+kubectl label node <nodeName1> <nodeName2> kubeocean.io/role=worker
 ```
 上述命令执行完后，可在 manager 集群中观察算力节点是否正常抽取：
 ```

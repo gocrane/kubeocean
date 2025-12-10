@@ -26,7 +26,7 @@ This directory provides one-click deployment scripts for Kubeocean components an
 # Switch kubectl to worker cluster
 bash install-worker.sh
 # Add label to nodes that need resource extraction
-kubectl label node <nodeName1> role=worker
+kubectl label node <nodeName1> kubeocean.io/role=worker
 
 # Switch kubectl to compute cluster, and copy the generated /tmp/kubeconfig-worker to local
 bash install-manager.sh

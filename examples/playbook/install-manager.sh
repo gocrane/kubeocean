@@ -370,7 +370,7 @@ spec:
   nodeSelector:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: role
+      - key: kubeocean.io/role
         operator: In
         values:
         - worker

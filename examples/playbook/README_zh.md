@@ -26,7 +26,7 @@
 # kubectl 切换到工作集群
 bash install-worker.sh
 # 给期望抽取资源的节点添加 label
-kubectl label node <nodeName1> role=worker
+kubectl label node <nodeName1> kubeocean.io/role=worker
 
 # 将 kubectl 切换到算力集群，并将上一步生成的 /tmp/kubeconfig-worker 拷贝到本地
 bash install-manager.sh
