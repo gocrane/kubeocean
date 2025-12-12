@@ -5,11 +5,10 @@ metadata:
 spec:
   cluster: example-cluster
   forceReclaim: true
-  gracefulReclaimPeriodSeconds: 120
   nodeSelector:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: role
+      - key: kubeocean.io/role
         operator: In
         values: ["worker"]
   timeWindows:
@@ -22,8 +21,8 @@ spec:
   resourceLimits:
     - resource: cpu
       quantity: "4"
-      percent: 80  # Take the smaller of 4 CPUs or 80% of available CPUs
+      percent: 90  # Take the smaller of 4 CPUs or 90% of available CPUs
     - resource: memory
-      percent: 90  # Take 90% of available memory
-    - resource: storage
-      quantity: "100Gi"
+      percent: 95  # Take 95% of available memory
+    - resource: nvidia.com/gpu
+      percent: 100  # Take 100% of available GPUs
