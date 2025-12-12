@@ -164,9 +164,9 @@ kind-delete-all: kind-delete-manager kind-delete-worker1 kind-delete-worker2 ## 
 .PHONY: kind-load-images
 kind-load-images: kind docker-build ## Load locally built images into KIND cluster.
 	@echo "📦 Loading kubeocean images into KIND cluster..."
-	$(KIND) load docker-image $(IMG_MANAGER) --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(IMG_SYNCER) --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(IMG_PROXIER) --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(IMG_MANAGER)-$(GOARCH) --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(IMG_SYNCER)-$(GOARCH) --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(IMG_PROXIER)-$(GOARCH) --name $(KIND_CLUSTER_NAME)
 	@echo "✅ Images loaded successfully."
 
 .PHONY: kind-status
@@ -365,7 +365,7 @@ kind-deploy: kind-deploy-pre  ## Deploy kubeocean to all KIND clusters with full
 	@echo "🎛️  Step 3/6: Deploying kubeocean manager to manager cluster..."
 	@KIND_CLUSTER_NAME=$(KIND_MANAGER_CLUSTER) make kind-load-images
 	@kubectl config use-context kind-$(KIND_MANAGER_CLUSTER)
-	@make install-manager
+	@INSTALL_IMG_TAG=$(IMG_TAG)-$(GOARCH) make install-manager
 	@echo ""
 	@# Step 4: Extract kubeconfigs from worker clusters with container IPs
 	@echo "🔐 Step 4/6: Extracting kubeconfigs from worker clusters..."
