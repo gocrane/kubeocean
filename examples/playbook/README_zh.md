@@ -79,3 +79,130 @@ bash uninstall-manager.sh -n worker1 --skip-manager
 bash uninstall-worker.sh -r my-policy
 bash uninstall-worker.sh --rlp-name my-policy
 ```
+
+## TKE 集群一键部署
+
+针对腾讯云 TKE 集群，提供了专门的一键部署脚本，可以自动完成集群配置（开启内网访问、创建 kube-dns-intranet 等）和组件安装。
+
+### 前置准备
+
+除了上述基础环境要求外，还需要：
+- 安装并配置 [腾讯云 CLI 工具 (tccli)](https://cloud.tencent.com/document/product/440/6176)
+- 安装 [jq](https://jqlang.org/download/) JSON 处理工具
+- 准备 TKE 集群所在的地域、集群 ID 和子网 ID
+
+### 部署 Worker 集群
+
+```bash
+# 基本使用（使用默认 kubeconfig 输出路径 /tmp/kubeconfig-worker）
+bash install-worker-tke.sh \
+  --region ap-guangzhou \
+  --cluster-id cls-xxxxxxxx \
+  --subnet-id subnet-xxxxxxxx
+
+# 指定自定义 kubeconfig 输出路径
+bash install-worker-tke.sh \
+  --region ap-guangzhou \
+  --cluster-id cls-xxxxxxxx \
+  --subnet-id subnet-xxxxxxxx \
+  --output /tmp/my-kubeconfig
+
+# 短参数形式
+bash install-worker-tke.sh \
+  -r ap-guangzhou \
+  -c cls-xxxxxxxx \
+  -s subnet-xxxxxxxx
+```
+
+脚本会自动完成以下操作：
+1. 检查前置条件（tccli、jq、kubectl、helm 等）
+2. 开启集群内网访问（如未开启）
+3. 获取集群 kubeconfig 并配置 context（名称：`worker-admin-<集群ID>`）
+4. 安装 kubeocean-worker 组件
+5. 生成 worker kubeconfig 用于 manager 集群绑定
+
+### 部署 Manager 集群
+
+```bash
+# 基本使用（使用默认 worker kubeconfig 路径 /tmp/kubeconfig-worker）
+bash install-manager-tke.sh \
+  --region ap-guangzhou \
+  --cluster-id cls-xxxxxxxx \
+  --subnet-id subnet-xxxxxxxx \
+  --worker-cluster-id cls-worker-xxx
+
+# 指定自定义 worker kubeconfig 路径
+bash install-manager-tke.sh \
+  --region ap-guangzhou \
+  --cluster-id cls-xxxxxxxx \
+  --subnet-id subnet-xxxxxxxx \
+  --worker-kubeconfig /tmp/my-kubeconfig \
+  --worker-cluster-id cls-worker-xxx
+
+# 短参数形式
+bash install-manager-tke.sh \
+  -r ap-guangzhou \
+  -c cls-xxxxxxxx \
+  -s subnet-xxxxxxxx \
+  -i cls-worker-xxx
+```
+
+脚本会自动完成以下操作：
+1. 检查前置条件（tccli、jq、kubectl、helm、worker kubeconfig 等）
+2. 开启集群内网访问（如未开启）
+3. 获取集群 kubeconfig 并配置 context（名称：`manager-admin-<集群ID>`）
+4. 创建 kube-dns-intranet 服务（如不存在）
+5. 安装 kubeocean-manager 组件
+6. 创建 ClusterBinding 绑定 worker 集群
+
+### 完整示例
+
+```bash
+# Step 1: 部署 worker 集群
+bash install-worker-tke.sh \
+  -r ap-guangzhou \
+  -c cls-xxxxxxxx \
+  -s subnet-xxxxxxxx
+
+# 给节点添加 label 以标记资源抽取节点
+kubectl label node <nodeName> kubeocean.io/role=worker
+
+# Step 2: 部署 manager 集群（会自动使用 /tmp/kubeconfig-worker）
+bash install-manager-tke.sh \
+  -r ap-guangzhou \
+  -c cls-xxxxxxxx \
+  -s subnet-xxxxxxxx \
+  -i cls-xxxxxxxx
+
+# Step 3: 验证部署
+# 切换到 manager 集群 context
+kubectl config use-context manager-admin-cls-manager-xxx
+kubectl get clusterbindings
+kubectl get all -n kubeocean-system
+
+# 切换到 worker 集群 context
+kubectl config use-context worker-admin-cls-worker-xxx
+kubectl get all -n kubeocean-worker
+```
+
+### 参数说明
+
+#### install-worker-tke.sh
+
+| 参数 | 短参数 | 说明 | 是否必需 | 默认值 |
+|------|--------|------|----------|--------|
+| `--region` | `-r` | TKE 集群所在地域 | 是 | - |
+| `--cluster-id` | `-c` | TKE 集群 ID | 是 | - |
+| `--subnet-id` | `-s` | 子网 ID（用于内网访问） | 是（开启内网访问时） | - |
+| `--output` | `-o` | Worker kubeconfig 输出路径 | 否 | `/tmp/kubeconfig-worker` |
+
+#### install-manager-tke.sh
+
+| 参数 | 短参数 | 说明 | 是否必需 | 默认值 |
+|------|--------|------|----------|--------|
+| `--region` | `-r` | TKE 集群所在地域 | 是 | - |
+| `--cluster-id` | `-c` | TKE 集群 ID | 是 | - |
+| `--subnet-id` | `-s` | 子网 ID（用于内网访问和 DNS 服务） | 是（开启内网访问或创建 DNS 服务时） | - |
+| `--worker-kubeconfig` | `-w` | Worker 集群 kubeconfig 路径 | 否 | `/tmp/kubeconfig-worker` |
+| `--worker-cluster-id` | `-i` | Worker 集群 ID | 是 | - |
+```
