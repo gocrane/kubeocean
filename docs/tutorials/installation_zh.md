@@ -9,12 +9,15 @@
 ## 用 helm 安装 kubeocean 组件
 
 1. 克隆代码仓库并进入目录
-```
+
+```sh
 git clone https://github.com/gocrane/kubeocean
 cd kubeocean
 ```
+
 2. 在算力集群中部署 kubeocean 组件
-```
+
+```sh
 helm upgrade --install kubeocean charts/kubeocean
 ```
 
@@ -27,18 +30,34 @@ kubeocean 组件要求虚拟算力集群的 apiserver 给其他工作集群提�
 
 ![k8s-svc](../images/k8s-svc.png)
 
+或者使用腾讯云 CLI 工具 `tccli` 调用云 API 开启内网访问
+
+```sh
+# 设置调用集群的地域、集群ID和子网ID
+export REGION=ap-guangzhou
+export CLUSTER_ID=cls-abcdefgh
+export SUBNET_ID=subnet-abcdefgh
+TENCENTCLOUD_REGION="$REGION" tccli tke CreateClusterEndpoint \
+        --ClusterId "$CLUSTER_ID" \
+        --SubnetId "$SUBNET_ID" \
+        --IsExtranet false
+```
+
 ### 部署 kube-dns-intranet
 
 kubeocean 组件要求虚拟算力集群的 `kube-dns` 给其他工作集群提供内网访问，需要部署名为 `kube-dns-intranet` 的 LoadBalancer 类型的服务。
 
-在 [TKE(Tencent Kubernetes Engine)](https://cloud.tencent.com/product/tke) 集群中，可以使用下述 YAML 创建该服务，需要填写替换其中的 `<subnetId>`：
-```
-# k8s-dns-svc.yaml
+在 [TKE(Tencent Kubernetes Engine)](https://cloud.tencent.com/product/tke) 集群中，可以使用下述 YAML 创建该服务，需要设置内网负载均衡使用的子网`：
+
+```sh
+# 用集群所在 VPC 的子网ID设置内网负载均衡所在的子网
+export SUBNET_ID=subnet-abcdefgh
+cat > tke-dns-svc.yaml <<EOF
 apiVersion: v1
 kind: Service
 metadata:
   annotations:
-    service.kubernetes.io/qcloud-loadbalancer-internal-subnetid: <subnetId>
+    service.kubernetes.io/qcloud-loadbalancer-internal-subnetid: $SUBNET_ID
   name: kube-dns-intranet
   namespace: kube-system
 spec:
@@ -61,11 +80,12 @@ spec:
     k8s-app: kube-dns
   sessionAffinity: None
   type: LoadBalancer
+EOF
 ```
+
 在 TKE 集群中创建部署上述 YAML：
-```
-# 用集群所在 VPC 中的子网填写替换 <subnetId>
-sed -i "s|<subnetId>|subnet-xxxxxxxx|" k8s-dns-svc.yaml
+
+```sh
 # 创建部署 Service
-kubectl create -f k8s-dns-svc.yaml
+kubectl create -f tke-dns-svc.yaml
 ```
