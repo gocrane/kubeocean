@@ -1,5 +1,7 @@
 # Build related targets and configurations
 
+INSTALL_IMG_TAG ?= $(IMG_TAG)
+
 ##@ Build
 
 .PHONY: build
@@ -38,10 +40,7 @@ docker-build.proxier: ## Build docker image for proxier only.
 docker-build: docker-build.manager docker-build.syncer docker-build.proxier ## Build docker images for manager, syncer and proxier.
 
 .PHONY: docker-push
-docker-push: docker-build ## Push docker images for manager, syncer and proxier.
-	docker push ${IMG_MANAGER}
-	docker push ${IMG_SYNCER}
-	docker push ${IMG_PROXIER}
+docker-push: docker-push.manager docker-push.syncer docker-push.proxier ## Push docker images for manager, syncer and proxier.
 
 .PHONY: docker-push.manager
 docker-push.manager: docker-build.manager ## Push docker image for manager only.
@@ -169,9 +168,9 @@ install-manager: helm ## Install kubeocean manager to the current cluster using 
 	@echo "🚀 Installing kubeocean manager to current cluster..."
 	$(HELM) upgrade --install kubeocean charts/kubeocean \
 		--set global.imageRegistry=${TEST_REGISTRY} \
-		--set manager.image.tag=${IMG_TAG} \
-		--set syncer.image.tag=${IMG_TAG} \
-		--set proxier.image.tag=${IMG_TAG} \
+		--set manager.image.tag=${INSTALL_IMG_TAG} \
+		--set syncer.image.tag=${INSTALL_IMG_TAG} \
+		--set proxier.image.tag=${INSTALL_IMG_TAG} \
 		--wait \
 		--timeout 300s
 	@echo "✅ Kubeocean manager installed successfully!"

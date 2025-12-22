@@ -54,7 +54,7 @@ spec:
   nodeSelector:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: role
+      - key: kubeocean.io/role
         operator: In
         values:
         - worker
@@ -102,7 +102,7 @@ spec:
   nodeSelector:
     nodeSelectorTerms:
     - matchExpressions:
-      - key: role
+      - key: kubeocean.io/role
         operator: In
         values: ["worker"]
   # Time windows when policy takes effect, can define multiple time windows, if list is empty then defaults to full-time effect
@@ -131,6 +131,8 @@ Create the above ResourceLeasingPolicy object in the worker cluster to extract c
 ```
 # Switch kubectl to worker cluster
 kubectl apply -f rlp.yaml
+# Add a label to nodes that expect to extract resources
+kubectl label node <nodeName1> <nodeName2> kubeocean.io/role=worker
 ```
 After executing the above command, observe in the manager cluster whether computing nodes are extracted normally:
 ```
