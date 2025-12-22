@@ -10,6 +10,11 @@ ginkgo: $(GINKGO) ## Download ginkgo locally if necessary.
 $(GINKGO): $(LOCALBIN)
 	test -s $(LOCALBIN)/ginkgo || GOBIN=$(LOCALBIN) go install github.com/onsi/ginkgo/v2/ginkgo@2.23.4
 
+.PHONY: test-unit
+test-unit: manifests generate fmt vet envtest ginkgo ## Run unit tests with ginkgo in parallel (minimal output).
+	@echo "Running unit tests..."
+	@$(GINKGO) -v --cover --coverprofile=cover.out ./api/... ./pkg/...
+
 .PHONY: test
 test: manifests generate fmt vet envtest ginkgo ## Run tests with ginkgo in parallel (minimal output).
 	@echo "Running tests..."
