@@ -137,7 +137,7 @@ kind-create-all: kind-create-manager kind-create-worker1 kind-create-worker2 ## 
 	@echo ""
 	@echo "🎉 All kubeocean KIND clusters created successfully!"
 	@echo ""
-	@echo "🔍 Check status with: make kind-status"
+	@echo "🔍 Check status with: make kind-status-all"
 
 .PHONY: kind-delete-manager
 kind-delete-manager: kind ## Delete KIND manager cluster.
