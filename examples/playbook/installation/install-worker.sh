@@ -50,9 +50,9 @@ log_error() {
 # Error handling
 trap 'log_error "Script execution failed with exit code: $?, at line: $LINENO"' ERR
 
-# Script root directory (assuming script is in examples/playbook directory)
+# Script root directory (assuming script is in examples/playbook/installation directory)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # Configuration variables
 LOCALBIN="${PROJECT_ROOT}/bin"

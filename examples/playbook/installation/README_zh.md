@@ -16,8 +16,8 @@
 - 可以使用 `kubectl` 访问集群
 - 本地环境已安装 `helm`，且版本为 v3
 - 集群都已开启 APIServer 内网访问，即在 `default` namespace 下存在名为 `kubernetes-intranet` 且类型为 `LoadBalancer` 的服务。若集群为 TKE 标准集群，可参考下图在集群控制台开启：
-![k8s-svc](../../docs/images/k8s-svc.png)
-- 其他要求参考：[要求](../../docs/requirements_zh.md)
+![k8s-svc](../../../docs/images/k8s-svc.png)
+- 其他要求参考：[要求](../../../docs/requirements_zh.md)
 
 ## 基础使用
 

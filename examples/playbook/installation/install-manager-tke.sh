@@ -14,12 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Kubeocean Worker Cluster Installation Script for TKE
+# Kubeocean Manager Cluster Installation Script for TKE
 # Features:
 # 1. Pre-check TKE cluster and tccli tool
 # 2. Enable cluster internal network access
 # 3. Extract cluster kubeconfig
-# 4. Install kubeocean-worker components
+# 4. Enable kube-dns internal network access
+# 5. Install kubeocean-manager components
 
 set -e
 set -o pipefail
@@ -51,15 +52,16 @@ log_error() {
 # Error handling
 trap 'log_error "Script execution failed with exit code: $?, at line: $LINENO"' ERR
 
-# Script root directory (assuming script is in examples/playbook directory)
+# Script root directory (assuming script is in examples/playbook/installation directory)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # Configuration variables
 REGION=""
 CLUSTER_ID=""
 SUBNET_ID=""
-OUTPUT_KUBECONFIG="/tmp/kubeconfig-worker"
+WORKER_CLUSTER_ID=""
+WORKER_KUBECONFIG="/tmp/kubeconfig-worker"
 
 # VPC information (will be extracted from cluster info)
 VPC_ID=""
@@ -67,7 +69,7 @@ VPC_ID=""
 # Display help information
 show_help() {
     cat << EOF
-Kubeocean Worker Cluster Installation Script for TKE
+Kubeocean Manager Cluster Installation Script for TKE
 
 Usage: $0 [options]
 
@@ -76,7 +78,8 @@ Options:
   -r, --region REGION          TKE cluster region (required)
   -c, --cluster-id ID          TKE cluster ID (required)
   -s, --subnet-id ID           Subnet ID for internal network access (required for enabling internal access)
-  -o, --output FILE            Kubeconfig output file path (default: /tmp/kubeconfig-worker)
+  -w, --worker-kubeconfig FILE Worker cluster kubeconfig path (default: /tmp/kubeconfig-worker)
+  -i, --worker-cluster-id ID   Worker cluster ID (required)
 
 Prerequisites:
   tccli                        Tencent Cloud CLI tool (must be installed and configured)
@@ -85,11 +88,16 @@ Prerequisites:
   helm v3.x                    Helm package manager (version 3.x required)
 
 Examples:
-  # Install TKE worker cluster
-  $0 --region ap-guangzhou --cluster-id cls-xxxxxxxx --subnet-id subnet-xxxxxxxx
+  # Install TKE manager cluster with default worker kubeconfig path
+  $0 --region ap-guangzhou --cluster-id cls-xxxxxxxx --subnet-id subnet-xxxxxxxx \\
+     --worker-cluster-id cls-worker-xxx
 
-  # Specify output path
-  $0 -r ap-guangzhou -c cls-xxxxxxxx -s subnet-xxxxxxxx -o /tmp/my-kubeconfig
+  # Install with custom worker kubeconfig path
+  $0 --region ap-guangzhou --cluster-id cls-xxxxxxxx --subnet-id subnet-xxxxxxxx \\
+     --worker-kubeconfig /tmp/my-kubeconfig --worker-cluster-id cls-worker-xxx
+
+  # Short form
+  $0 -r ap-guangzhou -c cls-xxxxxxxx -s subnet-xxxxxxxx -i cls-worker-xxx
 
 EOF
 }
@@ -114,8 +122,12 @@ parse_args() {
                 SUBNET_ID="$2"
                 shift 2
                 ;;
-            -o|--output)
-                OUTPUT_KUBECONFIG="$2"
+            -w|--worker-kubeconfig)
+                WORKER_KUBECONFIG="$2"
+                shift 2
+                ;;
+            -i|--worker-cluster-id)
+                WORKER_CLUSTER_ID="$2"
                 shift 2
                 ;;
             *)
@@ -142,8 +154,21 @@ check_prerequisites() {
         exit 1
     fi
 
+    if [ -z "$WORKER_CLUSTER_ID" ]; then
+        log_error "Worker cluster ID is required. Please specify with --worker-cluster-id"
+        exit 1
+    fi
+
+    # Check if worker kubeconfig file exists
+    if [ ! -f "$WORKER_KUBECONFIG" ]; then
+        log_error "Worker kubeconfig file not found: $WORKER_KUBECONFIG"
+        exit 1
+    fi
+
     log_info "Region: $REGION"
     log_info "Cluster ID: $CLUSTER_ID"
+    log_info "Worker Cluster ID: $WORKER_CLUSTER_ID"
+    log_info "Worker Kubeconfig: $WORKER_KUBECONFIG"
 
     # Check tccli installation
     if ! command -v tccli &> /dev/null; then
@@ -289,6 +314,64 @@ enable_cluster_internal_access() {
     exit 1
 }
 
+# Enable kube-dns internal network access
+enable_kube_dns_internal_access() {
+    log_info "Checking kube-dns internal network access..."
+
+    # Check if kube-dns-intranet service already exists
+    if kubectl get svc kube-dns-intranet -n kube-system &> /dev/null; then
+        log_success "kube-dns-intranet service already exists"
+        return 0
+    fi
+
+    log_info "Creating kube-dns-intranet service..."
+
+    # Check subnet ID parameter
+    if [ -z "$SUBNET_ID" ]; then
+        log_error "Subnet ID is required for creating kube-dns-intranet service. Please specify with --subnet-id"
+        exit 1
+    fi
+
+    # Create kube-dns-intranet service
+    local kube_dns_yaml=$(cat <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.kubernetes.io/qcloud-loadbalancer-internal-subnetid: $SUBNET_ID
+  name: kube-dns-intranet
+  namespace: kube-system
+spec:
+  allocateLoadBalancerNodePorts: true
+  externalTrafficPolicy: Cluster
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: dns
+    port: 53
+    protocol: UDP
+    targetPort: 53
+  - name: dns-tcp
+    port: 53
+    protocol: TCP
+    targetPort: 53
+  selector:
+    k8s-app: kube-dns
+  sessionAffinity: None
+  type: LoadBalancer
+EOF
+)
+
+    if echo "$kube_dns_yaml" | kubectl apply -f - ; then
+        log_success "kube-dns-intranet service created successfully"
+    else
+        log_error "Failed to create kube-dns-intranet service"
+        exit 1
+    fi
+}
+
 # Get cluster kubeconfig
 get_cluster_kubeconfig() {
     log_info "Getting cluster kubeconfig..."
@@ -342,7 +425,7 @@ get_cluster_kubeconfig() {
     fi
 
     # Set kubectl context name
-    local context_name="worker-admin-$CLUSTER_ID"
+    local context_name="manager-admin-$CLUSTER_ID"
 
     log_info "Merging kubeconfig to default kubectl config"
     log_info "Context name: $context_name"
@@ -389,24 +472,26 @@ get_cluster_kubeconfig() {
     log_success "Successfully connected to cluster"
 }
 
-# Install kubeocean-worker
-install_kubeocean_worker() {
-    log_info "Installing kubeocean-worker..."
+# Install kubeocean-manager
+install_kubeocean_manager() {
+    log_info "Installing kubeocean-manager..."
 
-    # Call install-worker.sh script
-    local install_worker_script="${SCRIPT_DIR}/install-worker.sh"
+    # Call install-manager.sh script
+    local install_manager_script="${SCRIPT_DIR}/install-manager.sh"
 
-    if [ ! -f "$install_worker_script" ]; then
-        log_error "install-worker.sh script not found: $install_worker_script"
+    if [ ! -f "$install_manager_script" ]; then
+        log_error "install-manager.sh script not found: $install_manager_script"
         exit 1
     fi
 
-    log_info "Calling install-worker.sh with output path: $OUTPUT_KUBECONFIG"
+    log_info "Calling install-manager.sh with worker cluster: $WORKER_CLUSTER_ID"
 
-    if bash "$install_worker_script" --output "$OUTPUT_KUBECONFIG"; then
-        log_success "kubeocean-worker installed successfully"
+    if bash "$install_manager_script" \
+        --worker-kubeconfig "$WORKER_KUBECONFIG" \
+        --cluster-id "$WORKER_CLUSTER_ID"; then
+        log_success "kubeocean-manager installed successfully"
     else
-        log_error "Failed to install kubeocean-worker"
+        log_error "Failed to install kubeocean-manager"
         exit 1
     fi
 }
@@ -415,7 +500,7 @@ install_kubeocean_worker() {
 show_summary() {
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    log_success "TKE Worker Cluster Installation Complete!"
+    log_success "TKE Manager Cluster Installation Complete!"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "📋 Installation Information:"
@@ -423,22 +508,22 @@ show_summary() {
     echo "   • Cluster ID: $CLUSTER_ID"
     echo "   • VPC ID: $VPC_ID"
     echo "   • Subnet ID: $SUBNET_ID"
-    echo "   • Context: worker-admin-$CLUSTER_ID (merged to ~/.kube/config)"
-    echo "   • Worker Kubeconfig (for manager binding): $OUTPUT_KUBECONFIG"
+    echo "   • Context: manager-admin-$CLUSTER_ID (merged to ~/.kube/config)"
+    echo "   • Worker Cluster ID: $WORKER_CLUSTER_ID"
+    echo "   • Worker Kubeconfig: $WORKER_KUBECONFIG"
     echo ""
     echo "🔍 Next Steps:"
-    echo "   1. Verify installation:"
-    echo "      kubectl get all -n kubeocean-worker"
+    echo "   1. Verify manager installation:"
+    echo "      kubectl get all -n kubeocean-system"
     echo ""
-    echo "   2. Label nodes for resource extraction:"
-    echo "      kubectl label node <nodeName> kubeocean.io/role=worker"
+    echo "   2. Check ClusterBinding status:"
+    echo "      kubectl get clusterbindings"
     echo ""
     echo "   3. Switch to this context anytime:"
-    echo "      kubectl config use-context worker-admin-$CLUSTER_ID"
+    echo "      kubectl config use-context manager-admin-$CLUSTER_ID"
     echo ""
-    echo "   4. Use worker kubeconfig for manager cluster binding:"
-    echo "      # Copy $OUTPUT_KUBECONFIG to manager cluster"
-    echo "      # Then run install-manager.sh on manager cluster"
+    echo "   4. Check synced resources in worker cluster:"
+    echo "      # Switch to worker cluster context and check"
     echo ""
 }
 
@@ -446,7 +531,7 @@ show_summary() {
 main() {
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "   🚀 TKE Worker Cluster Installation Script"
+    echo "   🚀 TKE Manager Cluster Installation Script"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
@@ -454,23 +539,28 @@ main() {
     parse_args "$@"
 
     # Step 1: Check prerequisites
-    echo "📋 Step 1/4: Checking Prerequisites"
+    echo "📋 Step 1/5: Checking Prerequisites"
     check_prerequisites
     echo ""
 
     # Step 2: Enable cluster internal network access
-    echo "🌐 Step 2/4: Enabling Cluster Internal Network Access"
+    echo "🌐 Step 2/5: Enabling Cluster Internal Network Access"
     enable_cluster_internal_access
     echo ""
 
     # Step 3: Get cluster kubeconfig
-    echo "🔐 Step 3/4: Getting Cluster Kubeconfig"
+    echo "🔐 Step 3/5: Getting Cluster Kubeconfig"
     get_cluster_kubeconfig
     echo ""
 
-    # Step 4: Install kubeocean-worker
-    echo "📦 Step 4/4: Installing Kubeocean-Worker"
-    install_kubeocean_worker
+    # Step 4: Enable kube-dns internal network access
+    echo "🔌 Step 4/5: Enabling Kube-DNS Internal Network Access"
+    enable_kube_dns_internal_access
+    echo ""
+
+    # Step 5: Install kubeocean-manager
+    echo "📦 Step 5/5: Installing Kubeocean-Manager"
+    install_kubeocean_manager
     echo ""
 
     # Display summary
