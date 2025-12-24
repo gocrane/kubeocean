@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: is-qwen2-5-05b-vllm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vllm-inference-service
+      app.kubernetes.io/instance: is-qwen2-5-05b-vllm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vllm-inference-service
+        app.kubernetes.io/instance: is-qwen2-5-05b-vllm
+    spec:
+      enableServiceLinks: false
+      containers:
+      - name: vllm
+        image: ccr.ccs.tencentyun.com/tke-ai-playbook/vllm-openai:v0.11.1-Qwen2.5-0.5B
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "-c"]
+        args:
+        - |
+          # 启动 vLLM Server (单节点，双卡 GPU)
+          vllm serve /vllm-workspace/models/Qwen2.5-0.5B-Instruct \
+            --served-model-name Qwen2.5-0.5B-Instruct \
+            --tensor-parallel-size 2 \
+            --max-model-len 1024 \
+            --max-num-seqs 32 \
+            --host 0.0.0.0 \
+            --port 8000
+        ports:
+        - containerPort: 8000
+          name: vllm
+          protocol: TCP
+        resources:
+          limits:
+            cpu: "10"
+            memory: 40Gi
+            nvidia.com/gpu: "2"
+            ephemeral-storage: "30Gi"
+          requests:
+            cpu: "10"
+            memory: 40Gi
+            nvidia.com/gpu: "2"
+            ephemeral-storage: "8Gi"
+        startupProbe:
+          httpGet:
+            path: /health
+            port: vllm
+            scheme: HTTP
+          timeoutSeconds: 3
+          periodSeconds: 10
+          failureThreshold: 360
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: vllm
+            scheme: HTTP
+          timeoutSeconds: 3
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: vllm
+            scheme: HTTP
+          timeoutSeconds: 3
+          periodSeconds: 10
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: is-qwen2-5-05b-vllm
+  labels:
+    app.kubernetes.io/name: vllm-inference-service
+    app.kubernetes.io/instance: is-qwen2-5-05b-vllm
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8000
+    protocol: TCP
+    targetPort: vllm
+  selector:
+    app.kubernetes.io/name: vllm-inference-service
+    app.kubernetes.io/instance: is-qwen2-5-05b-vllm
+---
+apiVersion: autoscaling.cloud.tencent.com/v1
+kind: HorizontalPodCronscaler
+metadata:
+  finalizers:
+  - autoscaling.cloud.tencent.com
+  labels:
+    qcloud-app: is-qwen
+  name: is-qwen
+  namespace: default
+spec:
+  crons:
+  - name: scale-down
+    schedule: 0 0 18 * * *
+    targetSize: 2
+  - name: scale-up
+    schedule: 0 0 8 * * *
+    targetSize: 4
+  scaleTarget:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: is-qwen2-5-05b-vllm
+    namespace: default

@@ -14,13 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Kubeocean Manager Cluster Installation Script for TKE
+# vLLM Inference Service Deployment Script for TKE
 # Features:
 # 1. Pre-check TKE cluster and tccli tool
-# 2. Enable cluster internal network access
-# 3. Extract cluster kubeconfig
-# 4. Enable kube-dns internal network access
-# 5. Install kubeocean-manager components
+# 2. Get cluster kubeconfig and set context
+# 3. Check and install tke-hpc-controller addon if needed
+# 4. Deploy vLLM inference service with HorizontalPodCronscaler
 
 set -e
 set -o pipefail
@@ -52,22 +51,18 @@ log_error() {
 # Error handling
 trap 'log_error "Script execution failed with exit code: $?, at line: $LINENO"' ERR
 
-# Script root directory (assuming script is in examples/playbook/installation directory)
+# Script root directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # Configuration file path
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
 
-# Manager Cluster Configuration variables
-MANAGER_REGION=""
-MANAGER_CLUSTER_ID=""
-MANAGER_SUBNET_ID=""
-
 # Worker Cluster Configuration variables
+WORKER_REGION=""
 WORKER_CLUSTER_ID=""
-WORKER_KUBECONFIG="/tmp/kubeconfig-worker"
-WORKER_CLUSTER_NAME="example-cluster"
+WORKER_SUBNET_ID=""
+WORKER_NAMESPACE="default"
+SKIP_INSTALL_HPC="false"
 
 # VPC information (will be extracted from cluster info)
 VPC_ID=""
@@ -75,7 +70,13 @@ VPC_ID=""
 # Display help information
 show_help() {
     cat << EOF
-Kubeocean Manager Cluster Installation Script for TKE
+vLLM Inference Service Deployment Script for TKE
+
+This script automates the deployment of vLLM inference service with the following steps:
+1. Pre-check tccli and cluster connectivity
+2. Get cluster admin kubeconfig and set kubectl context
+3. Check and install tke-hpc-controller addon if needed
+4. Deploy vLLM inference service with HorizontalPodCronscaler
 
 Usage: $0 [options]
 
@@ -84,20 +85,18 @@ Options:
   -c, --config FILE            Configuration file path (default: ./config.env)
 
 Required Configuration Variables (in config file):
-  MANAGER_REGION               Manager cluster region
-  MANAGER_CLUSTER_ID           Manager cluster ID
-  MANAGER_SUBNET_ID            Manager cluster subnet ID for internal network access
+  WORKER_REGION                Worker cluster region
   WORKER_CLUSTER_ID            Worker cluster ID
+  WORKER_SUBNET_ID             Worker cluster subnet ID for internal network access
 
 Optional Configuration Variables:
-  WORKER_KUBECONFIG            Worker cluster kubeconfig path (default: /tmp/kubeconfig-worker)
-  WORKER_CLUSTER_NAME          Worker cluster name for binding (default: example-cluster)
+  WORKER_NAMESPACE             Namespace for deployment (default: default)
+  SKIP_INSTALL_HPC             Skip tke-hpc-controller installation (default: false)
 
 Prerequisites:
   tccli                        Tencent Cloud CLI tool (must be installed and configured)
   jq                           Command-line JSON processor
   kubectl                      Kubernetes command-line tool
-  helm v3.x                    Helm package manager (version 3.x required)
 
 Examples:
   # Use default configuration file (./config.env)
@@ -106,11 +105,8 @@ Examples:
   # Use custom configuration file
   $0 --config /path/to/my-config.env
 
-  # Use environment variables to override config file
-  WORKER_CLUSTER_ID="cls-new-worker" $0 --config prod.env
-
 Configuration File Example:
-  cp config.env.template config.env
+  cp config.env.example config.env
   # Edit config.env with your values
   vim config.env
 
@@ -157,32 +153,19 @@ check_prerequisites() {
     log_info "Checking prerequisites..."
 
     # Check required parameters
-    if [ -z "$MANAGER_REGION" ]; then
-        log_error "MANAGER_REGION is required. Please set it in config file"
-        exit 1
-    fi
-
-    if [ -z "$MANAGER_CLUSTER_ID" ]; then
-        log_error "MANAGER_CLUSTER_ID is required. Please set it in config file"
+    if [ -z "$WORKER_REGION" ]; then
+        log_error "WORKER_REGION is required. Please set it in config file"
         exit 1
     fi
 
     if [ -z "$WORKER_CLUSTER_ID" ]; then
-        log_error "Worker cluster ID is required. Please specify with --worker-cluster-id"
+        log_error "WORKER_CLUSTER_ID is required. Please set it in config file"
         exit 1
     fi
 
-    # Check if worker kubeconfig file exists
-    if [ ! -f "$WORKER_KUBECONFIG" ]; then
-        log_error "Worker kubeconfig file not found: $WORKER_KUBECONFIG"
-        exit 1
-    fi
-
-    log_info "Manager Region: $MANAGER_REGION"
-    log_info "Manager Cluster ID: $MANAGER_CLUSTER_ID"
+    log_info "Worker Region: $WORKER_REGION"
     log_info "Worker Cluster ID: $WORKER_CLUSTER_ID"
-    log_info "Worker Cluster Name: $WORKER_CLUSTER_NAME"
-    log_info "Worker Kubeconfig: $WORKER_KUBECONFIG"
+    log_info "Worker Namespace: $WORKER_NAMESPACE"
 
     # Check tccli installation
     if ! command -v tccli &> /dev/null; then
@@ -214,7 +197,7 @@ check_prerequisites() {
     log_info "Checking cluster existence and getting VPC info..."
     local cluster_info
     ret=0
-    cluster_info=$(TENCENTCLOUD_REGION="$MANAGER_REGION" tccli tke DescribeClusters --ClusterIds "[\"$MANAGER_CLUSTER_ID\"]" 2>&1) || ret=$?
+    cluster_info=$(TENCENTCLOUD_REGION="$WORKER_REGION" tccli tke DescribeClusters --ClusterIds "[\"$WORKER_CLUSTER_ID\"]" 2>&1) || ret=$?
 
     if [ $ret -ne 0 ]; then
         log_error "Failed to query cluster information"
@@ -227,7 +210,7 @@ check_prerequisites() {
     total_count=$(echo "$cluster_info" | jq -r '.TotalCount // 0')
 
     if [ "$total_count" -eq 0 ]; then
-        log_error "Cluster $MANAGER_CLUSTER_ID not found in region $MANAGER_REGION"
+        log_error "Cluster $WORKER_CLUSTER_ID not found in region $WORKER_REGION"
         exit 1
     fi
 
@@ -257,7 +240,7 @@ enable_cluster_internal_access() {
     # Check if internal access is already enabled
     local endpoint_status
     ret=0
-    endpoint_status=$(TENCENTCLOUD_REGION="$MANAGER_REGION" tccli tke DescribeClusterEndpointStatus --ClusterId "$MANAGER_CLUSTER_ID" 2>&1) || ret=$?
+    endpoint_status=$(TENCENTCLOUD_REGION="$WORKER_REGION" tccli tke DescribeClusterEndpointStatus --ClusterId "$WORKER_CLUSTER_ID" 2>&1) || ret=$?
 
     if [ $ret -ne 0 ]; then
         log_error "Failed to query cluster endpoint status"
@@ -277,17 +260,17 @@ enable_cluster_internal_access() {
     log_info "Enabling cluster internal network access..."
 
     # Check subnet ID parameter
-    if [ -z "$MANAGER_SUBNET_ID" ]; then
-        log_error "MANAGER_SUBNET_ID is required for enabling internal access. Please set it in config file"
+    if [ -z "$WORKER_SUBNET_ID" ]; then
+        log_error "WORKER_SUBNET_ID is required for enabling internal access. Please set it in config file"
         exit 1
     fi
 
     # Enable internal access
     local enable_result
     ret=0
-    enable_result=$(TENCENTCLOUD_REGION="$MANAGER_REGION" tccli tke CreateClusterEndpoint \
-        --ClusterId "$MANAGER_CLUSTER_ID" \
-        --SubnetId "$MANAGER_SUBNET_ID" \
+    enable_result=$(TENCENTCLOUD_REGION="$WORKER_REGION" tccli tke CreateClusterEndpoint \
+        --ClusterId "$WORKER_CLUSTER_ID" \
+        --SubnetId "$WORKER_SUBNET_ID" \
         --IsExtranet false 2>&1) || ret=$?
 
     if [ $ret -ne 0 ]; then
@@ -306,7 +289,7 @@ enable_cluster_internal_access() {
         sleep 2
 
         ret=0
-        endpoint_status=$(TENCENTCLOUD_REGION="$MANAGER_REGION" tccli tke DescribeClusterEndpointStatus --ClusterId "$MANAGER_CLUSTER_ID" 2>&1) || ret=$?
+        endpoint_status=$(TENCENTCLOUD_REGION="$WORKER_REGION" tccli tke DescribeClusterEndpointStatus --ClusterId "$WORKER_CLUSTER_ID" 2>&1) || ret=$?
 
         if [ $ret -eq 0 ]; then
             status=$(echo "$endpoint_status" | jq -r '.Status // empty')
@@ -328,72 +311,12 @@ enable_cluster_internal_access() {
     exit 1
 }
 
-# Enable kube-dns internal network access
-enable_kube_dns_internal_access() {
-    log_info "Checking kube-dns internal network access..."
-
-    # Check if kube-dns-intranet service already exists
-    if kubectl get svc kube-dns-intranet -n kube-system &> /dev/null; then
-        log_success "kube-dns-intranet service already exists"
-        return 0
-    fi
-
-    log_info "Creating kube-dns-intranet service..."
-
-    # Check subnet ID parameter
-    if [ -z "$MANAGER_SUBNET_ID" ]; then
-        log_error "MANAGER_SUBNET_ID is required for creating kube-dns-intranet service. Please set it in config file"
-        exit 1
-    fi
-
-    # Create kube-dns-intranet service
-    local kube_dns_yaml=$(cat <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  annotations:
-    service.cloud.tencent.com/direct-access: "true"
-    service.cloud.tencent.com/pass-to-target: "true"
-    service.kubernetes.io/qcloud-loadbalancer-internal-subnetid: $MANAGER_SUBNET_ID
-  name: kube-dns-intranet
-  namespace: kube-system
-spec:
-  allocateLoadBalancerNodePorts: true
-  externalTrafficPolicy: Cluster
-  internalTrafficPolicy: Cluster
-  ipFamilies:
-  - IPv4
-  ipFamilyPolicy: SingleStack
-  ports:
-  - name: dns
-    port: 53
-    protocol: UDP
-    targetPort: 53
-  - name: dns-tcp
-    port: 53
-    protocol: TCP
-    targetPort: 53
-  selector:
-    k8s-app: kube-dns
-  sessionAffinity: None
-  type: LoadBalancer
-EOF
-)
-
-    if echo "$kube_dns_yaml" | kubectl apply -f - ; then
-        log_success "kube-dns-intranet service created successfully"
-    else
-        log_error "Failed to create kube-dns-intranet service"
-        exit 1
-    fi
-}
-
-# Get cluster kubeconfig
+# Get cluster kubeconfig and set context
 get_cluster_kubeconfig() {
     log_info "Getting cluster kubeconfig..."
 
     # Check if context already exists
-    local context_name="manager-admin-$MANAGER_CLUSTER_ID"
+    local context_name="worker-admin-$WORKER_CLUSTER_ID"
     if kubectl config get-contexts "$context_name" &> /dev/null; then
         log_info "Context '$context_name' already exists, reusing it"
         kubectl config use-context "$context_name"
@@ -410,7 +333,7 @@ get_cluster_kubeconfig() {
     # Get cluster security info (including kubeconfig)
     local security_info
     ret=0
-    security_info=$(TENCENTCLOUD_REGION="$MANAGER_REGION" tccli tke DescribeClusterSecurity --ClusterId "$MANAGER_CLUSTER_ID" 2>&1) || ret=$?
+    security_info=$(TENCENTCLOUD_REGION="$WORKER_REGION" tccli tke DescribeClusterSecurity --ClusterId "$WORKER_CLUSTER_ID" 2>&1) || ret=$?
 
     if [ $ret -ne 0 ]; then
         log_error "Failed to get cluster security information"
@@ -439,7 +362,7 @@ get_cluster_kubeconfig() {
     log_info "PgwEndpoint: $pgw_endpoint"
 
     # Save kubeconfig to temporary file
-    local temp_kubeconfig="/tmp/tke-kubeconfig-$MANAGER_CLUSTER_ID"
+    local temp_kubeconfig="/tmp/tke-kubeconfig-$WORKER_CLUSTER_ID"
     echo "$kubeconfig_content" > "$temp_kubeconfig"
 
     # Replace server address with PgwEndpoint
@@ -466,7 +389,7 @@ get_cluster_kubeconfig() {
     log_success "Successfully verified cluster connection"
 
     # Set kubectl context name
-    local context_name="manager-admin-$MANAGER_CLUSTER_ID"
+    local context_name="worker-admin-$WORKER_CLUSTER_ID"
 
     log_info "Merging kubeconfig to default kubectl config"
     log_info "Context name: $context_name"
@@ -506,60 +429,181 @@ get_cluster_kubeconfig() {
     log_success "Cluster is ready for use"
 }
 
-# Install kubeocean-manager
-install_kubeocean_manager() {
-    log_info "Installing kubeocean-manager..."
-
-    # Call install-manager.sh script (in parent installation directory)
-    local install_manager_script="${SCRIPT_DIR}/../installation/install-manager.sh"
-
-    if [ ! -f "$install_manager_script" ]; then
-        log_error "install-manager.sh script not found: $install_manager_script"
-        exit 1
+# Check and install tke-hpc-controller addon
+check_and_install_hpc_controller() {
+    # Check if we should skip HPC installation
+    if [ "$SKIP_INSTALL_HPC" = "true" ]; then
+        log_warning "SKIP_INSTALL_HPC is set to true, skipping tke-hpc-controller installation"
+        return 0
     fi
 
-    log_info "Calling install-manager.sh with worker cluster: $WORKER_CLUSTER_ID (name: $WORKER_CLUSTER_NAME)"
+    log_info "Checking tke-hpc-controller addon status..."
 
-    if bash "$install_manager_script" \
-        --worker-kubeconfig "$WORKER_KUBECONFIG" \
-        --cluster-id "$WORKER_CLUSTER_ID" \
-        --cluster-name "$WORKER_CLUSTER_NAME"; then
-        log_success "kubeocean-manager installed successfully"
+    local addon_name="tke-hpc-controller"
+    
+    # Check if addon is already installed
+    local addon_info
+    ret=0
+    addon_info=$(TENCENTCLOUD_REGION="$WORKER_REGION" tccli tke DescribeAddon \
+        --ClusterId "$WORKER_CLUSTER_ID" \
+        --AddonName "$addon_name" 2>&1) || ret=$?
+
+    if [ $ret -eq 0 ]; then
+        # Addon exists, check its phase
+        local phase
+        phase=$(echo "$addon_info" | jq -r '.Addons[0].Phase // empty')
+        
+        if [ "$phase" = "Succeeded" ]; then
+            log_success "tke-hpc-controller addon is already installed and running"
+            return 0
+        elif [ "$phase" = "Failed" ]; then
+            log_warning "tke-hpc-controller addon exists but in Failed state"
+            log_info "Will attempt to reinstall..."
+        else
+            log_info "tke-hpc-controller addon is in phase: $phase"
+            log_info "Waiting for it to become Succeeded..."
+            # Continue to polling below
+        fi
     else
-        log_error "Failed to install kubeocean-manager"
+        # Addon doesn't exist, need to install
+        log_info "tke-hpc-controller addon not found, installing..."
+        
+        local install_result
+        ret=0
+        install_result=$(TENCENTCLOUD_REGION="$WORKER_REGION" tccli tke InstallAddon \
+            --ClusterId "$WORKER_CLUSTER_ID" \
+            --AddonName "$addon_name"  2>&1) || ret=$?
+
+        if [ $ret -ne 0 ]; then
+            log_error "Failed to install tke-hpc-controller addon"
+            log_error "$install_result"
+            exit 1
+        fi
+
+        log_success "tke-hpc-controller addon installation initiated"
+    fi
+
+    # Poll for addon status (timeout: 300 seconds / 5 minutes)
+    log_info "Waiting for tke-hpc-controller addon to be ready..."
+    local max_retries=150
+    local retry=0
+
+    while [ $retry -lt $max_retries ]; do
+        sleep 2
+
+        ret=0
+        addon_info=$(TENCENTCLOUD_REGION="$WORKER_REGION" tccli tke DescribeAddon \
+            --ClusterId "$WORKER_CLUSTER_ID" \
+            --AddonName "$addon_name" 2>&1) || ret=$?
+
+        if [ $ret -eq 0 ]; then
+            local phase
+            phase=$(echo "$addon_info" | jq -r '.Addons[0].Phase // empty')
+
+            if [ "$phase" = "Succeeded" ]; then
+                log_success "tke-hpc-controller addon is ready"
+                return 0
+            elif [ "$phase" = "Failed" ]; then
+                log_error "tke-hpc-controller addon installation failed"
+                local reason
+                reason=$(echo "$addon_info" | jq -r '.Addons[0].Reason // "Unknown reason"')
+                log_error "Reason: $reason"
+                exit 1
+            elif [ "$phase" = "Installing" ] || [ "$phase" = "Upgrading" ]; then
+                if [ $((retry % 10)) -eq 0 ]; then
+                    log_info "Still installing... (attempt $((retry + 1))/$max_retries)"
+                fi
+            else
+                log_info "Current phase: $phase (attempt $((retry + 1))/$max_retries)"
+            fi
+        else
+            log_warning "Failed to query addon status, retrying..."
+        fi
+
+        retry=$((retry + 1))
+    done
+
+    log_error "Timeout waiting for tke-hpc-controller addon to be ready"
+    exit 1
+}
+
+# Deploy vLLM inference service
+deploy_vllm_service() {
+    log_info "Deploying vLLM inference service..."
+
+    local yaml_file="${SCRIPT_DIR}/is-qwen2-5-05b-vllm.yaml"
+
+    if [ ! -f "$yaml_file" ]; then
+        log_error "YAML file not found: $yaml_file"
         exit 1
     fi
+
+    log_info "Using YAML file: $yaml_file"
+
+    # Apply the YAML file
+    ret=0
+    if kubectl apply -f "$yaml_file" -n "$WORKER_NAMESPACE" 2>&1; then
+        log_success "vLLM inference service deployed successfully"
+    else
+        log_error "Failed to deploy vLLM inference service"
+        exit 1
+    fi
+
+    log_info "Checking deployment status..."
+    
+    # Wait a moment for resources to be created
+    sleep 2
+
+    # Display deployment status
+    log_info "Deployment resources:"
+    kubectl get deployment is-qwen2-5-05b-vllm -n "$WORKER_NAMESPACE" || log_warning "Deployment not found yet"
+    
+    log_info "Service resources:"
+    kubectl get service is-qwen2-5-05b-vllm -n "$WORKER_NAMESPACE" || log_warning "Service not found yet"
+    
+    log_info "HorizontalPodCronscaler resources:"
+    kubectl get horizontalpodcronscaler is-qwen -n "$WORKER_NAMESPACE" || log_warning "HorizontalPodCronscaler not found yet"
+
+    log_success "Deployment initiated. Use 'kubectl get pods -n $WORKER_NAMESPACE' to check pod status"
 }
 
 # Display summary information
 show_summary() {
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    log_success "TKE Manager Cluster Installation Complete!"
+    log_success "vLLM Inference Service Deployment Complete!"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo "📋 Installation Information:"
-    echo "   • Manager Region: $MANAGER_REGION"
-    echo "   • Manager Cluster ID: $MANAGER_CLUSTER_ID"
-    echo "   • VPC ID: $VPC_ID"
-    echo "   • Manager Subnet ID: $MANAGER_SUBNET_ID"
-    echo "   • Context: manager-admin-$MANAGER_CLUSTER_ID (merged to ~/.kube/config)"
-    echo "   • Worker Cluster ID: $WORKER_CLUSTER_ID"
-    echo "   • Worker Cluster Name: $WORKER_CLUSTER_NAME"
-    echo "   • Worker Kubeconfig: $WORKER_KUBECONFIG"
+    echo "📋 Deployment Information:"
+    echo "   • Region: $WORKER_REGION"
+    echo "   • Cluster ID: $WORKER_CLUSTER_ID"
+    echo "   • Namespace: $WORKER_NAMESPACE"
+    echo "   • Context: worker-admin-$WORKER_CLUSTER_ID"
     echo ""
     echo "🔍 Next Steps:"
-    echo "   1. Verify manager installation:"
-    echo "      kubectl get all -n kubeocean-system"
+    echo "   1. Check deployment status:"
+    echo "      kubectl get deployment is-qwen2-5-05b-vllm -n $WORKER_NAMESPACE"
     echo ""
-    echo "   2. Check ClusterBinding status:"
-    echo "      kubectl get clusterbindings"
+    echo "   2. Check pod status:"
+    echo "      kubectl get pods -l app.kubernetes.io/instance=is-qwen2-5-05b-vllm -n $WORKER_NAMESPACE"
     echo ""
-    echo "   3. Switch to this context anytime:"
-    echo "      kubectl config use-context manager-admin-$MANAGER_CLUSTER_ID"
+    echo "   3. Check service:"
+    echo "      kubectl get service is-qwen2-5-05b-vllm -n $WORKER_NAMESPACE"
     echo ""
-    echo "   4. Check synced resources in worker cluster:"
-    echo "      # Switch to worker cluster context and check"
+    echo "   4. Check HorizontalPodCronscaler:"
+    echo "      kubectl get horizontalpodcronscaler is-qwen -n $WORKER_NAMESPACE"
+    echo "      kubectl describe horizontalpodcronscaler is-qwen -n $WORKER_NAMESPACE"
+    echo ""
+    echo "   5. View pod logs:"
+    echo "      kubectl logs -l app.kubernetes.io/instance=is-qwen2-5-05b-vllm -n $WORKER_NAMESPACE"
+    echo ""
+    echo "   6. Test the inference service (after pods are ready):"
+    echo "      kubectl port-forward svc/is-qwen2-5-05b-vllm 8000:8000 -n $WORKER_NAMESPACE"
+    echo "      curl http://localhost:8000/health"
+    echo ""
+    echo "📝 Scheduled Scaling:"
+    echo "   • Scale up to 4 replicas: Every day at 08:00"
+    echo "   • Scale down to 2 replicas: Every day at 18:00"
     echo ""
 }
 
@@ -567,7 +611,7 @@ show_summary() {
 main() {
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "   🚀 TKE Manager Cluster Installation Script"
+    echo "   🚀 vLLM Inference Service Deployment Script"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
@@ -592,29 +636,33 @@ main() {
     check_prerequisites
     echo ""
 
-    # Step 2: Enable cluster internal network access
-    echo "🌐 Step 2/5: Enabling Cluster Internal Network Access"
+    # Step 2: Enable cluster internal network access and get kubeconfig
+    echo "🔐 Step 2/5: Setting up Cluster Access"
     enable_cluster_internal_access
-    echo ""
-
-    # Step 3: Get cluster kubeconfig
-    echo "🔐 Step 3/5: Getting Cluster Kubeconfig"
     get_cluster_kubeconfig
     echo ""
 
-    # Step 4: Enable kube-dns internal network access
-    echo "🔌 Step 4/5: Enabling Kube-DNS Internal Network Access"
-    enable_kube_dns_internal_access
+    # Step 3: Check and install tke-hpc-controller addon
+    if [ "$SKIP_INSTALL_HPC" != "true" ]; then
+        echo "🔌 Step 3/5: Checking tke-hpc-controller Addon"
+        check_and_install_hpc_controller
+        echo ""
+    else
+        echo "🔌 Step 3/5: Checking tke-hpc-controller Addon"
+        log_warning "Skipping tke-hpc-controller installation (SKIP_INSTALL_HPC=true)"
+        echo ""
+    fi
+
+    # Step 4: Deploy vLLM inference service
+    echo "📦 Step 4/5: Deploying vLLM Inference Service"
+    deploy_vllm_service
     echo ""
 
-    # Step 5: Install kubeocean-manager
-    echo "📦 Step 5/5: Installing Kubeocean-Manager"
-    install_kubeocean_manager
-    echo ""
-
-    # Display summary
+    # Step 5: Display summary
+    echo "📊 Step 5/5: Summary"
     show_summary
 }
 
 # Execute main function
 main "$@"
+

@@ -1,0 +1,62 @@
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: verl-cluster
+spec:
+  rayVersion: '2.43.0'
+  headGroupSpec:
+    rayStartParams: {}
+    template:
+      spec:
+        containers:
+        - name: ray-head
+          image: ccr.ccs.tencentyun.com/firmlyzhu/verl:ngc-th2.6.0-cu126-vllm0.8.4-flashinfer0.2.2-gsm8k-Qwen2.5-2
+          resources:
+            limits:
+              cpu: 36
+              memory: 140G
+              nvidia.com/gpu: "2"
+            requests:
+              cpu: 24
+              memory: 100G
+              nvidia.com/gpu: "2"
+          ports:
+          - containerPort: 6379
+            name: gcs-server
+          - containerPort: 8265
+            name: dashboard
+          - containerPort: 10001
+            name: client
+        tolerations:
+        - operator: Exists
+          key: kubeocean.io/vnode
+  workerGroupSpecs:
+  - groupName: worker-group
+    maxReplicas: 1
+    minReplicas: 1
+    replicas: 1
+    numOfHosts: 1
+    template:
+      spec:
+        containers:
+        - name: ray-worker
+          image: ccr.ccs.tencentyun.com/firmlyzhu/verl:ngc-th2.6.0-cu126-vllm0.8.4-flashinfer0.2.2-gsm8k-Qwen2.5-2
+          resources:
+            limits:
+              cpu: 36
+              memory: 150G
+              nvidia.com/gpu: "2"
+            requests:
+              cpu: 24
+              memory: 100G
+              nvidia.com/gpu: "2"
+          ports:
+          - containerPort: 6379
+            name: gcs-server
+          - containerPort: 8265
+            name: dashboard
+          - containerPort: 10001
+            name: client
+        tolerations:
+        - operator: Exists
+          key: kubeocean.io/vnode
