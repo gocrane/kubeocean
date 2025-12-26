@@ -1186,3 +1186,326 @@ func TestRemoveSyncedResourceFinalizerAndLabels(t *testing.T) {
 		})
 	}
 }
+
+// TestUpdateVirtualResourceLabelsAndAnnotations tests the UpdateVirtualResourceLabelsAndAnnotations function
+func TestUpdateVirtualResourceLabelsAndAnnotations(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterID := "test-cluster-id"
+	physicalName := "physical-resource"
+	physicalNamespace := "physical-namespace"
+	managedByClusterIDLabel := GetManagedByClusterIDLabel(clusterID)
+	clusterSpecificFinalizer := GetClusterSpecificFinalizer(clusterID)
+
+	tests := []struct {
+		name                string
+		existingObj         client.Object
+		syncResourceOpt     *SyncResourceOpt
+		expectedUpdate      bool
+		expectedLabels      map[string]string
+		expectedAnnotations map[string]string
+		expectedFinalizers  []string
+		expectError         bool
+		errorContains       string
+	}{
+		{
+			name: "new resource with no labels or annotations",
+			existingObj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-resource",
+					Namespace: "test-ns",
+				},
+			},
+			syncResourceOpt: nil,
+			expectedUpdate:  true,
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      physicalName,
+				cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+			},
+			expectedFinalizers: []string{clusterSpecificFinalizer},
+			expectError:        false,
+		},
+		{
+			name: "resource with all complete fields - should skip update",
+			existingObj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-resource",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName:      physicalName,
+						cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+					},
+					Finalizers: []string{clusterSpecificFinalizer},
+				},
+			},
+			syncResourceOpt: nil,
+			expectedUpdate:  false,
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      physicalName,
+				cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+			},
+			expectedFinalizers: []string{clusterSpecificFinalizer},
+			expectError:        false,
+		},
+		{
+			name: "resource missing managedByClusterIDLabel - should update",
+			existingObj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-resource",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						// Missing managedByClusterIDLabel
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName:      physicalName,
+						cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+					},
+					Finalizers: []string{clusterSpecificFinalizer},
+				},
+			},
+			syncResourceOpt: nil,
+			expectedUpdate:  true,
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      physicalName,
+				cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+			},
+			expectedFinalizers: []string{clusterSpecificFinalizer},
+			expectError:        false,
+		},
+		{
+			name: "resource missing finalizer - should update",
+			existingObj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-resource",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName:      physicalName,
+						cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+					},
+					// Missing finalizer
+					Finalizers: []string{},
+				},
+			},
+			syncResourceOpt: nil,
+			expectedUpdate:  true,
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      physicalName,
+				cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+			},
+			expectedFinalizers: []string{clusterSpecificFinalizer},
+			expectError:        false,
+		},
+		{
+			name: "resource missing annotation - should update",
+			existingObj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-resource",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+					},
+					Annotations: map[string]string{
+						// Missing physical name annotation
+					},
+					Finalizers: []string{clusterSpecificFinalizer},
+				},
+			},
+			syncResourceOpt: nil,
+			expectedUpdate:  true,
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      physicalName,
+				cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+			},
+			expectedFinalizers: []string{clusterSpecificFinalizer},
+			expectError:        false,
+		},
+		{
+			name: "PV ref secret with all fields - should skip update",
+			existingObj: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+						cloudv1beta1.LabelUsedByPV:  cloudv1beta1.LabelValueTrue,
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName:      physicalName,
+						cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+					},
+					Finalizers: []string{clusterSpecificFinalizer},
+				},
+			},
+			syncResourceOpt: &SyncResourceOpt{
+				IsPVRefSecret: true,
+			},
+			expectedUpdate: false,
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+				cloudv1beta1.LabelUsedByPV:  cloudv1beta1.LabelValueTrue,
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      physicalName,
+				cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+			},
+			expectedFinalizers: []string{clusterSpecificFinalizer},
+			expectError:        false,
+		},
+		{
+			name: "PV ref secret missing LabelUsedByPV - should update",
+			existingObj: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "test-ns",
+					Labels: map[string]string{
+						cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+						managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+						// Missing LabelUsedByPV
+					},
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName:      physicalName,
+						cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+					},
+					Finalizers: []string{clusterSpecificFinalizer},
+				},
+			},
+			syncResourceOpt: &SyncResourceOpt{
+				IsPVRefSecret: true,
+			},
+			expectedUpdate: true,
+			expectedLabels: map[string]string{
+				cloudv1beta1.LabelManagedBy: cloudv1beta1.LabelManagedByValue,
+				managedByClusterIDLabel:     cloudv1beta1.LabelValueTrue,
+				cloudv1beta1.LabelUsedByPV:  "true",
+			},
+			expectedAnnotations: map[string]string{
+				cloudv1beta1.AnnotationPhysicalName:      physicalName,
+				cloudv1beta1.AnnotationPhysicalNamespace: physicalNamespace,
+			},
+			expectedFinalizers: []string{clusterSpecificFinalizer},
+			expectError:        false,
+		},
+		{
+			name: "conflicting physical name - should error",
+			existingObj: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-resource",
+					Namespace: "test-ns",
+					Annotations: map[string]string{
+						cloudv1beta1.AnnotationPhysicalName: "different-physical-name",
+					},
+				},
+			},
+			syncResourceOpt:     nil,
+			expectedUpdate:      false,
+			expectedLabels:      nil,
+			expectedAnnotations: nil,
+			expectedFinalizers:  nil,
+			expectError:         true,
+			errorContains:       "physical name annotation already exists but doesn't match",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			virtualClient := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(tt.existingObj).Build()
+			logger := ctrl.Log.WithName("test")
+
+			// Get the resource version before update
+			objBefore := tt.existingObj.DeepCopyObject().(client.Object)
+			err := virtualClient.Get(context.Background(), client.ObjectKeyFromObject(tt.existingObj), objBefore)
+			require.NoError(t, err)
+			resourceVersionBefore := objBefore.GetResourceVersion()
+
+			// Call the function
+			err = UpdateVirtualResourceLabelsAndAnnotations(
+				context.Background(),
+				virtualClient,
+				logger,
+				clusterID,
+				tt.existingObj,
+				physicalName,
+				physicalNamespace,
+				tt.syncResourceOpt,
+			)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+				return
+			}
+
+			assert.NoError(t, err)
+
+			// Get the updated resource
+			updatedObj := tt.existingObj.DeepCopyObject().(client.Object)
+			err = virtualClient.Get(context.Background(), client.ObjectKeyFromObject(tt.existingObj), updatedObj)
+			require.NoError(t, err)
+
+			// Verify if resource was updated
+			resourceVersionAfter := updatedObj.GetResourceVersion()
+			if tt.expectedUpdate {
+				assert.NotEqual(t, resourceVersionBefore, resourceVersionAfter, "Resource should be updated")
+			} else {
+				assert.Equal(t, resourceVersionBefore, resourceVersionAfter, "Resource should not be updated")
+			}
+
+			// Verify labels
+			if tt.expectedLabels != nil {
+				for key, expectedValue := range tt.expectedLabels {
+					assert.Equal(t, expectedValue, updatedObj.GetLabels()[key], "Label %s should match", key)
+				}
+			}
+
+			// Verify annotations
+			if tt.expectedAnnotations != nil {
+				for key, expectedValue := range tt.expectedAnnotations {
+					assert.Equal(t, expectedValue, updatedObj.GetAnnotations()[key], "Annotation %s should match", key)
+				}
+			}
+
+			// Verify finalizers
+			if tt.expectedFinalizers != nil {
+				for _, expectedFinalizer := range tt.expectedFinalizers {
+					assert.Contains(t, updatedObj.GetFinalizers(), expectedFinalizer, "Finalizer %s should exist", expectedFinalizer)
+				}
+			}
+		})
+	}
+}
