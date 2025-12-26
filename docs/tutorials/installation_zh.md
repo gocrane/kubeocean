@@ -57,6 +57,8 @@ apiVersion: v1
 kind: Service
 metadata:
   annotations:
+    service.cloud.tencent.com/direct-access: "true"
+    service.cloud.tencent.com/pass-to-target: "true"
     service.kubernetes.io/qcloud-loadbalancer-internal-subnetid: $SUBNET_ID
   name: kube-dns-intranet
   namespace: kube-system
