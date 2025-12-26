@@ -20,7 +20,7 @@ spec:
       days: ["Saturday", "Sunday"]
   resourceLimits:
     - resource: cpu
-      quantity: "4"
+      quantity: "96"
       percent: 90  # Take the smaller of 4 CPUs or 90% of available CPUs
     - resource: memory
       percent: 95  # Take 95% of available memory

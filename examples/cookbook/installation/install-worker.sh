@@ -50,15 +50,14 @@ log_error() {
 # Error handling
 trap 'log_error "Script execution failed with exit code: $?, at line: $LINENO"' ERR
 
-# Script root directory (assuming script is in examples/playbook directory)
+# Script root directory (assuming script is in examples/playbook/installation directory)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # Configuration variables
 LOCALBIN="${PROJECT_ROOT}/bin"
 HELM="${LOCALBIN}/helm"
 KUBECONFIG_SCRIPT="${PROJECT_ROOT}/hack/kubeconfig.sh"
-RLP_SAMPLE="${PROJECT_ROOT}/examples/resourceleasingpolicy_sample.yaml"
 
 # Fixed parameters (use default values)
 SERVICEACCOUNT_NAME="kubeocean-syncer"
@@ -68,6 +67,7 @@ CLUSTER_NAME=""  # Will be extracted from kubeconfig
 # Configurable parameters (can be overridden via environment variables)
 OUTPUT_KUBECONFIG="${OUTPUT_KUBECONFIG:-/tmp/kubeconfig-worker}"
 SKIP_RLP="${SKIP_RLP:-false}"
+WORKER_CLUSTER_NAME="${WORKER_CLUSTER_NAME:-example-cluster}"
 
 # Display help information
 show_help() {
@@ -84,6 +84,7 @@ Options:
 Environment Variables:
   OUTPUT_KUBECONFIG             Kubeconfig output file path
   SKIP_RLP                      Skip RLP deployment (true/false)
+  WORKER_CLUSTER_NAME           Worker cluster name for ResourceLeasingPolicy (default: example-cluster)
 
 Prerequisites:
   kubectl                       Kubernetes command-line tool
@@ -101,6 +102,9 @@ Examples:
 
   # Use environment variables
   OUTPUT_KUBECONFIG=/tmp/my-kubeconfig $0
+
+  # Specify worker cluster name for ResourceLeasingPolicy
+  WORKER_CLUSTER_NAME=prod-cluster $0
 
 EOF
 }
@@ -292,20 +296,44 @@ deploy_rlp() {
     fi
     
     log_info "Deploying ResourceLeasingPolicy..."
+    log_info "Using worker cluster name: $WORKER_CLUSTER_NAME"
     
-    if [ ! -f "$RLP_SAMPLE" ]; then
-        log_error "ResourceLeasingPolicy sample file not found: $RLP_SAMPLE"
-        exit 1
-    fi
+    # Create ResourceLeasingPolicy from template
+    cat <<EOF | kubectl apply -f - &> /dev/null
+apiVersion: cloud.tencent.com/v1beta1
+kind: ResourceLeasingPolicy
+metadata:
+  name: example-policy
+spec:
+  cluster: ${WORKER_CLUSTER_NAME}
+  forceReclaim: true
+  nodeSelector:
+    nodeSelectorTerms:
+    - matchExpressions:
+      - key: kubeocean.io/role
+        operator: In
+        values: ["worker"]
+  timeWindows:
+    - start: "18:00"
+      end: "08:00"
+      days: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    - start: "00:00"
+      end: "23:59"
+      days: ["Saturday", "Sunday"]
+  resourceLimits:
+    - resource: cpu
+      quantity: "96"
+      percent: 90
+    - resource: memory
+      percent: 95
+EOF
     
-    log_info "Applying ResourceLeasingPolicy: $RLP_SAMPLE"
-    
-    if ! kubectl apply -f "$RLP_SAMPLE"; then
+    if [ $? -eq 0 ]; then
+        log_success "ResourceLeasingPolicy deployed successfully!"
+    else
         log_error "Failed to deploy ResourceLeasingPolicy"
         exit 1
     fi
-    
-    log_success "ResourceLeasingPolicy deployed successfully!"
     
     # Display deployment status
     log_info "ResourceLeasingPolicy status:"
@@ -324,6 +352,7 @@ show_summary() {
     echo "   • Namespace: $NAMESPACE"
     echo "   • ServiceAccount: $SERVICEACCOUNT_NAME"
     echo "   • Kubeconfig: $OUTPUT_KUBECONFIG"
+    echo "   • Worker Cluster Name (RLP): $WORKER_CLUSTER_NAME"
     echo ""
     echo "🔍 Verification Commands:"
     echo "   • Check worker resources:"

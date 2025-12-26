@@ -9,12 +9,15 @@
 ## Install kubeocean Components with Helm
 
 1. Clone the repository and enter the directory
-```
+
+```sh
 git clone https://github.com/gocrane/kubeocean
 cd kubeocean
 ```
+
 2. Deploy kubeocean components in the computing cluster
-```
+
+```sh
 helm upgrade --install kubeocean charts/kubeocean
 ```
 
@@ -27,18 +30,36 @@ In [TKE (Tencent Kubernetes Engine)](https://cloud.tencent.com/product/tke) clus
 
 ![k8s-svc](../images/k8s-svc.png)
 
+Or use Tencent Cloud CLI tool `tccli` to call cloud API to enable intranet access
+
+```sh
+# Set the region, cluster ID and subnet ID
+export REGION=ap-guangzhou
+export CLUSTER_ID=cls-abcdefgh
+export SUBNET_ID=subnet-abcdefgh
+TENCENTCLOUD_REGION="$REGION" tccli tke CreateClusterEndpoint \
+        --ClusterId "$CLUSTER_ID" \
+        --SubnetId "$SUBNET_ID" \
+        --IsExtranet false
+```
+
 ### Deploy kube-dns-intranet
 
 kubeocean components require the virtual computing cluster's `kube-dns` to provide intranet access to other worker clusters. A LoadBalancer type service named `kube-dns-intranet` needs to be deployed.
 
-In [TKE (Tencent Kubernetes Engine)](https://cloud.tencent.com/product/tke) clusters, you can use the following YAML to create this service, need to fill in and replace the `<subnetId>`:
-```
-# k8s-dns-svc.yaml
+In [TKE (Tencent Kubernetes Engine)](https://cloud.tencent.com/product/tke) clusters, you can use the following YAML to create this service, need to set the subnet for the intranet load balancer:
+
+```sh
+# Set the subnet ID in the VPC where the cluster is located for the intranet load balancer
+export SUBNET_ID=subnet-abcdefgh
+cat > tke-dns-svc.yaml <<EOF
 apiVersion: v1
 kind: Service
 metadata:
   annotations:
-    service.kubernetes.io/qcloud-loadbalancer-internal-subnetid: <subnetId>
+    service.cloud.tencent.com/direct-access: "true"
+    service.cloud.tencent.com/pass-to-target: "true"
+    service.kubernetes.io/qcloud-loadbalancer-internal-subnetid: $SUBNET_ID
   name: kube-dns-intranet
   namespace: kube-system
 spec:
@@ -61,11 +82,12 @@ spec:
     k8s-app: kube-dns
   sessionAffinity: None
   type: LoadBalancer
+EOF
 ```
+
 Create and deploy the above YAML in TKE cluster:
-```
-# Fill in the subnet in the VPC where the cluster is located to replace <subnetId>
-sed -i "s|<subnetId>|subnet-xxxxxxxx|" k8s-dns-svc.yaml
+
+```sh
 # Create and deploy Service
-kubectl create -f k8s-dns-svc.yaml
+kubectl create -f tke-dns-svc.yaml
 ```

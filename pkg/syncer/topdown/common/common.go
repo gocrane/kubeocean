@@ -528,11 +528,26 @@ func UpdateVirtualResourceLabelsAndAnnotations(ctx context.Context, virtualClien
 	resourcePath := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 	logger = logger.WithValues("resourceKind", obj.GetObjectKind().GroupVersionKind().Kind, "resource", resourcePath)
 
-	// Check if annotation already exists and matches
-	if obj.GetAnnotations() != nil && obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] == physicalName &&
+	// Check if all required labels, annotations and finalizers already exist and match
+	managedByClusterIDLabel := GetManagedByClusterIDLabel(clusterID)
+	clusterSpecificFinalizer := GetClusterSpecificFinalizer(clusterID)
+
+	// Build complete check condition
+	allFieldsMatch := obj.GetAnnotations() != nil &&
+		obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] == physicalName &&
 		obj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalNamespace] == physicalNamespace &&
-		obj.GetLabels() != nil && obj.GetLabels()[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue {
-		logger.V(1).Info("Physical name and namespace annotation, managed-by label already exists and matches, skipping update",
+		obj.GetLabels() != nil &&
+		obj.GetLabels()[cloudv1beta1.LabelManagedBy] == cloudv1beta1.LabelManagedByValue &&
+		obj.GetLabels()[managedByClusterIDLabel] == cloudv1beta1.LabelValueTrue &&
+		controllerutil.ContainsFinalizer(obj, clusterSpecificFinalizer)
+
+	// For PV ref secrets, also check LabelUsedByPV
+	if syncResourceOpt != nil && syncResourceOpt.IsPVRefSecret {
+		allFieldsMatch = allFieldsMatch && obj.GetLabels()[cloudv1beta1.LabelUsedByPV] == cloudv1beta1.LabelValueTrue
+	}
+
+	if allFieldsMatch {
+		logger.V(1).Info("All required labels, annotations and finalizers already exist and match, skipping update",
 			"physicalName", physicalName,
 			"physicalNamespace", physicalNamespace)
 		return nil
@@ -556,9 +571,8 @@ func UpdateVirtualResourceLabelsAndAnnotations(ctx context.Context, virtualClien
 	}
 	updatedObj.GetLabels()[cloudv1beta1.LabelManagedBy] = cloudv1beta1.LabelManagedByValue
 
-	// Add cluster-specific managed-by label
-	managedByClusterIDLabel := GetManagedByClusterIDLabel(clusterID)
-	updatedObj.GetLabels()[managedByClusterIDLabel] = "true"
+	// Add cluster-specific managed-by label (already declared above)
+	updatedObj.GetLabels()[managedByClusterIDLabel] = cloudv1beta1.LabelValueTrue
 
 	if syncResourceOpt != nil && syncResourceOpt.IsPVRefSecret {
 		updatedObj.GetLabels()[cloudv1beta1.LabelUsedByPV] = "true"
@@ -571,8 +585,7 @@ func UpdateVirtualResourceLabelsAndAnnotations(ctx context.Context, virtualClien
 	updatedObj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalName] = physicalName
 	updatedObj.GetAnnotations()[cloudv1beta1.AnnotationPhysicalNamespace] = physicalNamespace
 
-	// Add finalizer if not present
-	clusterSpecificFinalizer := GetClusterSpecificFinalizer(clusterID)
+	// Add finalizer if not present (already declared above)
 	if !controllerutil.ContainsFinalizer(updatedObj, clusterSpecificFinalizer) {
 		controllerutil.AddFinalizer(updatedObj, clusterSpecificFinalizer)
 		logger.V(1).Info("Added synced-resource finalizer")
