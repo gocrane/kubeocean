@@ -352,8 +352,9 @@ func (r *HostPortNodeReconciler) collectHostPorts(pods []corev1.Pod) []corev1.Co
 			for _, port := range container.Ports {
 				if port.HostPort != 0 {
 					hostPorts = append(hostPorts, corev1.ContainerPort{
-						Name:          pod.Namespace + "/" + pod.Name + "/" + container.Name + "/" + port.Name,
-						ContainerPort: port.ContainerPort,
+						Name: pod.Namespace + "/" + pod.Name + "/" + container.Name + "/" + port.Name,
+						// For fake pod with hostNetwork=true, containerPort must equal hostPort
+						ContainerPort: port.HostPort,
 						HostPort:      port.HostPort,
 						Protocol:      port.Protocol,
 						HostIP:        port.HostIP,
@@ -367,8 +368,9 @@ func (r *HostPortNodeReconciler) collectHostPorts(pods []corev1.Pod) []corev1.Co
 			for _, port := range container.Ports {
 				if port.HostPort != 0 {
 					hostPorts = append(hostPorts, corev1.ContainerPort{
-						Name:          pod.Namespace + "/" + pod.Name + "/" + container.Name + "/" + port.Name,
-						ContainerPort: port.ContainerPort,
+						Name: pod.Namespace + "/" + pod.Name + "/" + container.Name + "/" + port.Name,
+						// For fake pod with hostNetwork=true, containerPort must equal hostPort
+						ContainerPort: port.HostPort,
 						HostPort:      port.HostPort,
 						Protocol:      port.Protocol,
 						HostIP:        port.HostIP,
@@ -535,6 +537,7 @@ func (r *HostPortNodeReconciler) buildFakePod(virtualNodeName string, hostPorts 
 			PriorityClassName: SystemNodeCriticalPriorityClass,
 			Tolerations:       tolerations,
 			RestartPolicy:     corev1.RestartPolicyNever,
+			HostNetwork:       true,
 			Containers: []corev1.Container{
 				{
 					Name:    FakeContainerName,
