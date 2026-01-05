@@ -134,11 +134,23 @@ type VNodeProxierAgent struct {
 	wg       sync.WaitGroup
 }
 
+// Ensure VictoriaMetrics workers are started only once across all instances
+var startUnmarshalWorkersOnce sync.Once
+
+// initVictoriaMetricsWorkers initializes VictoriaMetrics unmarshal workers
+// This function is safe to call multiple times (internally uses sync.Once)
+func initVictoriaMetricsWorkers() {
+	startUnmarshalWorkersOnce.Do(func() {
+		common.StartUnmarshalWorkers()
+	})
+}
+
 // NewVNodeProxierAgent creates a new VNode proxier agent
 func NewVNodeProxierAgent(config *MetricsConfig, tokenManager *TokenManager, kubeletProxy KubeletProxy, kubeClient kubernetes.Interface, clusterID string, log logr.Logger) *VNodeProxierAgent {
 	// Initialize VictoriaMetrics unmarshal workers (referring to vnode_metrics)
-	log.Info("Starting VictoriaMetrics unmarshal workers")
-	common.StartUnmarshalWorkers()
+	// Use sync.Once to ensure it's only called once even in tests
+	log.Info("Initializing VictoriaMetrics unmarshal workers")
+	initVictoriaMetricsWorkers()
 
 	mc := &VNodeProxierAgent{
 		config:        config,
@@ -512,9 +524,9 @@ func (va *VNodeProxierAgent) Stop() {
 	// Wait for all goroutines to complete
 	va.wg.Wait()
 
-	// Stop VictoriaMetrics unmarshal workers (referring to vnode_metrics)
-	va.log.Info("Stopping VictoriaMetrics unmarshal workers")
-	common.StopUnmarshalWorkers()
+	// Note: We don't stop VictoriaMetrics unmarshal workers here because they are
+	// globally shared across all VNodeProxierAgent instances and tests.
+	// The workers will be cleaned up when the process exits.
 
 	va.log.Info("VNodeProxierAgent stopped")
 }
