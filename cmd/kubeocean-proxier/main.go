@@ -44,6 +44,7 @@ import (
 
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 	"github.com/gocrane/kubeocean/pkg/proxier"
+	"github.com/gocrane/kubeocean/pkg/proxier/podcache"
 	"github.com/gocrane/kubeocean/pkg/version"
 )
 
@@ -112,7 +113,7 @@ func main() {
 	}
 
 	// Setup proxier services
-	kubeletProxy, httpServer, vnodeProxierAgent, err := setupProxierServices(ctx, config, tlsConfig, virtualClient, physicalClient, physicalConfig, clusterBinding, tokenManager)
+	kubeletProxy, httpServer, vnodeProxierAgent, err := setupProxierServices(ctx, config, tlsConfig, virtualClient, physicalClient, physicalConfig, clusterBinding, tokenManager, virtualManager)
 	if err != nil {
 		setupLog.Error(err, "failed to setup proxier services")
 		os.Exit(1)
@@ -550,7 +551,7 @@ func setupTLSConfiguration(ctx context.Context, config *ProxierConfig, clusterBi
 }
 
 // setupProxierServices sets up kubelet proxy, HTTP server, and optionally VNode proxier agent
-func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig *TLSConfiguration, virtualClient client.Client, physicalClient kubernetes.Interface, physicalConfig *rest.Config, clusterBinding *cloudv1beta1.ClusterBinding, tokenManager *proxier.TokenManager) (proxier.KubeletProxy, proxier.HTTPServer, *proxier.VNodeProxierAgent, error) {
+func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig *TLSConfiguration, virtualClient client.Client, physicalClient kubernetes.Interface, physicalConfig *rest.Config, clusterBinding *cloudv1beta1.ClusterBinding, tokenManager *proxier.TokenManager, virtualManager ctrl.Manager) (proxier.KubeletProxy, proxier.HTTPServer, *proxier.VNodeProxierAgent, error) {
 	virtualClientset, err := kubernetes.NewForConfig(ctrl.GetConfigOrDie())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("unable to create virtual cluster clientset: %w", err)
@@ -590,6 +591,13 @@ func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig 
 		ctrl.Log.WithName("http-server"),
 	)
 
+	// Create pod cache manager using virtualManager
+	podCacheManager := podcache.NewPodCacheManager(virtualManager)
+	if err := podCacheManager.Setup(ctx); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to setup pod cache manager: %w", err)
+	}
+	setupLog.Info("Pod cache manager setup completed")
+
 	// Create VNode proxier agent if metrics enabled
 	var vnodeProxierAgent *proxier.VNodeProxierAgent
 	if config.MetricsEnabled {
@@ -614,6 +622,7 @@ func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig 
 			virtualClientset,
 			clusterBinding.Spec.ClusterID,
 			ctrl.Log.WithName("vnode-proxier-agent"),
+			podCacheManager,
 		)
 
 		if err := vnodeProxierAgent.Start(ctx); err != nil {

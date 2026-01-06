@@ -32,11 +32,15 @@ import (
 	"github.com/gorilla/mux"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/util/flushwriter"
 	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	clientremotecommand "k8s.io/client-go/tools/remotecommand"
 
+	"github.com/gocrane/kubeocean/pkg/proxier/podcache"
 	localremotecommand "github.com/gocrane/kubeocean/pkg/proxier/remotecommand"
 )
 
@@ -60,12 +64,13 @@ type NodeEventHandler interface {
 
 // NodeInfo node information (consistent with NodeController)
 type NodeInfo struct {
+	NodeName    string
 	InternalIP  string
 	ProxierPort string
 }
 
 func (n NodeInfo) String() string {
-	return fmt.Sprintf("%s %s", n.InternalIP, n.ProxierPort)
+	return fmt.Sprintf("%s %s %s", n.NodeName, n.InternalIP, n.ProxierPort)
 }
 
 // ServerEntry HTTP server entry
@@ -120,6 +125,9 @@ type VNodeProxierAgent struct {
 	// Cluster identification for VNode name generation
 	clusterID string // ClusterBinding.Spec.ClusterID for generating VNode names
 
+	// Pod cache manager
+	podCacheManager podcache.Manager
+
 	// Node state management
 	nodeStates  map[string]NodeInfo     // key: nodeName, value: NodeInfo
 	httpServers map[string]*ServerEntry // key: port
@@ -135,26 +143,27 @@ type VNodeProxierAgent struct {
 }
 
 // NewVNodeProxierAgent creates a new VNode proxier agent
-func NewVNodeProxierAgent(config *MetricsConfig, tokenManager *TokenManager, kubeletProxy KubeletProxy, kubeClient kubernetes.Interface, clusterID string, log logr.Logger) *VNodeProxierAgent {
+func NewVNodeProxierAgent(config *MetricsConfig, tokenManager *TokenManager, kubeletProxy KubeletProxy, kubeClient kubernetes.Interface, clusterID string, log logr.Logger, podCacheManager podcache.Manager) *VNodeProxierAgent {
 	// Initialize VictoriaMetrics unmarshal workers (referring to vnode_metrics)
 	log.Info("Starting VictoriaMetrics unmarshal workers")
 	common.StartUnmarshalWorkers()
 
 	mc := &VNodeProxierAgent{
-		config:        config,
-		tokenManager:  tokenManager,
-		kubeletClient: NewKubeletClient(log.WithName("kubelet-client"), tokenManager),
-		metricsParser: NewMetricsParser(),
-		kubeletProxy:  kubeletProxy,
-		log:           log,
-		kubeClient:    kubeClient,
-		clusterID:     clusterID,
-		nodeStates:    make(map[string]NodeInfo),
-		httpServers:   make(map[string]*ServerEntry),
-		metricsCache:  make(map[string][]byte),
-		summaryCache:  make(map[string]*Summary),
-		lastUpdate:    make(map[string]time.Time),
-		stopChan:      make(chan struct{}),
+		config:          config,
+		tokenManager:    tokenManager,
+		kubeletClient:   NewKubeletClient(log.WithName("kubelet-client"), tokenManager),
+		metricsParser:   NewMetricsParser(),
+		kubeletProxy:    kubeletProxy,
+		log:             log,
+		kubeClient:      kubeClient,
+		clusterID:       clusterID,
+		podCacheManager: podCacheManager,
+		nodeStates:      make(map[string]NodeInfo),
+		httpServers:     make(map[string]*ServerEntry),
+		metricsCache:    make(map[string][]byte),
+		summaryCache:    make(map[string]*Summary),
+		lastUpdate:      make(map[string]time.Time),
+		stopChan:        make(chan struct{}),
 	}
 
 	// Load TLS configuration if provided
@@ -646,6 +655,9 @@ func (va *VNodeProxierAgent) setupRoutes(port string, nodeInfo NodeInfo) *mux.Ro
 	// Container exec endpoint (same as main server)
 	router.HandleFunc("/exec/{namespace}/{pod}/{container}", va.handleContainerExec).Methods("POST", "GET")
 
+	// Pods endpoint
+	router.HandleFunc("/pods", va.handlePods(nodeInfo.NodeName)).Methods("GET")
+
 	// Health check endpoint
 	router.HandleFunc("/healthz", va.handleHealthz).Methods("GET")
 
@@ -700,6 +712,57 @@ func (va *VNodeProxierAgent) handleSummary(port string) http.HandlerFunc {
 		va.log.V(2).Info("Successfully served summary data",
 			"port", port,
 			"nodeName", summary.Node.NodeName)
+	}
+}
+
+// handlePods handles /pods endpoint to return pods by node name
+func (va *VNodeProxierAgent) handlePods(nodeName string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if va.podCacheManager == nil {
+			va.log.Error(nil, "Pod cache manager is not available")
+			http.Error(w, "Pod cache manager is not available", http.StatusServiceUnavailable)
+			return
+		}
+
+		va.log.V(1).Info("Processing pods request",
+			"nodeName", nodeName,
+			"remoteAddr", r.RemoteAddr,
+			"userAgent", r.UserAgent(),
+		)
+
+		// Get pods by node name
+		ctx := r.Context()
+		podList, err := va.podCacheManager.GetPodsByNode(ctx, nodeName)
+		if err != nil {
+			va.log.Error(err, "Failed to get pods by node name", "nodeName", nodeName)
+			http.Error(w, fmt.Sprintf("Failed to get pods: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Encode PodList to JSON using k8s client-go codec (following kubelet's encodePods pattern)
+		// Use LegacyCodec like kubelet does for v1 API version
+		codec := clientgoscheme.Codecs.LegacyCodec(schema.GroupVersion{Group: corev1.GroupName, Version: "v1"})
+		jsonBytes, err := runtime.Encode(codec, podList)
+		if err != nil {
+			va.log.Error(err, "Failed to encode PodList to JSON", "nodeName", nodeName)
+			http.Error(w, fmt.Sprintf("Failed to encode pods: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Set response headers
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		// Write JSON response
+		if _, err := w.Write(jsonBytes); err != nil {
+			va.log.Error(err, "Failed to write response", "nodeName", nodeName)
+			return
+		}
+
+		va.log.V(2).Info("Successfully served pods data",
+			"nodeName", nodeName,
+			"podCount", len(podList.Items),
+			"dataSize", len(jsonBytes))
 	}
 }
 
