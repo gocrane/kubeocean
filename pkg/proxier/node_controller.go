@@ -139,6 +139,7 @@ func (r *NodeController) extractNodeInfo(node *corev1.Node) (*NodeInfo, error) {
 	}
 
 	return &NodeInfo{
+		NodeName:    node.Name,
 		InternalIP:  internalIP,
 		ProxierPort: proxierPort,
 	}, nil

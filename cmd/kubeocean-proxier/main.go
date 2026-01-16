@@ -44,6 +44,7 @@ import (
 
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 	"github.com/gocrane/kubeocean/pkg/proxier"
+	"github.com/gocrane/kubeocean/pkg/proxier/podcache"
 	"github.com/gocrane/kubeocean/pkg/version"
 )
 
@@ -90,8 +91,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Setup managers
+	physicalManager, virtualManager, err := setupManager(physicalConfig, config.ClusterBindingName)
+	if err != nil {
+		setupLog.Error(err, "failed to setup managers")
+		os.Exit(1)
+	}
+
 	// Setup pod monitoring
-	err = setupPodMonitoring(ctx, physicalConfig)
+	podController, err := setupPodMonitoring(physicalManager)
 	if err != nil {
 		setupLog.Error(err, "failed to setup pod monitoring")
 		os.Exit(1)
@@ -105,21 +113,21 @@ func main() {
 	}
 
 	// Setup proxier services
-	kubeletProxy, httpServer, vnodeProxierAgent, err := setupProxierServices(ctx, config, tlsConfig, virtualClient, physicalClient, physicalConfig, clusterBinding, tokenManager)
+	kubeletProxy, httpServer, vnodeProxierAgent, err := setupProxierServices(ctx, config, tlsConfig, virtualClient, physicalClient, physicalConfig, clusterBinding, tokenManager, virtualManager)
 	if err != nil {
 		setupLog.Error(err, "failed to setup proxier services")
 		os.Exit(1)
 	}
 
 	// Setup node monitoring
-	err = setupNodeMonitoring(ctx, config, vnodeProxierAgent)
+	nodeController, err := setupNodeMonitoring(virtualManager, config, vnodeProxierAgent)
 	if err != nil {
 		setupLog.Error(err, "failed to setup node monitoring")
 		os.Exit(1)
 	}
 
 	// Start all services
-	err = startServices(ctx, config, kubeletProxy, httpServer, vnodeProxierAgent)
+	err = startServices(ctx, config, physicalManager, virtualManager, podController, nodeController, kubeletProxy, httpServer, vnodeProxierAgent)
 	if err != nil {
 		setupLog.Error(err, "failed to start services")
 		os.Exit(1)
@@ -250,13 +258,8 @@ func setupAuthentication(ctx context.Context, physicalConfig *rest.Config) (*pro
 	return tokenManager, nil
 }
 
-// setupPodMonitoring sets up pod controller and monitoring
-func setupPodMonitoring(ctx context.Context, physicalConfig *rest.Config) error {
-	proxier.InitGlobalPodMapper()
-	setupLog.Info("Global pod mapper initialized")
-
-	setupLog.Info("Setting up POD Controller for physical cluster")
-
+// setupManager creates both physical and virtual managers
+func setupManager(physicalConfig *rest.Config, clusterBindingName string) (ctrl.Manager, ctrl.Manager, error) {
 	// Create physical cluster manager
 	physicalManager, err := ctrl.NewManager(physicalConfig, ctrl.Options{
 		Scheme: scheme,
@@ -275,8 +278,41 @@ func setupPodMonitoring(ctx context.Context, physicalConfig *rest.Config) error 
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("unable to create physical manager for pod controller: %w", err)
+		return nil, nil, fmt.Errorf("unable to create physical manager: %w", err)
 	}
+
+	// Create virtual cluster manager
+	virtualConfig := ctrl.GetConfigOrDie()
+	virtualManager, err := ctrl.NewManager(virtualConfig, ctrl.Options{
+		Scheme: scheme,
+		Metrics: server.Options{
+			BindAddress: "0",
+		},
+		HealthProbeBindAddress: "0",
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.Node{}: {
+					Label: labels.SelectorFromSet(map[string]string{
+						cloudv1beta1.LabelClusterBinding: clusterBindingName,
+						cloudv1beta1.LabelManagedBy:      cloudv1beta1.LabelManagedByValue,
+					}),
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to create virtual manager: %w", err)
+	}
+
+	return physicalManager, virtualManager, nil
+}
+
+// setupPodMonitoring sets up pod controller and monitoring
+func setupPodMonitoring(physicalManager ctrl.Manager) (*proxier.PodController, error) {
+	proxier.InitGlobalPodMapper()
+	setupLog.Info("Global pod mapper initialized")
+
+	setupLog.Info("Setting up POD Controller for physical cluster")
 
 	// Create and setup POD controller
 	podController := proxier.NewPodController(
@@ -286,26 +322,11 @@ func setupPodMonitoring(ctx context.Context, physicalConfig *rest.Config) error 
 	)
 
 	if err := podController.SetupWithManager(physicalManager); err != nil {
-		return fmt.Errorf("unable to setup pod controller: %w", err)
+		return nil, fmt.Errorf("unable to setup pod controller: %w", err)
 	}
 
-	// Start physical manager
-	go func() {
-		setupLog.Info("Starting physical cluster manager for pod controller")
-		if err := physicalManager.Start(ctx); err != nil {
-			setupLog.Error(err, "problem running physical manager")
-		}
-	}()
-
-	// Initialize existing pods
-	time.Sleep(2 * time.Second)
-	setupLog.Info("Initializing existing pods in physical cluster")
-	if err := podController.InitializeExistingPods(ctx); err != nil {
-		return fmt.Errorf("failed to initialize existing pods: %w", err)
-	}
-	setupLog.Info("Pod controller initialization completed")
-
-	return nil
+	setupLog.Info("Pod controller setup completed")
+	return podController, nil
 }
 
 // createPhysicalClusterClients creates clients for the physical cluster
@@ -530,7 +551,7 @@ func setupTLSConfiguration(ctx context.Context, config *ProxierConfig, clusterBi
 }
 
 // setupProxierServices sets up kubelet proxy, HTTP server, and optionally VNode proxier agent
-func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig *TLSConfiguration, virtualClient client.Client, physicalClient kubernetes.Interface, physicalConfig *rest.Config, clusterBinding *cloudv1beta1.ClusterBinding, tokenManager *proxier.TokenManager) (proxier.KubeletProxy, proxier.HTTPServer, *proxier.VNodeProxierAgent, error) {
+func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig *TLSConfiguration, virtualClient client.Client, physicalClient kubernetes.Interface, physicalConfig *rest.Config, clusterBinding *cloudv1beta1.ClusterBinding, tokenManager *proxier.TokenManager, virtualManager ctrl.Manager) (proxier.KubeletProxy, proxier.HTTPServer, *proxier.VNodeProxierAgent, error) {
 	virtualClientset, err := kubernetes.NewForConfig(ctrl.GetConfigOrDie())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("unable to create virtual cluster clientset: %w", err)
@@ -570,6 +591,13 @@ func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig 
 		ctrl.Log.WithName("http-server"),
 	)
 
+	// Create pod cache manager using virtualManager
+	podCacheManager := podcache.NewPodCacheManager(virtualManager)
+	if err := podCacheManager.Setup(ctx); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to setup pod cache manager: %w", err)
+	}
+	setupLog.Info("Pod cache manager setup completed")
+
 	// Create VNode proxier agent if metrics enabled
 	var vnodeProxierAgent *proxier.VNodeProxierAgent
 	if config.MetricsEnabled {
@@ -594,6 +622,7 @@ func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig 
 			virtualClientset,
 			clusterBinding.Spec.ClusterID,
 			ctrl.Log.WithName("vnode-proxier-agent"),
+			podCacheManager,
 		)
 
 		if err := vnodeProxierAgent.Start(ctx); err != nil {
@@ -608,30 +637,8 @@ func setupProxierServices(ctx context.Context, config *ProxierConfig, tlsConfig 
 }
 
 // setupNodeMonitoring sets up node controller and monitoring
-func setupNodeMonitoring(ctx context.Context, config *ProxierConfig, vnodeProxierAgent *proxier.VNodeProxierAgent) error {
+func setupNodeMonitoring(virtualManager ctrl.Manager, config *ProxierConfig, vnodeProxierAgent *proxier.VNodeProxierAgent) (*proxier.NodeController, error) {
 	setupLog.Info("Setting up Node Controller for proxier", "clusterBinding", config.ClusterBindingName)
-
-	virtualConfig := ctrl.GetConfigOrDie()
-	virtualManager, err := ctrl.NewManager(virtualConfig, ctrl.Options{
-		Scheme: scheme,
-		Metrics: server.Options{
-			BindAddress: "0",
-		},
-		HealthProbeBindAddress: "0",
-		Cache: cache.Options{
-			ByObject: map[client.Object]cache.ByObject{
-				&corev1.Node{}: {
-					Label: labels.SelectorFromSet(map[string]string{
-						cloudv1beta1.LabelClusterBinding: config.ClusterBindingName,
-						cloudv1beta1.LabelManagedBy:      cloudv1beta1.LabelManagedByValue,
-					}),
-				},
-			},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("unable to create virtual manager for node controller: %w", err)
-	}
 
 	nodeController := &proxier.NodeController{
 		Client:             virtualManager.GetClient(),
@@ -642,7 +649,7 @@ func setupNodeMonitoring(ctx context.Context, config *ProxierConfig, vnodeProxie
 	}
 
 	if err := nodeController.SetupWithManager(virtualManager); err != nil {
-		return fmt.Errorf("unable to setup node controller: %w", err)
+		return nil, fmt.Errorf("unable to setup node controller: %w", err)
 	}
 
 	if vnodeProxierAgent != nil {
@@ -650,20 +657,50 @@ func setupNodeMonitoring(ctx context.Context, config *ProxierConfig, vnodeProxie
 		setupLog.Info("Connected NodeController with VNodeProxierAgent")
 	}
 
+	setupLog.Info("Node Controller setup completed")
+	return nodeController, nil
+}
+
+// startServices starts all the services
+func startServices(ctx context.Context, config *ProxierConfig, physicalManager, virtualManager ctrl.Manager, podController *proxier.PodController, nodeController *proxier.NodeController, kubeletProxy proxier.KubeletProxy, httpServer proxier.HTTPServer, vnodeProxierAgent *proxier.VNodeProxierAgent) error {
+	// Start physical manager
 	go func() {
+		setupLog.Info("Starting physical cluster manager for pod controller")
+		if err := physicalManager.Start(ctx); err != nil {
+			setupLog.Error(err, "problem running physical manager")
+		}
+	}()
+
+	// Start virtual manager
+	go func() {
+		setupLog.Info("Starting virtual cluster manager for node controller")
 		if err := virtualManager.Start(ctx); err != nil {
 			setupLog.Error(err, "problem running virtual manager")
 		}
 	}()
 
+	// Wait for cache sync
+	if !physicalManager.GetCache().WaitForCacheSync(ctx) {
+		return fmt.Errorf("failed to wait for physical manager cache sync")
+	}
 	if !virtualManager.GetCache().WaitForCacheSync(ctx) {
-		return fmt.Errorf("failed to wait for cache sync")
+		return fmt.Errorf("failed to wait for virtual manager cache sync")
 	}
 
+	// Initialize existing pods
+	setupLog.Info("Initializing existing pods in physical cluster")
+	if err := podController.InitializeExistingPods(ctx); err != nil {
+		return fmt.Errorf("failed to initialize existing pods: %w", err)
+	}
+	setupLog.Info("Pod controller initialization completed")
+
+	// Sync existing nodes
 	if err := nodeController.SyncExistingNodes(ctx); err != nil {
 		return fmt.Errorf("failed to sync existing nodes: %w", err)
 	}
+	setupLog.Info("Node controller synchronization completed")
 
+	// Initialize VNodeProxierAgent with existing nodes
 	if vnodeProxierAgent != nil {
 		existingNodes := nodeController.GetCurrentNodes()
 		if len(existingNodes) > 0 {
@@ -671,21 +708,19 @@ func setupNodeMonitoring(ctx context.Context, config *ProxierConfig, vnodeProxie
 			vnodeProxierAgent.InitializeWithNodes(existingNodes)
 		}
 	}
+	setupLog.Info("VNodeProxierAgent initialization completed")
 
-	setupLog.Info("Node Controller setup completed successfully")
-	return nil
-}
-
-// startServices starts all the services
-func startServices(ctx context.Context, config *ProxierConfig, kubeletProxy proxier.KubeletProxy, httpServer proxier.HTTPServer, vnodeProxierAgent *proxier.VNodeProxierAgent) error {
+	// Start kubelet proxy
 	if err := kubeletProxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start Kubelet proxy: %w", err)
 	}
 
+	// Start HTTP server
 	if err := httpServer.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
 
+	// Start VNode HTTP server
 	if vnodeProxierAgent != nil {
 		if err := proxier.StartVNodeHTTPServer(vnodeProxierAgent, ctrl.Log.WithName("vnode-http-server"), config.VnodeBasePort); err != nil {
 			return fmt.Errorf("failed to start VNode HTTP server: %w", err)
