@@ -2104,7 +2104,7 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 					Name: customPriorityClassName,
 				},
 				Value:            customPriorityValue,
-				PreemptionPolicy: &[]corev1.PreemptionPolicy{corev1.PreemptLowerPriority}[0],
+				PreemptionPolicy: &[]corev1.PreemptionPolicy{corev1.PreemptNever}[0],
 				Description:      "Test PriorityClass for Kubeocean E2E tests",
 			}
 			gomega.Expect(k8sPhysical.Create(ctx, customPriorityClass)).To(gomega.Succeed())
@@ -2153,6 +2153,11 @@ var _ = ginkgo.Describe("Virtual Pod Integration Tests", func() {
 			gomega.Expect(physicalPod.Spec.Priority).NotTo(gomega.BeNil())
 			gomega.Expect(*physicalPod.Spec.Priority).To(gomega.Equal(customPriorityValue))
 			ginkgo.By("Verifying physical pod has correct priority value: " + fmt.Sprintf("%v", *physicalPod.Spec.Priority))
+
+			ginkgo.By("Verifying physical pod has correct preemption policy")
+			gomega.Expect(physicalPod.Spec.PreemptionPolicy).NotTo(gomega.BeNil())
+			gomega.Expect(*physicalPod.Spec.PreemptionPolicy).To(gomega.Equal(corev1.PreemptNever))
+			ginkgo.By("Verifying physical pod has correct preemption policy: " + fmt.Sprintf("%v", *physicalPod.Spec.PreemptionPolicy))
 
 			// Clean up: restore ClusterBinding to default
 			ginkgo.By("Restoring ClusterBinding to default PriorityClass")

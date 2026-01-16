@@ -972,6 +972,7 @@ func (r *VirtualPodReconciler) buildPhysicalPodSpec(ctx context.Context, virtual
 	}
 	spec.PriorityClassName = priorityClassName
 	spec.Priority = nil
+	spec.PreemptionPolicy = nil
 
 	// cleanup service account related fields
 	spec.ServiceAccountName = ""
