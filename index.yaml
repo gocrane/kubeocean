@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   kubeocean:
   - apiVersion: v2
+    appVersion: 0.1.2
+    created: "2026-01-16T09:18:53.590631967Z"
+    description: A Helm chart for Kubeocean - Kubernetes Compute Cluster Project
+    digest: 6b57c7449a56d20a5d9900b55c556aa28e21a1efc9cbca35a25d43d67ff67d87
+    name: kubeocean
+    type: application
+    urls:
+    - https://github.com/gocrane/kubeocean/releases/download/kubeocean-0.1.2/kubeocean-0.1.2.tgz
+    version: 0.1.2
+  - apiVersion: v2
     appVersion: 0.1.1
     created: "2026-01-16T08:47:45.699174266Z"
     description: A Helm chart for Kubeocean - Kubernetes Compute Cluster Project
@@ -11,4 +21,16 @@ entries:
     urls:
     - https://github.com/gocrane/kubeocean/releases/download/kubeocean-0.1.1/kubeocean-0.1.1.tgz
     version: 0.1.1
-generated: "2026-01-16T08:47:45.699178651Z"
+  kubeocean-worker:
+  - apiVersion: v2
+    appVersion: 0.1.2
+    created: "2026-01-16T09:18:53.798638697Z"
+    description: A Helm chart for Kubeocean Worker - Physical cluster RBAC resources
+      and CRDs for Kubeocean Syncer
+    digest: e9e846b2efb3e50ff10f3fed5be7a92fc8566ec15fc547b3dee5e7100701f75e
+    name: kubeocean-worker
+    type: application
+    urls:
+    - https://github.com/gocrane/kubeocean/releases/download/kubeocean-worker-0.1.2/kubeocean-worker-0.1.2.tgz
+    version: 0.1.2
+generated: "2026-01-16T09:18:53.798651661Z"
