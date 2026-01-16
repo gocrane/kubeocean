@@ -272,6 +272,11 @@ func TestHostPortNodeReconciler_Reconcile(t *testing.T) {
 					})
 				assert.NoError(t, err, "Should be able to list fake pods")
 				assert.Greater(t, len(fakePods.Items), 0, "Should have created fake pod")
+
+				// Verify fake pod has hostNetwork enabled
+				for _, fakePod := range fakePods.Items {
+					assert.True(t, fakePod.Spec.HostNetwork, "Fake pod should have hostNetwork=true")
+				}
 			}
 		})
 	}
@@ -832,6 +837,9 @@ func TestHostPortNodeReconciler_collectHostPorts(t *testing.T) {
 				if port.Protocol == "" {
 					assert.Equal(t, corev1.ProtocolTCP, port.Protocol, "Default protocol should be TCP")
 				}
+				// Verify ContainerPort equals HostPort (required for hostNetwork=true)
+				assert.Equal(t, port.HostPort, port.ContainerPort,
+					"ContainerPort should equal HostPort for fake pod with hostNetwork=true")
 			}
 
 			// Verify ordering (should be sorted)
@@ -913,6 +921,9 @@ func TestHostPortNodeReconciler_buildFakePod(t *testing.T) {
 			assert.Equal(t, tt.virtualNodeName, result.Spec.NodeName, "Should be scheduled to virtual node")
 			assert.Equal(t, SystemNodeCriticalPriorityClass, result.Spec.PriorityClassName, "Should have system priority")
 			assert.Equal(t, corev1.RestartPolicyNever, result.Spec.RestartPolicy, "Should have Never restart policy")
+
+			// Verify hostNetwork is enabled (required for hostPort synchronization)
+			assert.True(t, result.Spec.HostNetwork, "Fake pod should have hostNetwork=true for hostPort reservation")
 
 			// Verify labels
 			assert.Equal(t, cloudv1beta1.LabelValueTrue, result.Labels[cloudv1beta1.LabelHostPortFakePod])

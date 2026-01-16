@@ -440,6 +440,10 @@ func verifyFakePodCreation(ctx context.Context, virtualNodeName string) {
 	gomega.Expect(fakePod.Labels[cloudv1beta1.LabelHostPortFakePod]).To(gomega.Equal(cloudv1beta1.LabelValueTrue))
 	gomega.Expect(fakePod.Labels[cloudv1beta1.LabelManagedBy]).To(gomega.Equal(cloudv1beta1.LabelManagedByValue))
 
+	// Verify hostNetwork is enabled (required for hostPort reservation)
+	gomega.Expect(fakePod.Spec.HostNetwork).To(gomega.BeTrue(),
+		"Fake pod should have hostNetwork=true for proper hostPort reservation")
+
 	// Verify tolerations (should tolerate all taints)
 	gomega.Expect(fakePod.Spec.Tolerations).To(gomega.ContainElement(corev1.Toleration{
 		Operator: corev1.TolerationOpExists,
@@ -450,23 +454,24 @@ func verifyFakePodCreation(ctx context.Context, virtualNodeName string) {
 	container := fakePod.Spec.Containers[0]
 
 	// Expected hostPorts from all 7 pods (sorted by HostIP, Protocol, HostPort)
+	// Note: ContainerPort now equals HostPort because fake pod uses hostNetwork=true
 	expectedPorts := []corev1.ContainerPort{
 		// HostIP: hostIPAny, Protocol: TCP (sorted by HostPort)
 		{ContainerPort: 5000, HostPort: 5000, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny}, // Pod6-init
 		{ContainerPort: 5002, HostPort: 5002, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny}, // Pod6-main
 		{ContainerPort: 7000, HostPort: 7000, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny}, // Pod3
-		{ContainerPort: 80, HostPort: 8000, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny},   // Pod3
-		{ContainerPort: 81, HostPort: 8001, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny},   // Pod4
-		{ContainerPort: 80, HostPort: 8080, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny},   // Pod1
-		{ContainerPort: 81, HostPort: 8081, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny},   // Pod1
+		{ContainerPort: 8000, HostPort: 8000, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny}, // Pod3
+		{ContainerPort: 8001, HostPort: 8001, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny}, // Pod4
+		{ContainerPort: 8080, HostPort: 8080, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny}, // Pod1
+		{ContainerPort: 8081, HostPort: 8081, Protocol: corev1.ProtocolTCP, HostIP: hostIPAny}, // Pod1
 		// HostIP: hostIPAny, Protocol: UDP (sorted by HostPort)
 		{ContainerPort: 5001, HostPort: 5001, Protocol: corev1.ProtocolUDP, HostIP: hostIPAny}, // Pod6-init
 		// HostIP: hostIPLocalhost, Protocol: TCP (sorted by HostPort)
-		{ContainerPort: 7001, HostPort: 7000, Protocol: corev1.ProtocolTCP, HostIP: hostIPLocalhost}, // Pod4
+		{ContainerPort: 7000, HostPort: 7000, Protocol: corev1.ProtocolTCP, HostIP: hostIPLocalhost}, // Pod4
 		{ContainerPort: 9000, HostPort: 9000, Protocol: corev1.ProtocolTCP, HostIP: hostIPLocalhost}, // Pod2
-		{ContainerPort: 9000, HostPort: 9001, Protocol: corev1.ProtocolTCP, HostIP: hostIPLocalhost}, // Pod4
+		{ContainerPort: 9001, HostPort: 9001, Protocol: corev1.ProtocolTCP, HostIP: hostIPLocalhost}, // Pod4
 		// HostIP: hostIPLocalhost, Protocol: UDP (sorted by HostPort)
-		{ContainerPort: 9001, HostPort: 9000, Protocol: corev1.ProtocolUDP, HostIP: hostIPLocalhost}, // Pod2
+		{ContainerPort: 9000, HostPort: 9000, Protocol: corev1.ProtocolUDP, HostIP: hostIPLocalhost}, // Pod2
 		{ContainerPort: 9001, HostPort: 9001, Protocol: corev1.ProtocolUDP, HostIP: hostIPLocalhost}, // Pod3
 		// HostIP: "" (hostNetwork), Protocol: TCP (sorted by HostPort)
 		{ContainerPort: 4000, HostPort: 4000, Protocol: corev1.ProtocolTCP, HostIP: ""}, // Pod7-init
@@ -523,6 +528,9 @@ func verifyFakePodCreation(ctx context.Context, virtualNodeName string) {
 			fmt.Sprintf("Port %d: Protocol mismatch", i))
 		gomega.Expect(actualPort.HostIP).To(gomega.Equal(expectedPort.HostIP),
 			fmt.Sprintf("Port %d: HostIP mismatch", i))
+		// Verify ContainerPort equals HostPort (required for hostNetwork=true)
+		gomega.Expect(actualPort.ContainerPort).To(gomega.Equal(actualPort.HostPort),
+			fmt.Sprintf("Port %d: ContainerPort should equal HostPort for hostNetwork pod", i))
 	}
 
 	ginkgo.GinkgoWriter.Printf("Verified fake pod creation with %d hostPorts\n", len(container.Ports))
