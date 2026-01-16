@@ -1,0 +1,14 @@
+apiVersion: v1
+entries:
+  kubeocean:
+  - apiVersion: v2
+    appVersion: 0.1.1
+    created: "2026-01-16T08:47:45.699174266Z"
+    description: A Helm chart for Kubeocean - Kubernetes Compute Cluster Project
+    digest: 39152637f156d716185f34e45f7295255cc02ede357a9869edc455b271101260
+    name: kubeocean
+    type: application
+    urls:
+    - https://github.com/gocrane/kubeocean/releases/download/kubeocean-0.1.1/kubeocean-0.1.1.tgz
+    version: 0.1.1
+generated: "2026-01-16T08:47:45.699178651Z"
