@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -37,6 +38,23 @@ import (
 	"github.com/gocrane/kubeocean/pkg/utils"
 	authenticationv1 "k8s.io/api/authentication/v1"
 )
+
+type createLostResponseClient struct {
+	client.Client
+	createCalls int
+}
+
+func (c *createLostResponseClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	c.createCalls++
+	if c.createCalls == 1 {
+		createdObj := obj.DeepCopyObject().(client.Object)
+		if err := c.Client.Create(ctx, createdObj, opts...); err != nil {
+			return err
+		}
+		return errors.New("http: server closed idle connection")
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
 
 // MockTokenManager is a mock implementation of the token.TokenManagerInterface for testing
 type MockTokenManager struct {
@@ -4079,6 +4097,57 @@ func TestVirtualPodReconciler_SyncServiceAccountToken(t *testing.T) {
 			assert.Contains(t, secret.Data, "token")
 		})
 	}
+}
+
+func TestVirtualPodReconciler_SyncServiceAccountTokenTreatsAlreadyExistsAfterTransientErrorAsSuccess(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, cloudv1beta1.AddToScheme(scheme))
+
+	clusterBinding := &cloudv1beta1.ClusterBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster"},
+		Spec: cloudv1beta1.ClusterBindingSpec{
+			ClusterID:      "test-cluster-id",
+			MountNamespace: "test-cluster",
+		},
+	}
+	mockTokenManager := &MockTokenManager{
+		getServiceAccountToken: func(namespace, name string, tr *authenticationv1.TokenRequest) (*authenticationv1.TokenRequest, error) {
+			return &authenticationv1.TokenRequest{Status: authenticationv1.TokenRequestStatus{Token: "test-token-content"}}, nil
+		},
+	}
+	virtualPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "test-ns",
+			UID:       "test-uid-123",
+		},
+		Spec: corev1.PodSpec{ServiceAccountName: "test-sa"},
+	}
+	tp := &corev1.ServiceAccountTokenProjection{
+		Audience:          "https://kubernetes.default.svc.cluster.local",
+		ExpirationSeconds: ptr.To(int64(3607)),
+		Path:              "token",
+	}
+	basePhysicalClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := &createLostResponseClient{Client: basePhysicalClient}
+	reconciler := &VirtualPodReconciler{
+		VirtualClient:  fakeclient.NewClientBuilder().WithScheme(scheme).Build(),
+		PhysicalClient: physicalClient,
+		ClusterBinding: clusterBinding,
+		Log:            ctrl.Log.WithName("test"),
+		ClusterID:      "test-cluster-id",
+		TokenManager:   mockTokenManager,
+	}
+
+	result, err := reconciler.syncServiceAccountToken(context.Background(), "kube-api-access-xyz", tp, virtualPod, true)
+
+	require.NoError(t, err)
+	assert.Equal(t, "test-pod-kube-api-access-xyz-t-b70a6c2e342892263f296b4f4deaa821", result)
+	assert.Equal(t, 2, physicalClient.createCalls)
+	secret := &corev1.Secret{}
+	require.NoError(t, basePhysicalClient.Get(context.Background(), types.NamespacedName{Name: result, Namespace: "test-cluster"}, secret))
+	assert.Equal(t, []byte("test-token-content"), secret.Data["token"])
 }
 
 // TestVirtualPodReconciler_SyncConfigMapsWithProjectedVolumes tests syncConfigMaps with projected volumes

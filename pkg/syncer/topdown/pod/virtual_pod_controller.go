@@ -667,7 +667,7 @@ func (r *VirtualPodReconciler) createPhysicalPod(ctx context.Context, virtualPod
 	}
 
 	// 4. Create physical pod
-	err = r.PhysicalClient.Create(ctx, physicalPod)
+	err = topcommon.CreateObjectWithRetry(ctx, r.PhysicalClient, physicalPod, logger)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			logger.Info("Physical pod already exists, updating virtual pod with UID")
@@ -2252,10 +2252,14 @@ func (r *VirtualPodReconciler) syncServiceAccountToken(ctx context.Context, volu
 			return "", err
 		}
 		// Create new secret
-		if err := r.PhysicalClient.Create(ctx, secret); err != nil {
-			return "", fmt.Errorf("failed to create service account token secret %s/%s: %v", physicalNamespace, physicalSecretName, err)
+		if err := topcommon.CreateObjectWithRetry(ctx, r.PhysicalClient, secret, logger); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return "", fmt.Errorf("failed to create service account token secret %s/%s: %v", physicalNamespace, physicalSecretName, err)
+			}
+			logger.Info("Service account token secret already exists after create retry", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
+		} else {
+			logger.Info("Created service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
 		}
-		logger.Info("Created service account token secret", "secret", fmt.Sprintf("%s/%s", physicalNamespace, physicalSecretName))
 	} else {
 		// Check if token needs updating
 		currentToken := string(existingSecret.Data["token"])
@@ -2484,7 +2488,7 @@ func (r *VirtualPodReconciler) ensureDefaultPriorityClass(ctx context.Context) e
 		Description:      "Default PriorityClass for Kubeocean physical pods",
 	}
 
-	err = r.PhysicalClient.Create(ctx, priorityClass)
+	err = topcommon.CreateObjectWithRetry(ctx, r.PhysicalClient, priorityClass, logger)
 	if err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			logger.Error(err, "Failed to create default PriorityClass")

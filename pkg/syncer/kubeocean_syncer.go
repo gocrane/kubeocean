@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -33,6 +34,14 @@ const (
 
 	// Connection timeouts
 	connectionTimeout = 30 * time.Second
+
+	// HTTP transport settings for Kubernetes API clients. Keep the client-side idle
+	// timeout shorter than typical load balancer idle timeouts to avoid reusing
+	// connections that have already been closed by the server side.
+	physicalTransportIdleConnTimeout     = 30 * time.Second
+	physicalTransportTLSHandshakeTimeout = 10 * time.Second
+	physicalTransportMaxIdleConns        = 200
+	physicalTransportMaxIdleConnsPerHost = 100
 )
 
 // KubeoceanSyncer manages the synchronization between virtual and physical clusters
@@ -200,6 +209,7 @@ func (ts *KubeoceanSyncer) setupPhysicalClusterConnection(ctx context.Context) e
 
 		// Set connection timeout
 		config.Timeout = connectionTimeout
+		configurePhysicalClusterTransport(config)
 
 		// Set QPS and Burst for the physical client
 		if ts.physicalClientQPS > 0 {
@@ -244,6 +254,22 @@ func (ts *KubeoceanSyncer) setupPhysicalClusterConnection(ctx context.Context) e
 
 	ts.Log.Info("Physical cluster connection established successfully")
 	return nil
+}
+
+func configurePhysicalClusterTransport(config *rest.Config) {
+	config.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		transport, ok := rt.(*http.Transport)
+		if !ok {
+			return rt
+		}
+
+		cloned := transport.Clone()
+		cloned.MaxIdleConns = physicalTransportMaxIdleConns
+		cloned.MaxIdleConnsPerHost = physicalTransportMaxIdleConnsPerHost
+		cloned.IdleConnTimeout = physicalTransportIdleConnTimeout
+		cloned.TLSHandshakeTimeout = physicalTransportTLSHandshakeTimeout
+		return cloned
+	})
 }
 
 // readKubeconfigSecret reads kubeconfig data from the referenced secret

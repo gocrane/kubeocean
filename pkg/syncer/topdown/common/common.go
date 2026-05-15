@@ -3,8 +3,11 @@ package topcommon
 import (
 	"context"
 	"crypto/md5"
+	"errors"
 	"fmt"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -26,6 +29,10 @@ const (
 	ResourceTypeSecret    ResourceType = "Secret"
 	ResourceTypePVC       ResourceType = "PVC"
 	ResourceTypePV        ResourceType = "PV"
+
+	createRetrySteps          = 4
+	createRetryInitialBackoff = 100 * time.Millisecond
+	createRetryMaxBackoff     = time.Second
 )
 
 // SyncResourceOpt contains options for resource synchronization
@@ -141,6 +148,72 @@ func BuildPhysicalResourceAnnotations(virtualObj client.Object) map[string]strin
 	return annotations
 }
 
+// IsRetriableCreateError returns true for transient failures that are safe to retry
+// when the caller treats AlreadyExists as a successful create confirmation.
+func IsRetriableCreateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) || apierrors.IsTooManyRequests(err) ||
+		apierrors.IsServiceUnavailable(err) || apierrors.IsInternalError(err) || apierrors.IsUnexpectedServerError(err) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	msg := strings.ToLower(err.Error())
+	for _, pattern := range []string{
+		"server closed idle connection",
+		"connection reset by peer",
+		"connection refused",
+		"connection aborted",
+		"broken pipe",
+		"use of closed network connection",
+		"unexpected eof",
+		"tls handshake timeout",
+		"i/o timeout",
+		"timeout awaiting response headers",
+	} {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// CreateObjectWithRetry creates a Kubernetes object and retries transient transport/API failures.
+func CreateObjectWithRetry(ctx context.Context, physicalClient client.Client, obj client.Object, logger logr.Logger) error {
+	backoff := createRetryInitialBackoff
+	var err error
+	for attempt := 1; attempt <= createRetrySteps; attempt++ {
+		err = physicalClient.Create(ctx, obj)
+		if err == nil || apierrors.IsAlreadyExists(err) || !IsRetriableCreateError(err) || attempt == createRetrySteps {
+			return err
+		}
+
+		logger.Info("Transient error while creating physical resource, retrying",
+			"resource", fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName()),
+			"attempt", attempt,
+			"error", err.Error())
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+
+		backoff *= 2
+		if backoff > createRetryMaxBackoff {
+			backoff = createRetryMaxBackoff
+		}
+	}
+	return err
+}
+
 // CreatePhysicalResource creates a physical resource by type
 // This is a common function that can be used by different reconcilers
 func CreatePhysicalResource(ctx context.Context, resourceType ResourceType, virtualObj client.Object, physicalName, physicalNamespace string,
@@ -160,7 +233,7 @@ func CreatePhysicalResourceWithOpt(ctx context.Context, resourceType ResourceTyp
 	}
 
 	// Create physical resource
-	err = physicalClient.Create(ctx, physicalObj)
+	err = CreateObjectWithRetry(ctx, physicalClient, physicalObj, logger)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			logger.V(1).Info(fmt.Sprintf("Physical %s already exists, skipping", resourceType))

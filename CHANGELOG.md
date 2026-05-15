@@ -1,5 +1,12 @@
 # Change Log
 
+## v0.1.3
+
+**Fixed Bugs and other changes**
+- Fix physical resource creation failures caused by stale idle Kubernetes API connections. [Syncer]
+- Retry transient physical create errors and confirm AlreadyExists after lost create responses. [Syncer]
+- Exclude last-sync-time from top-down synced metadata to avoid unnecessary sync churn. [Syncer]
+
 ## v0.1.2
 
 **Features**

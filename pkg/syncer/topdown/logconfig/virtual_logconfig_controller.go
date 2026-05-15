@@ -969,11 +969,25 @@ func (r *VirtualLogConfigReconciler) atomicRebuildPhysicalLogConfigs(ctx context
 	createdCount := 0
 	for _, newConfig := range newConfigs {
 		logger.V(1).Info("Creating new physical LogConfig", "name", newConfig.Name)
-		if err := r.PhysicalClient.Create(ctx, newConfig); err != nil {
-			// If still getting "object is being deleted", it means the deletion is still in progress
-			if apierrors.IsAlreadyExists(err) && strings.Contains(err.Error(), "object is being deleted") {
-				logger.Info("LogConfig still being deleted, will retry", "name", newConfig.Name)
-				return fmt.Errorf("logconfig %s is still being deleted, will retry: %w", newConfig.Name, err)
+		if err := topcommon.CreateObjectWithRetry(ctx, r.PhysicalClient, newConfig, logger); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				// If still getting "object is being deleted", it means the deletion is still in progress.
+				if strings.Contains(err.Error(), "object is being deleted") {
+					logger.Info("LogConfig still being deleted, will retry", "name", newConfig.Name)
+					return fmt.Errorf("logconfig %s is still being deleted, will retry: %w", newConfig.Name, err)
+				}
+
+				existingConfig := &clsv1.LogConfig{}
+				if getErr := r.PhysicalClient.Get(ctx, types.NamespacedName{Name: newConfig.Name}, existingConfig); getErr != nil {
+					return fmt.Errorf("failed to confirm existing logconfig %s after create retry: %w", newConfig.Name, getErr)
+				}
+				if !r.isLogConfigManagedByThisCluster(existingConfig) || existingConfig.Labels["kubeocean.io/virtual-logconfig"] != newConfig.Labels["kubeocean.io/virtual-logconfig"] {
+					return fmt.Errorf("logconfig %s already exists but is not the expected kubeocean-managed resource", newConfig.Name)
+				}
+
+				logger.Info("Physical LogConfig already exists after create retry", "name", newConfig.Name)
+				createdCount++
+				continue
 			}
 			logger.Error(err, "Failed to create new physical LogConfig", "name", newConfig.Name)
 			return fmt.Errorf("failed to create new config %s: %w", newConfig.Name, err)
