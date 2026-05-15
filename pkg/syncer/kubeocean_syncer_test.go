@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -10,12 +11,30 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 )
+
+func TestConfigurePhysicalClusterTransport(t *testing.T) {
+	config := &rest.Config{}
+	configurePhysicalClusterTransport(config)
+
+	require.NotNil(t, config.WrapTransport)
+
+	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+	roundTripper := config.WrapTransport(baseTransport)
+	transport, ok := roundTripper.(*http.Transport)
+	require.True(t, ok)
+	require.NotSame(t, baseTransport, transport)
+	assert.Equal(t, physicalTransportMaxIdleConns, transport.MaxIdleConns)
+	assert.Equal(t, physicalTransportMaxIdleConnsPerHost, transport.MaxIdleConnsPerHost)
+	assert.Equal(t, physicalTransportIdleConnTimeout, transport.IdleConnTimeout)
+	assert.Equal(t, physicalTransportTLSHandshakeTimeout, transport.TLSHandshakeTimeout)
+}
 
 func TestNewKubeoceanSyncer(t *testing.T) {
 	scheme := runtime.NewScheme()

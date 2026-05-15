@@ -2,6 +2,7 @@ package topcommon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -19,6 +20,45 @@ import (
 
 	cloudv1beta1 "github.com/gocrane/kubeocean/api/v1beta1"
 )
+
+type flakyCreateClient struct {
+	client.Client
+	createErrors []error
+	createCalls  int
+}
+
+func (c *flakyCreateClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	c.createCalls++
+	if len(c.createErrors) > 0 {
+		err := c.createErrors[0]
+		c.createErrors = c.createErrors[1:]
+		return err
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+type lostResponseCreateClient struct {
+	client.Client
+	createCalls int
+}
+
+func (c *lostResponseCreateClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	c.createCalls++
+	if c.createCalls == 1 {
+		createdObj := obj.DeepCopyObject().(client.Object)
+		if err := c.Client.Create(ctx, createdObj, opts...); err != nil {
+			return err
+		}
+		return errors.New("http: server closed idle connection")
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
 
 func TestCheckPhysicalResourceExists(t *testing.T) {
 	tests := []struct {
@@ -488,6 +528,68 @@ func TestBuildPhysicalResourceAnnotations(t *testing.T) {
 			assert.Equal(t, tt.expectedAnnotations, annotations)
 		})
 	}
+}
+
+func TestIsRetriableCreateError(t *testing.T) {
+	assert.True(t, IsRetriableCreateError(errors.New("http: server closed idle connection")))
+	assert.True(t, IsRetriableCreateError(errors.New("read: connection reset by peer")))
+	assert.True(t, IsRetriableCreateError(fmt.Errorf("wrapped: %w", timeoutError{})))
+	assert.False(t, IsRetriableCreateError(errors.New("invalid object")))
+}
+
+func TestCreateObjectWithRetryRetriesTransientError(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	baseClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := &flakyCreateClient{
+		Client:       baseClient,
+		createErrors: []error{errors.New("http: server closed idle connection")},
+	}
+	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "test-namespace"}}
+
+	err := CreateObjectWithRetry(context.Background(), physicalClient, configMap, ctrl.Log.WithName("test"))
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, physicalClient.createCalls)
+	stored := &corev1.ConfigMap{}
+	require.NoError(t, baseClient.Get(context.Background(), types.NamespacedName{Name: "test-config", Namespace: "test-namespace"}, stored))
+}
+
+func TestCreatePhysicalResourceTreatsAlreadyExistsAfterTransientErrorAsSuccess(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	baseClient := fakeclient.NewClientBuilder().WithScheme(scheme).Build()
+	physicalClient := &lostResponseCreateClient{Client: baseClient}
+	virtualConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "virtual-config", Namespace: "virtual-namespace"},
+		Data:       map[string]string{"key": "value"},
+	}
+
+	err := CreatePhysicalResource(context.Background(), ResourceTypeConfigMap, virtualConfigMap, "physical-config", "physical-namespace", physicalClient, ctrl.Log.WithName("test"))
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, physicalClient.createCalls)
+	stored := &corev1.ConfigMap{}
+	require.NoError(t, baseClient.Get(context.Background(), types.NamespacedName{Name: "physical-config", Namespace: "physical-namespace"}, stored))
+	assert.Equal(t, map[string]string{"key": "value"}, stored.Data)
+}
+
+func TestCreateObjectWithRetryDoesNotRetryNonTransientError(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	physicalClient := &flakyCreateClient{
+		Client:       fakeclient.NewClientBuilder().WithScheme(scheme).Build(),
+		createErrors: []error{errors.New("validation failed")},
+	}
+	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "test-namespace"}}
+
+	err := CreateObjectWithRetry(context.Background(), physicalClient, configMap, ctrl.Log.WithName("test"))
+
+	require.Error(t, err)
+	assert.Equal(t, 1, physicalClient.createCalls)
 }
 
 func TestCreatePhysicalResource(t *testing.T) {
